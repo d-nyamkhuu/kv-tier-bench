@@ -1,0 +1,56 @@
+# The sweep. `kvtb run` expands it into points; `kvtb serve-cmd` turns one (stage, model, deployment) into a `docker run`.
+# Decisions behind every value: docs/plan.md.
+
+models:
+  qwen3.8-27b:
+    hf_id: Qwen/Qwen3.8-27B          # hybrid: 16 full-attention + 48 Gated DeltaNet layers
+    config: configs/models/qwen3.8-27b.config.json
+    params: 27781427952              # HF safetensors total (incl. vision tower), 2026-11-15
+    extra_args:
+      - --mamba-ssm-cache-dtype=bfloat16          # user decision; HF default is float32
+      - --no-disable-hybrid-kv-cache-manager      # the offloading connector must not turn HMA off
+  qwen3-vl-32b:
+    hf_id: Qwen/Qwen3-VL-32B-Instruct  # standard: 64 full-attention layers
+    config: configs/models/qwen3-vl-32b-instruct.config.json
+    params: 33360000000              # approx., from the HF model page
+    extra_args: []
+
+common_args:
+  - --enable-prefix-caching
+  - --dtype=bfloat16
+  - --kv-cache-dtype=auto
+  - --limit-mm-per-prompt={"image":0,"video":0}   # text-only
+  - --max-num-seqs=32
+
+tiers: [recompute, gpu, cpu, fs, obj, p2p]
+
+# Target prefix lengths in tokens. The driver rounds each down to a multiple of the deployment's block size,
+# which it reads from the engine at run time (the hybrid model uses large blocks).
+prefix_tokens: [1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
+reps: 5
+recompute_reps: 1        # recompute is a full second prefill; each job's cold write (`write_s`) is the second sample
+
+stages:
+  s1:
+    description: 2 x RTX PRO 6000 (1 GPU each), Nebius us-central1, TCP between nodes
+    gpu: rtx-pro-6000               # key into configs/prices.yaml
+    disk_price: fs_network_ssd_nrd  # key into configs/prices.yaml
+    tp: 1
+    gpus_per_instance: 1
+    cpu_tier_gib: 120               # VM has 218 GiB RAM in total
+    tiers: [recompute, gpu, cpu, fs, obj, p2p]
+    max_prefix_tokens:
+      qwen3-vl-32b: 65536           # 128K needs ~32 GiB of KV; ~25 GB is free on a 96 GB card
+    gpu_mem_gib: 95                 # RTX PRO 6000 Blackwell, as reported by nvidia-smi (~97,887 MiB)
+    gpu_memory_utilization: 0.95
+    # vLLM refuses to start if one max-length sequence does not fit in GPU KV memory
+    max_model_len:
+      default: 140000
+      qwen3-vl-32b: 66000           # 64K prefix + headroom; ~16 GiB of KV
+    s3_endpoint: storage.us-central1.nebius.cloud   # endpoint template from Nebius docs; check on day 1
+    s3_region: us-central1
+    disk_mount: /mnt/kv
+
+s3_bucket: kvtb-cache   # Enhanced Throughput class
+validity_prompts: 5     # per (model, tier); natural text, greedy output compared with recompute
+max_attempts: 3         # a point is done when valid, or after this many invalid attempts (each with a fresh prompt)
