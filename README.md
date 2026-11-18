@@ -5,8 +5,9 @@ is compared with simply **recomputing** the prefix. The tiers are GPU, CPU, disk
 instance's CPU memory. The benchmark runs a hybrid-attention model (Qwen3.8-27B, Gated DeltaNet 3:1) and a
 standard-attention model (Qwen3-VL-32B-Instruct) side by side, on two cloud GPU VMs.
 
-> **Status: harness built, not yet run on GPUs.** No measurements yet. The full plan, decisions and open checks are in
-> [docs/plan.md](docs/plan.md).
+> **Status: stage s1 measured (2026-11-18), 390 of 390 points valid.** Raw results are in
+> [results/s1.jsonl](results/s1.jsonl); `kvtb cost` and `kvtb charts` summarize them. The plan, decisions, day-1
+> findings and the NIXL workarounds behind the p2p and obj numbers are in [docs/plan.md](docs/plan.md).
 
 ## What it measures
 
@@ -57,7 +58,11 @@ deployment and resumes after preemption. The steps are in the runbook in [docs/p
 
 ## Limitations (known up front)
 
-- Nebius has no local NVMe on these GPUs. The disk tier is a network SSD.
+- Nebius has no local NVMe on these GPUs. The disk tier is a network SSD, and its read rate (~1.0–1.3 GiB/s in s1,
+  flat at every prefix length) looks like the disk's provisioned throughput cap. That cap is inferred from the
+  results; no standalone `fio` run measured it.
+- Object-store reads are of freshly written objects: each prefix is read back seconds to minutes after it is
+  stored, possibly while the storage service still has it cached. A prefix stored hours earlier may load slower.
 - Text-only prompts. The linear-attention state is stored in bf16, which is **not** the HF default of fp32.
 - GPUDirect Storage runs in compatibility mode on rented VMs, so no GDS numbers are claimed.
 - Each length is stored once per job, and its 5 reps re-read the same stored prefix. The reps show how repeatable
