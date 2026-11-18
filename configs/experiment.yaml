@@ -47,6 +47,11 @@ stages:
       num_threads: 16         # NIXL UCX workers, each with its own TCP connection to the peer
       split_batch_size: 16    # split a transfer across the workers from 16 descriptors (NIXL default 1024)
       skip_desc_merge: true   # else NIXL merges a prefix's contiguous blocks into ~1 descriptor and never splits
+    # The image's CUDA 13 NIXL build has an OBJ plugin that links libcuobjclient.so.1, which the image lacks, so the
+    # obj tier fails at startup (NIXL_ERR_NOT_FOUND). scripts/nixl_patch makes the obj deployment load the image's
+    # CUDA 12 NIXL build instead, whose OBJ plugin has no such dependency. The obj tier moves host memory only.
+    # That build's AWS SDK reads CA certs from /etc/pki/tls/certs/ca-bundle.crt, so launch.py mounts the host's there.
+    obj_nixl_cuda_major: 12
     tiers: [recompute, gpu, cpu, fs, obj, p2p]
     max_prefix_tokens:
       qwen3-vl-32b: 65536           # 128K needs ~32 GiB of KV; ~25 GB is free on a 96 GB card

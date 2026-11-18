@@ -10,6 +10,11 @@ workers (each with its own TCP connection to the peer) only at >= split_batch_si
 KVTB_NIXL_SKIP_DESC_MERGE=1 also passes skip_desc_merge=True to make_prepped_xfer. NIXL merges contiguous
 descriptors by default, and a fresh prefix's blocks are contiguous in the CPU tier on both peers, so a whole pull
 collapses to about one descriptor and is never split, whatever split_batch_size is.
+
+KVTB_NIXL_CUDA_MAJOR=12 makes the `nixl` meta package load its CUDA 12 build (nixl_cu12) instead of the one matching
+the process's CUDA (13). Why: in the v0.34.0 image, nixl_cu13's OBJ plugin links libcuobjclient.so.1, which the
+image lacks, so the obj tier fails at startup with NIXL_ERR_NOT_FOUND; nixl_cu12's OBJ plugin has no such
+dependency. The obj tier moves host memory only.
 """
 
 import importlib.abc
@@ -19,10 +24,15 @@ import sys
 
 _EXTRA = dict(kv.split("=", 1) for kv in os.environ.get("KVTB_NIXL_UCX_PARAMS", "").split(",") if "=" in kv)
 _SKIP_MERGE = os.environ.get("KVTB_NIXL_SKIP_DESC_MERGE") == "1"
-_MODULES = {"nixl_cu13._api", "nixl_cu12._api", "nixl._api"}
+_CUDA_MAJOR = os.environ.get("KVTB_NIXL_CUDA_MAJOR")
+_MODULES = {"nixl_cu13._api", "nixl_cu12._api", "nixl._api"} | ({"nixl_meta_utils"} if _CUDA_MAJOR else set())
 
 
 def _patch(module) -> None:
+    if module.__name__ == "nixl_meta_utils":
+        module.detect_cuda_major = lambda: int(_CUDA_MAJOR)
+        print(f"kvtb nixl_patch: NIXL CUDA build forced to {_CUDA_MAJOR}", file=sys.stderr, flush=True)
+        return
     cls = getattr(module, "nixl_agent", None)
     if cls is None or getattr(cls, "_kvtb_patched", False):
         return
@@ -68,5 +78,5 @@ class _PatchOnImport(importlib.abc.MetaPathFinder):
         return spec
 
 
-if _EXTRA or _SKIP_MERGE:
+if _EXTRA or _SKIP_MERGE or _CUDA_MAJOR:
     sys.meta_path.insert(0, _PatchOnImport())

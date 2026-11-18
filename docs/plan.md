@@ -212,9 +212,18 @@ These are unverified until checked on the VMs. Each one is in
       2.3 GiB/s at 16K, 2.7 at 64K, 2.8 at 128K (24 Gbit/s), against 1.5 stock at 16K. The cap is one receive
       thread at 100% on the consumer (UCX/TCP emulates the remote write in software), not the link. Published
       p2p numbers are "vLLM v0.34.0 + this NIXL tuning".
-- [ ] Whether a hit from fs or obj reports as `disk` or as `host`, since loads stage through the CPU tier. Check
+      **obj runs on the image's CUDA 12 NIXL build** (`obj_nixl_cuda_major` in configs/experiment.yaml, same hook).
+      In vllm/vllm-openai:v0.34.0, nixl_cu13's OBJ plugin links libcuobjclient.so.1, which the image lacks, so the
+      obj tier failed at startup (NIXL_ERR_NOT_FOUND, "unsupported backend 'OBJ'"). nixl_cu12 1.5.2's OBJ plugin
+      loads, but its AWS SDK reads CA certs from /etc/pki/tls/certs/ca-bundle.crt (curl 77 otherwise), so launch.py
+      mounts the host's bundle there. First obj rows: valid, `disk` source, bytes on `1:obj`.
+      The qwen3.8-27b p2p rows (40) predate `engine_queue_s`/`engine_prefill_s`; every other row has them. Use
+      `promotion_s` as their load time (on qwen3-vl-32b p2p at 64K, queue 6.01 s vs promotion 5.66 s: the queue
+      also holds the p2p lookup round trips).
+- [x] (2026-11-18: fs hits report as `disk`, 896 of 896 tokens in the first fs row.) Whether a hit from fs or obj reports as `disk` or as `host`, since loads stage through the CPU tier. Check
       `cached_by_source` in the first fs row; the breaker stops the run after 5 jobs with misattributed fs rows.
-- [ ] **Gate for fs numbers:** the fs tier uses O_DIRECT. It falls back to buffered I/O and logs a warning when
+- [x] (2026-11-18: passes. ext4 on /mnt/kv, no fallback warning in the vLLM log; v0.34.0 fs/manager.py logs
+      "O_DIRECT is not supported at ...; falling back to buffered I/O" when its startup probe fails.) **Gate for fs numbers:** the fs tier uses O_DIRECT. It falls back to buffered I/O and logs a warning when
       the filesystem doesn't support it; `day1-checks.sh` greps for it. With buffered I/O, every fs read, the first
       included, can come from the page cache, so the fs line would show RAM speed. Do not publish fs numbers until
       this passes: fix the mount or filesystem so O_DIRECT works, or drop the page cache before each fs read, and

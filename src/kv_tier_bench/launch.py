@@ -75,15 +75,22 @@ def docker_run(
     cmd += ["--shm-size", f"{st['cpu_tier_gib'] + 8}g", "-v", f"{models_dir}:/models"]
     if deployment == "fs":
         cmd += ["-v", f"{st['disk_mount']}:{st['disk_mount']}"]
+    patch_env = {}  # settings for scripts/nixl_patch
     if deployment == "p2p" and (nixl := st.get("p2p_nixl")):
-        cmd += ["-v", f"{NIXL_PATCH_DIR}:/kvtb-patch:ro"]
-        env |= {"PYTHONPATH": "/kvtb-patch", "KVTB_NIXL_UCX_PARAMS": f"split_batch_size={nixl['split_batch_size']}"}
+        patch_env["KVTB_NIXL_UCX_PARAMS"] = f"split_batch_size={nixl['split_batch_size']}"
         if nixl.get("skip_desc_merge"):
-            env["KVTB_NIXL_SKIP_DESC_MERGE"] = "1"
+            patch_env["KVTB_NIXL_SKIP_DESC_MERGE"] = "1"
     if deployment == "obj":
         if not s3_env:
             raise ValueError("the obj deployment needs --s3-env (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)")
         cmd += ["--env-file", s3_env]
+        if major := st.get("obj_nixl_cuda_major"):
+            patch_env["KVTB_NIXL_CUDA_MAJOR"] = str(major)
+            # that build's AWS SDK looks for CA certs at the Red Hat path; without them every request fails (curl 77)
+            cmd += ["-v", "/etc/ssl/certs/ca-certificates.crt:/etc/pki/tls/certs/ca-bundle.crt:ro"]
+    if patch_env:
+        cmd += ["-v", f"{NIXL_PATCH_DIR}:/kvtb-patch:ro"]
+        env |= {"PYTHONPATH": "/kvtb-patch"} | patch_env
     for k, v in env.items():
         cmd += ["-e", f"{k}={v}"]
     cmd += ["--entrypoint", "vllm", VLLM_IMAGE, "serve"]

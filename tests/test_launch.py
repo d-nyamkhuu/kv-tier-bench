@@ -126,3 +126,12 @@ def test_p2p_gets_the_nixl_patch_and_other_deployments_do_not():
     assert env["KVTB_NIXL_UCX_PARAMS"] == "split_batch_size=16"
     assert _kv_config(p2p)["kv_connector_extra_config"]["secondary_tiers"][0]["num_threads"] == 16
     assert "PYTHONPATH" not in dict(e.split("=", 1) for e in _opt(_cmd(dep="fs"), "-e"))
+
+
+def test_obj_loads_the_cuda12_nixl_build_through_the_patch():
+    env = dict(e.split("=", 1) for e in _opt(_cmd(dep="obj"), "-e"))
+    assert env["KVTB_NIXL_CUDA_MAJOR"] == "12" and env["PYTHONPATH"] == "/kvtb-patch"
+    mounts = _opt(_cmd(dep="obj"), "-v")
+    assert mounts[-1].endswith("scripts/nixl_patch:/kvtb-patch:ro")
+    assert "/etc/ssl/certs/ca-certificates.crt:/etc/pki/tls/certs/ca-bundle.crt:ro" in mounts
+    assert "KVTB_NIXL_CUDA_MAJOR" not in dict(e.split("=", 1) for e in _opt(_cmd(dep="p2p"), "-e"))
