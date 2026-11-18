@@ -3,7 +3,7 @@
 
 gpu_hour_usd:
   rtx-pro-6000: 1.80        # gpu-rtx6000, on demand, per GPU (vCPU/RAM included). Stage 1 runs preemptible in
-                            # us-central1: spot $0.79-1.79, 30-day median $0.94 (api.nebius.cloud, 2026-11-16).
+                            # eu-south1: spot $1.38 at launch (api.nebius.cloud, 2026-11-18).
                             # The table uses on demand, the price a reader can count on.
 
 # "included" = already paid for with the GPU VM (HBM, host RAM). null = price not known yet; `kvtb cost` refuses

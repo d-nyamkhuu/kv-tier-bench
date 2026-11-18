@@ -1,4 +1,4 @@
-"""The vLLM `--kv-transfer-config` for each deployment, using the v0.33.0 schema (docs/features/kv_offloading_usage.md).
+"""The vLLM `--kv-transfer-config` for each deployment, using the v0.34.0 schema (docs/features/kv_offloading_usage.md).
 
 Deployments per model: fs (measures recompute, gpu, cpu and fs), obj, and p2p. fs and obj are
 separate because both report cached tokens as source "disk".
@@ -51,7 +51,10 @@ def secondary_tiers(deployment: str, stage: dict, model: str, bucket: str) -> li
         ]
     if deployment == "p2p":
         # host comes from VLLM_P2P_SIDE_CHANNEL_HOST (the VM private IP), set in launch.docker_run
-        return [{"type": "p2p", "port": C.P2P_PORT}]
+        tier = {"type": "p2p", "port": C.P2P_PORT}
+        if threads := stage.get("p2p_nixl", {}).get("num_threads"):
+            tier["num_threads"] = threads
+        return [tier]
     raise ValueError(f"unknown deployment {deployment!r}")
 
 

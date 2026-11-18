@@ -32,12 +32,21 @@ recompute_reps: 1        # recompute is a full second prefill; each job's cold w
 
 stages:
   s1:
-    description: 2 x RTX PRO 6000 (1 GPU each), Nebius us-central1, TCP between nodes
+    description: 2 x RTX PRO 6000 (1 GPU each, gpu-rtx6000-a), Nebius eu-south1, TCP between VMs
     gpu: rtx-pro-6000               # key into configs/prices.yaml
     disk_price: fs_network_ssd_nrd  # key into configs/prices.yaml
     tp: 1
     gpus_per_instance: 1
-    cpu_tier_gib: 120               # VM has 218 GiB RAM in total
+    # largest prefix is 16 GiB (vl-32b at 64K); kept well under half of the 218 GiB RAM, because at TP=1 the p2p
+    # tier pins it a second time (NIXL/UCX cuMemHostRegister) and 120 GiB failed with "out of memory"
+    cpu_tier_gib: 48
+    # NIXL settings vLLM v0.34.0 does not expose, applied by scripts/nixl_patch (p2p only). Stock vLLM sends a whole
+    # pull over 1 TCP stream (~1.5 GiB/s at 16K); this splits it over 16 (~2.8 GiB/s at 128K, capped by one receive
+    # thread on the consumer). docs/plan.md, day-1 checks.
+    p2p_nixl:
+      num_threads: 16         # NIXL UCX workers, each with its own TCP connection to the peer
+      split_batch_size: 16    # split a transfer across the workers from 16 descriptors (NIXL default 1024)
+      skip_desc_merge: true   # else NIXL merges a prefix's contiguous blocks into ~1 descriptor and never splits
     tiers: [recompute, gpu, cpu, fs, obj, p2p]
     max_prefix_tokens:
       qwen3-vl-32b: 65536           # 128K needs ~32 GiB of KV; ~25 GB is free on a 96 GB card
@@ -47,8 +56,8 @@ stages:
     max_model_len:
       default: 140000
       qwen3-vl-32b: 66000           # 64K prefix + headroom; ~16 GiB of KV
-    s3_endpoint: storage.us-central1.nebius.cloud   # endpoint template from Nebius docs; check on day 1
-    s3_region: us-central1
+    s3_endpoint: storage.eu-south1.nebius.cloud   # endpoint template from Nebius docs; check on day 1
+    s3_region: eu-south1
     disk_mount: /mnt/kv
 
 s3_bucket: kvtb-cache   # Enhanced Throughput class

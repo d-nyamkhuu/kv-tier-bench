@@ -7,8 +7,8 @@ cd "$(dirname "$0")/.."
 source scripts/lib.sh
 MODELS=${MODELS:-"Qwen/Qwen3.8-27B Qwen/Qwen3-VL-32B-Instruct"}
 
-cmd="docker run --rm -v /models:/models -e HF_HOME=/models -e HF_HUB_ENABLE_HF_TRANSFER=1 python:3.12-slim \
-  sh -c 'pip install -q huggingface_hub[hf_transfer] && for m in $MODELS; do hf download \$m --cache-dir /models/hub; done'"
+cmd="docker run --rm -v /models:/models -e HF_HOME=/models -e HF_XET_HIGH_PERFORMANCE=1 python:3.12-slim \
+  sh -c 'pip install -q huggingface_hub && for m in $MODELS; do hf download \$m --cache-dir /models/hub; done'"
 on self "$cmd" & self_pid=$!
 if [[ -n $PEER ]]; then on peer "$cmd" & peer_pid=$!; fi
 wait "$self_pid"

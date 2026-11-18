@@ -23,9 +23,9 @@ Nobody has published this:
 
 | Area | Decision | Why |
 |---|---|---|
-| Engine | vLLM **v0.33.0**, `OffloadingConnector` + `TieringOffloadingSpec` | The only stack with CPU, fs, obj and p2p in-tree and no patching. It has per-tier metrics and per-request load control (`kv_load_tiers`, `max_load_tokens`). |
-| Host | **Plain VMs**: vLLM in Docker (`vllm/vllm-openai:v0.33.0`), started by `scripts/sweep.sh` over ssh. No Kubernetes, llm-d, router or Dynamo (decided 2026-11-18). | The benchmark needs two machines that can reach each other. Kubernetes added a driver image, a Job, RBAC, volumes and helper pods without changing any number. Dynamo's KVBM is deprecated and Dynamo pins vLLM 0.31. |
-| Machines | 2 × Nebius `gpu-rtx6000` VMs (1 GPU each) in us-central1, same subnet, one stage (s1) | The user has tested RTX PRO 6000 capacity on Nebius. |
+| Engine | vLLM **v0.34.0** (switched from v0.33.0 on 2026-11-18, before any measurement), `OffloadingConnector` + `TieringOffloadingSpec` | v0.34.0 hardens the p2p tier and fixes KV-offload correctness bugs. The only stack with CPU, fs, obj and p2p in-tree and no patching. It has per-tier metrics and per-request load control (`kv_load_tiers`, `max_load_tokens`). |
+| Host | **Plain VMs**: vLLM in Docker (`vllm/vllm-openai:v0.34.0`), started by `scripts/sweep.sh` over ssh. No Kubernetes, llm-d, router or Dynamo (decided 2026-11-18). | The benchmark needs two machines that can reach each other. Kubernetes added a driver image, a Job, RBAC, volumes and helper pods without changing any number. Dynamo's KVBM is deprecated and Dynamo pins vLLM 0.31. |
+| Machines | 2 × Nebius `gpu-rtx6000-a` VMs (1 GPU each) in eu-south1, same subnet, one stage (s1) | The user has tested RTX PRO 6000 capacity on Nebius. |
 | Hybrid model | **Qwen/Qwen3.8-27B**: 64 layers, 16 full attention and 48 Gated DeltaNet; 4 KV heads × 256 | Released 2026-08-05, Apache-2.0. |
 | Standard model | **Qwen/Qwen3-VL-32B-Instruct**: 64 full-attention layers; 8 KV heads × 128 | Same KV width per layer as the hybrid model, so the KV difference is just 16 vs 64 layers. Context 262K. |
 | Parallelism | TP=1 on RTX PRO 6000 | One card holds either model. PP would distort the recompute baseline. |
@@ -33,7 +33,7 @@ Nobody has published this:
 | Precision | bf16 weights and KV. **bf16 linear-attention state on every run** (`--mamba-ssm-cache-dtype bfloat16`). | User decision. The HF default for the state is fp32, so the README must say it was overridden. |
 | Prompts | Text only, token-ID prompts through `/v1/completions` | Both models are VLMs, and images would change the prefix hashing. Token IDs give exact lengths. |
 | Speculative decoding / MTP | Off | Open issues for hybrid models with offload: vllm#50454, #55503, #53670. |
-| Disk tier | 2000 GiB network SSD (non-replicated), ext4, attached to VM A at `/mnt/kv` | Nebius has no local NVMe outside B300; the README states this. A block device should support O_DIRECT, which the fs numbers need. Network SSD read bandwidth grows with size: ~2 GiB/s needs ~1.8 TiB. |
+| Disk tier | 1767 GiB network SSD (non-replicated), ext4, attached to VM A at `/mnt/kv` | Nebius has no local NVMe outside B300; the README states this. A block device should support O_DIRECT, which the fs numbers need. Non-replicated disks come in 93 GiB units; 19 units (1767 GiB) reach the 2 GiB/s read maximum. |
 | Object tier | Nebius Object Storage, **Enhanced Throughput** class only | User decision. Requests and same-region traffic are free. |
 | Peer tiers | p2p over TCP between the two RTX VMs | InfiniBand is dropped. Same-node p2p is dropped too: it is a host-memory copy, close to the CPU tier. |
 | Cost analysis | A static table: $ per 1M prefix tokens per tier, against recompute | User decision. There is no dynamic break-even and no TTL model. |
@@ -43,7 +43,7 @@ Nobody has published this:
 
 ## Tiers measured
 
-On 2 × RTX PRO 6000 in us-central1:
+On 2 × RTX PRO 6000 in eu-south1:
 
 | # | Tier |
 |---|---|
@@ -147,28 +147,29 @@ A unit test checks the budget.
 
 | Stage | Where | What | Time | Cost |
 |---|---|---|---|---|
-| 1 | Nebius **us-central1** | 2 × `gpu-rtx6000` `1gpu-24vcpu-218gb` VMs, **preemptible**, ~300 GB boot disk each; a 2000 GiB network SSD on VM A | about 12 h | about $19–33 at spot, $43 at most on demand, plus disks |
+| 1 | Nebius **eu-south1** | 2 × `gpu-rtx6000-a` `1gpu-24vcpu-218gb` VMs, **preemptible**, 300 GiB boot disk each; a 1767 GiB non-replicated network SSD on VM A | about 12 h | about $19–33 at spot, $43 at most on demand, plus disks |
 
 The total is about $45 of GPU time at most, plus disks. Prices are in [../configs/prices.yaml](../configs/prices.yaml) with their sources.
 
-**Why us-central1 for stage 1 (decided 2026-11-16).** It had the cheapest preemptible RTX PRO 6000 at the time:
-$0.79/GPU-h, the floor price, against $1.38 in eu-south1 and uk-south2.
-- Over the previous 30 days no region stayed cheapest. Prices ranged from $0.79 to $1.94, and the medians were
-  $0.94 in us-central1 and uk-south2 and $1.23 in eu-south1.
-- The config already targets us-central1: its object-storage endpoint, region and quotas.
-- Spot prices are uncapped by default. Set a max price of about $1.40/GPU-h in a Nebius pricing policy. Being
-  outbid only preempts the VM, and `kvtb run` resumes.
+**Why eu-south1 (decided 2026-11-18, at launch).** At launch it had the cheapest preemptible RTX PRO 6000
+(`gpu-rtx6000-a`): $1.38/GPU-h, against $1.70 in uk-south2 and $1.79 in us-central1 (us-central1 had been the
+cheapest on 2026-11-16, at $0.79). `nebius capacity resource-advice list` showed both preemptible slots available
+there (availability HIGH), and the project's quotas cover 2 preemptible VMs, 4 disks and 3 public IPs.
+- Spot prices are uncapped: the VMs follow the spot price (`--follows-spot-price`); this CLI version (0.12) has no
+  spot-price cap. Being outbid only preempts a VM, and `kvtb run` resumes.
 - Check the live price before launching: [../scripts/spot-prices.sh](../scripts/spot-prices.sh).
 
 - **Preemption.** The harness is resumable and writes each point as soon as it is done. `sweep.sh` copies the
   results to `s3://kvtb-cache/results/s1.jsonl` after every deployment, so a lost VM loses at most one deployment's
   rows. On a fresh VM it restores that file before running, and stops if it can't tell whether a copy exists. If preemption breaks the run twice, switch to on demand.
-- **Quotas.** Request these before starting, in us-central1: preemptible GPU VMs ≥ 2 (the default is 2), disks ≥ 3
+- **Quotas.** Request these before starting, in eu-south1: preemptible GPU VMs ≥ 2 (the default is 2), disks ≥ 3
   (two boot disks and the disk tier).
 - **Model weights.** `scripts/stage-weights.sh` downloads both models (~120 GB) to each VM's boot disk, in
   parallel. On GPU VMs this costs GPU time (roughly 10–20 minutes), so start it right after the VMs boot.
-- **RAM per VM.** The RTX VM has 218 GiB. That has to hold the CPU tier (in `/dev/shm`), the weights being
-  loaded, and the runtime, so the CPU tier is about 120 GiB there.
+- **RAM per VM.** The RTX VM has 218 GiB. The CPU tier (in `/dev/shm`) is 48 GiB: 3× the largest prefix
+  (16 GiB). At TP=1 the GPU worker and the p2p tier's NIXL/UCX both pin it with `cuMemHostRegister`, so it
+  must stay well under half of RAM. With 120 GiB the second pin failed with "out of memory" and vLLM did not
+  start.
 - **fs and obj never evict.** Add a cleanup step between models and size the disk for the sweep.
 
 ## Day-1 checks
@@ -176,8 +177,9 @@ $0.79/GPU-h, the floor price, against $1.38 in eu-south1 and uk-south2.
 These are unverified until checked on the VMs. Each one is in
 [../src/kv_tier_bench/constants.py](../src/kv_tier_bench/constants.py) or [../scripts/](../scripts/).
 
-- [ ] `vllm/vllm-openai:v0.33.0` includes the NIXL OBJ plugin and connects to the Nebius endpoint
-      (`storage.<region>.nebius.cloud`, `scheme: https`). The obj tier probes the bucket at startup and fails fast.
+- [ ] `vllm/vllm-openai:v0.34.0` includes the NIXL OBJ plugin and connects to the Nebius endpoint
+      (`storage.<region>.nebius.cloud`, `scheme: https`; the AWS CLI reaches `storage.eu-south1.nebius.cloud`
+      with the bucket keys, checked 2026-11-18). The obj tier probes the bucket at startup and fails fast.
 - [ ] The p2p tier works over TCP. The docs say "over RDMA via NIXL". UCX should fall back to `tcp`; check it with
       `UCX_PROTO_INFO=y`.
 - [ ] The hybrid model runs with the offloading connector and HMA on. Pass `--no-disable-hybrid-kv-cache-manager`
@@ -188,14 +190,28 @@ These are unverified until checked on the VMs. Each one is in
 - [ ] The `kv_load_tiers` matcher values for each tier. The code keys are `medium` and `locality`; CPU and
       STORAGE are expected, p2p is unknown.
 - [ ] Whether `reset_prefix_cache?reset_external=true` keeps the secondary tiers, as the source suggests.
-- [ ] The GPU is visible inside Docker on both VMs: `docker run --rm --gpus all ubuntu nvidia-smi`. The Nebius
-      GPU image must have the NVIDIA container toolkit; install it if not.
-- [ ] The firewall lets VM A reach VM B on 8000 (vLLM) and 7777 (p2p side channel), plus whatever ports UCX picks
-      for the transfer. Check with `curl http://<VM B>:8000/v1/models` and the first p2p rows.
+- [x] The GPU is visible inside Docker on both VMs (2026-11-18). The `ubuntu24.04-cuda13.0` image ships Docker
+      and the NVIDIA container toolkit; driver 580.173.02, RTX PRO 6000 Blackwell Server Edition, 97,887 MiB.
+- [x] The firewall lets VM A reach VM B on 8000 and 7777 (2026-11-18, default security group). Whatever ports UCX
+      picks for the transfer: check in the first p2p rows.
 - [ ] A preempted VM keeps its boot disk (results, weights, compile cache). If it doesn't, restore the results from
       the bucket and re-stage the weights before rerunning.
 - [ ] `fio` on the network SSD, with KV-chunk-sized I/O ([../scripts/fio-disk.sh](../scripts/fio-disk.sh)).
-- [ ] `iperf3` between the two RTX VMs. Inter-VM bandwidth is not documented.
+- [x] `iperf3` between the two RTX VMs (2026-11-18, eu-south1, private IPs, 2 hops, mlx5 NIC at 400 Gbit/s): RTT
+      0.25 ms min / 0.7 ms avg; 16 Gbit/s on 1 TCP stream, 46 Gbit/s on 4, 230–277 Gbit/s on 16, a ceiling of
+      ~294 Gbit/s from 32 streams on (64: 293, 128: 289). There the receiver spends ~20 of its 24 vCPUs on TCP, so the
+      limit is CPU, not the 400 Gbit/s NIC. p2p over UCX/TCP
+      will see far less than the 16-stream figure if it uses one or a few connections.
+      Measured: a 16K-token p2p pull (1,092 MiB) took 0.71 s of promotion time, about 1.5 GiB/s or 13 Gbit/s,
+      close to the 1-stream figure. vLLM's p2p tier reports no read time, so p2p load time comes from
+      `kv_offload_tiering_promotion_latency_seconds` (`promotion_s` on each row; it includes tier queueing).
+      **p2p runs with a NIXL patch** (`p2p_nixl` in configs/experiment.yaml, `scripts/nixl_patch`). Stock vLLM sends
+      each pull over one TCP stream: NIXL splits a transfer across its UCX workers only at >= 1024 descriptors, and
+      it first merges a prefix's contiguous blocks into ~1 descriptor. The patch sets 16 workers, split_batch_size
+      16 and skip_desc_merge, so a pull uses 16 connections (verified with `ss`: ~equal bytes on each). Result:
+      2.3 GiB/s at 16K, 2.7 at 64K, 2.8 at 128K (24 Gbit/s), against 1.5 stock at 16K. The cap is one receive
+      thread at 100% on the consumer (UCX/TCP emulates the remote write in software), not the link. Published
+      p2p numbers are "vLLM v0.34.0 + this NIXL tuning".
 - [ ] Whether a hit from fs or obj reports as `disk` or as `host`, since loads stage through the CPU tier. Check
       `cached_by_source` in the first fs row; the breaker stops the run after 5 jobs with misattributed fs rows.
 - [ ] **Gate for fs numbers:** the fs tier uses O_DIRECT. It falls back to buffered I/O and logs a warning when
@@ -208,7 +224,7 @@ These are unverified until checked on the VMs. Each one is in
 - [ ] `write_s` is a fair recompute baseline. It also does write-through store work. Compare `recompute_s` with
       `recompute_read_s` in `kvtb cost` at each length; if they differ, say so next to the cost table.
 - [ ] The per-tier counters' `tier` labels have the form `<index>:<type>`, with 0 = CPU and 1 = the secondary
-      tier. The driver picks each tier's series by that index from every scrape, so the type names never need
+      tier (the v0.34.0 source says `0:primary` and `1:<type>`; confirm in a live scrape). The driver picks each tier's series by that index from every scrape, so the type names never need
       to be known. Check `read_bytes_by_tier` in the first fs, obj, cpu and p2p rows: if the labels have another
       form, `read_bytes` / `read_time_s` are the sum over all labels and `TIER_INDEX` in `constants.py` needs
       fixing. A p2p row with `read_bytes: null` means p2p reads are not counted in these metrics.
@@ -236,8 +252,8 @@ stubs are not Docker or Nebius. Nothing has run on a real VM.
 
 ## Runbook
 
-Create two preemptible `gpu-rtx6000` VMs in us-central1, in the same subnet, from a Nebius Ubuntu GPU image with
-Docker, with ~300 GB boot disks. Attach a 2000 GiB non-replicated network SSD to VM A, and create the
+Create two preemptible `gpu-rtx6000-a` VMs in eu-south1, in the same subnet, from a Nebius Ubuntu GPU image with
+Docker, with 300 GiB boot disks. Attach a 1767 GiB non-replicated network SSD to VM A, and create the
 `kvtb-cache` bucket (Enhanced Throughput). Everything below runs on VM A unless marked.
 
 ```bash
@@ -283,7 +299,7 @@ day-1 check; if not, add about 20 minutes).
 | Days | Work |
 |---|---|
 | 1–2 | Size model, grid, result store, cost maths and the driver, all tested without a GPU. |
-| 3 | Nebius setup in us-central1: quotas, two VMs, the disk, the bucket. Run the day-1 checks. |
+| 3 | Nebius setup in eu-south1: quotas, two VMs, the disk, the bucket. Run the day-1 checks. |
 | 4–5 | Stage 1 sweep on RTX, plus validity runs. File an issue for any broken tier. |
 | 6 | Fix the harness. Write the stage-1 analysis and charts. |
 | 7–8 | Analysis, cost table, charts. |

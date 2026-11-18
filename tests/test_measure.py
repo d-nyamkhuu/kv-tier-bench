@@ -3,6 +3,7 @@
 import asyncio
 
 import httpx
+import pytest
 
 from kv_tier_bench import constants as C
 from kv_tier_bench import measure
@@ -132,12 +133,16 @@ def test_reads_find_the_tier_own_counters_whatever_the_type_is_called():
             return await super().metrics() + [
                 Sample(C.M_TIER_READ_BYTES + "_total", (("tier", "1:SomeFsName"),), n * 2**20),
                 Sample(C.M_TIER_READ_BYTES + "_total", (("tier", "0:primary"),), n * 2 * 2**20),
+                Sample(
+                    C.M_TIER_PROMOTION_LATENCY + "_sum", (("result", "success"), ("tier", "1:SomeFsName")), n * 0.25
+                ),
             ]
 
     row = run(Point("s1", "m", "fs", 1000, 0), WithTierCounters())
     assert row["read_bytes"] == 2**20  # index 1: the fs tier's own series, not fs + the CPU hop
     assert row["read_bytes_by_tier"] == {"0:primary": 2 * 2**20, "1:SomeFsName": 2**20}
     assert row["read_time_s"] == 0.0  # the tier exposes no read-time series
+    assert row["promotion_s"] == 0.25 and row["promotion_s_by_tier"] == {"1:SomeFsName": 0.25}
     assert run(Point("s1", "m", "cpu", 1000, 0), WithTierCounters())["read_bytes"] == 2 * 2**20  # index 0
 
 
@@ -165,3 +170,36 @@ def test_retry_uses_a_fresh_prompt():
     retry = asyncio.run(measure.run_point(Point("s1", "m", "fs", 1000, 0), 64, eng, attempt=1))
     assert first["valid"] and retry["valid"] and retry["attempt"] == 1
     assert len(eng.sec) == 2  # two distinct prefixes were written
+
+
+def test_settle_pokes_an_idle_engine_whose_last_store_was_not_collected():
+    class Idle(FakeEngine):  # vLLM with only p2p: the store's completion waits for the next engine step
+        stuck = True
+
+        async def metrics(self):
+            active = 1.0 if self.stuck else 0.0
+            return await super().metrics() + [Sample(C.M_TIER_ACTIVE_CASCADES, (("tier", "1:p2p"),), active)]
+
+        async def complete(self, tokens, max_tokens=1, kv_transfer_params=None):
+            self.stuck = tokens != measure.POKE
+            return await super().complete(tokens, max_tokens, kv_transfer_params)
+
+    row = run(Point("s1", "m", "cpu", 1000, 0), Idle())
+    assert row["valid"] and row["settle_s"] < measure.SETTLE_TIMEOUT_S
+
+
+def test_reads_split_the_engine_ttft_into_queue_and_prefill():
+    class Phases(FakeEngine):  # each request: 0.015 s waiting for its KV load, 0.005 s of prefill
+        async def metrics(self):
+            n = self.ttft_count
+            return await super().metrics() + [
+                Sample(C.M_QUEUE_TIME + "_sum", (), n * 0.015),
+                Sample(C.M_QUEUE_TIME + "_count", (), n),
+                Sample(C.M_PREFILL_TIME + "_sum", (), n * 0.005),
+                Sample(C.M_PREFILL_TIME + "_count", (), n),
+            ]
+
+    row = run(Point("s1", "m", "cpu", 1000, 0), Phases())
+    assert row["engine_ttft_s"] == pytest.approx(0.02)
+    assert row["engine_queue_s"] == pytest.approx(0.015) and row["engine_prefill_s"] == pytest.approx(0.005)
+    assert run(Point("s1", "m", "cpu", 1000, 0), FakeEngine())["engine_queue_s"] is None  # engine without them

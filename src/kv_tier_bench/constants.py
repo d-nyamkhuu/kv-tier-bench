@@ -1,10 +1,10 @@
-"""vLLM v0.33.0 metric names, source labels and load-tier matchers that the driver relies on.
+"""vLLM v0.34.0 metric names, source labels and load-tier matchers that the driver relies on.
 
 Everything marked UNVERIFIED is on the day-1 checklist in docs/plan.md. Correct it here once a running vLLM shows
 the real value. The container settings (image, env, ports) are in launch.py.
 """
 
-# Per-tier counters, from vllm/v1/kv_offload/tiering/base.py @ v0.33.0 (label `tier`, e.g. "1:fs").
+# Per-tier counters, from vllm/v1/kv_offload/tiering @ v0.34.0 (label `tier`: "0:primary" for CPU, "1:fs" etc.).
 # UNVERIFIED: whether the exposition adds a `_total` suffix to counters. `prom.find` accepts both forms.
 M_TIER_READ_BYTES = "vllm:kv_offload_tiering_read_bytes"
 M_TIER_READ_TIME = "vllm:kv_offload_tiering_read_time"
@@ -13,10 +13,18 @@ M_TIER_WRITE_TIME = "vllm:kv_offload_tiering_write_time"
 M_TIER_ACTIVE_CASCADES = "vllm:kv_offload_tiering_active_cascade_jobs"
 M_TIER_ACTIVE_PROMOTIONS = "vllm:kv_offload_tiering_active_promotion_jobs"
 M_TIER_STORES_DROPPED = "vllm:kv_offload_tiering_backpressure_stores_dropped"
+# Histogram (labels tier, result) of each promotion job, from creation to completion, queueing included. p2p reports
+# no read time (its READ_TIME series never appears, v0.34.0 docs), so its load time comes from here.
+M_TIER_PROMOTION_LATENCY = "vllm:kv_offload_tiering_promotion_latency_seconds"
 
 # Cached prompt tokens by source; this is what proves where a hit came from.
 M_CACHED_BY_SOURCE = "vllm:prompt_tokens_cached_by_source"
 M_TTFT = "vllm:time_to_first_token_seconds"
+# Per-request phases, recorded when a request finishes (vllm/v1/metrics/stats.py @ v0.34.0). An async KV load keeps
+# the request WAITING_FOR_REMOTE_KVS before its SCHEDULED event, so with one request at a time the queue time is the
+# load from CPU/fs/obj/p2p, and the prefill time is the uncached tail plus the first token.
+M_QUEUE_TIME = "vllm:request_queue_time_seconds"
+M_PREFILL_TIME = "vllm:request_prefill_time_seconds"
 
 # UNVERIFIED label values of M_CACHED_BY_SOURCE{source=...} for each tier under test.
 SOURCE_LABEL = {
@@ -27,7 +35,7 @@ SOURCE_LABEL = {
     "p2p": "p2p",
 }
 
-# `kv_load_tiers` matchers ({"medium", "locality"}), from the offloading scheduler @ v0.33.0.
+# `kv_load_tiers` matchers ({"medium", "locality"}), from the offloading scheduler @ v0.34.0.
 # CPU is always allowed; an empty list means "CPU only". UNVERIFIED for p2p.
 LOAD_TIERS = {
     "gpu": [],

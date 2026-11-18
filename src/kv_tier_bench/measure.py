@@ -19,6 +19,7 @@ SETTLE_POLL_S = 0.25
 SETTLE_STABLE_POLLS = 4
 SETTLE_TIMEOUT_S = 300.0
 SCRAPE_TIMEOUT_S = 5.0
+POKE = [0, 0, 0]  # a prompt shorter than any block: makes an idle engine step, caches nothing
 WARMUP_SEED = 0  # the warm-up prompt is never measured, so it can be the same on every run
 
 
@@ -70,6 +71,11 @@ async def settle(
         labels = {"tier": label} if label else {}  # the secondary tier's own series, or the sum of all
         written = prom.delta(baseline, s, C.M_TIER_WRITE_BYTES, **labels)
         busy = prom.find(s, C.M_TIER_ACTIVE_CASCADES) + prom.find(s, C.M_TIER_ACTIVE_PROMOTIONS)
+        if busy and written == last:
+            # An idle engine stops stepping, and a store that finished meanwhile is only collected on its next step,
+            # so the job looks active forever (p2p-only deployments; vLLM docs, "Threading model"). A request
+            # shorter than one block makes it step and caches nothing.
+            await engine.complete(POKE, kv_transfer_params={"max_load_tokens": 0})
         if written == last and busy == 0 and written >= expect_bytes:
             stable += 1
             if stable >= SETTLE_STABLE_POLLS:
@@ -86,7 +92,11 @@ async def scrape_after(engine: Engine, before: list[prom.Sample], requests: int 
     deadline = time.monotonic() + SCRAPE_TIMEOUT_S
     while True:
         s = await engine.metrics()
-        if prom.delta(before, s, C.M_TTFT + "_count") >= requests or time.monotonic() > deadline:
+        done = prom.delta(before, s, C.M_TTFT + "_count") >= requests
+        # queue/prefill times land when the request finishes; wait for them too where the engine has them
+        if done and _has(s, C.M_PREFILL_TIME + "_count"):
+            done = prom.delta(before, s, C.M_PREFILL_TIME + "_count") >= requests
+        if done or time.monotonic() > deadline:
             return s
         await asyncio.sleep(0.05)
 
@@ -142,10 +152,14 @@ async def warm_up(writer: Engine, block_size: int, reader: Engine | None = None,
         await reader.complete(prompt, kv_transfer_params=read_params("p2p", source_host, "warmup"))
 
 
-def _engine_ttft(before: list[prom.Sample], after: list[prom.Sample]) -> float | None:
-    """TTFT the engine itself recorded for the request(s) between two scrapes (histogram sum / count)."""
-    n = prom.delta(before, after, C.M_TTFT + "_count")
-    return prom.delta(before, after, C.M_TTFT + "_sum") / n if n else None
+def _has(samples: list[prom.Sample], name: str) -> bool:
+    return any(s.name == name for s in samples)
+
+
+def _engine_mean(before: list[prom.Sample], after: list[prom.Sample], metric: str) -> float | None:
+    """Mean of a vLLM histogram over the request(s) between two scrapes (sum / count)."""
+    n = prom.delta(before, after, metric + "_count")
+    return prom.delta(before, after, metric + "_sum") / n if n else None
 
 
 async def run_job(
@@ -214,6 +228,9 @@ async def run_job(
             by_time = prom.delta_by_label(before, after, C.M_TIER_READ_TIME, "tier")
             row["read_bytes_by_tier"], row["read_time_s_by_tier"] = by_bytes, by_time
             row["read_bytes"], row["read_time_s"] = tier_read(by_bytes, by_time, C.TIER_INDEX.get(p.tier))
+            promo = prom.delta_by_label(before, after, C.M_TIER_PROMOTION_LATENCY + "_sum", "tier")
+            row["promotion_s_by_tier"] = promo
+            row["promotion_s"] = tier_read(by_bytes, promo, C.TIER_INDEX.get(p.tier))[1]
             # a dropped store only matters for the tier it was dropped from
             tier_dropped = dropped if p.tier in ("fs", "obj") else 0.0
             _finish(row, read_s, before, after, cached, expected=prefix, dropped=tier_dropped, source=source)
@@ -230,7 +247,9 @@ async def run_point(point: Point, block_size: int, writer: Engine, **kw) -> dict
 def _finish(row, read_s, before, after, cached, expected, dropped, source) -> dict:
     """Valid only if the expected source served the whole block-aligned prefix (or, for recompute, nothing)."""
     row["read_s"] = read_s
-    row["engine_ttft_s"] = _engine_ttft(before, after)
+    row["engine_ttft_s"] = _engine_mean(before, after, C.M_TTFT)
+    row["engine_queue_s"] = _engine_mean(before, after, C.M_QUEUE_TIME)  # ~ the KV load (see constants)
+    row["engine_prefill_s"] = _engine_mean(before, after, C.M_PREFILL_TIME)
     row["cached_tokens"] = cached
     # every source, so a wrong SOURCE_LABEL can be fixed from the first bad row
     row["cached_by_source"] = prom.delta_by_label(before, after, C.M_CACHED_BY_SOURCE, "source")

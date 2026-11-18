@@ -43,7 +43,8 @@ def test_container_settings_carried_over_from_the_kubernetes_base():
     assert env["PYTHONHASHSEED"] == "0" and env["VLLM_SERVER_DEV_MODE"] == "1" and env["HF_HUB_OFFLINE"] == "1"
     assert env["VLLM_P2P_SIDE_CHANNEL_HOST"] == IP == env["VLLM_NIXL_SIDE_CHANNEL_HOST"]
     assert env["VLLM_CACHE_ROOT"] == "/models/vllm-cache" and env["HF_HOME"] == "/models"
-    assert VLLM_IMAGE == "docker.io/vllm/vllm-openai:v0.33.0"
+    assert env["UCX_NET_DEVICES"] == "eth0"
+    assert VLLM_IMAGE == "docker.io/vllm/vllm-openai:v0.34.0"
     assert _opt(cmd, "--entrypoint") == ["vllm"] and _vllm(cmd)[0] == "serve"  # not the image's default
     assert _opt(cmd, "--name") == [CONTAINER] and _opt(cmd, "--network") == ["host"]
     assert f"--host={IP}" in _vllm(cmd)  # bound to the private IP only: dev mode exposes the cache reset
@@ -62,11 +63,11 @@ def test_recompute_gpu_cpu_fs_share_the_fs_deployment():
 
 def test_only_fs_mounts_the_disk_and_only_obj_gets_the_keys():
     assert _opt(_cmd(dep="fs"), "-v") == ["/models:/models", "/mnt/kv:/mnt/kv"]
-    assert _opt(_cmd(dep="p2p"), "-v") == ["/models:/models"] and _opt(_cmd(dep="p2p"), "--env-file") == []
+    assert _opt(_cmd(dep="p2p"), "-v")[0] == "/models:/models" and _opt(_cmd(dep="p2p"), "--env-file") == []
     obj = _cmd(dep="obj")
     assert _opt(obj, "--env-file") == ["/home/u/kvtb-s3.env"]
     store = _kv_config(obj)["kv_connector_extra_config"]["secondary_tiers"][0]["store_config"]
-    assert store["endpoint_override"] == "storage.us-central1.nebius.cloud"
+    assert store["endpoint_override"] == EXP["stages"]["s1"]["s3_endpoint"]
     with pytest.raises(ValueError):
         docker_run(EXP, "s1", "qwen3.8-27b", "obj", IP)  # no keys: fail before starting a GPU container
 
@@ -115,3 +116,13 @@ def test_p2p_needs_two_distinct_routable_endpoints():
     assert "distinct" in check_endpoints("p2p", ["http://localhost:8000", ok[1]])  # the reader pulls from it
     assert "distinct" in check_endpoints("p2p", [ok[0], ok[0]])
     assert "needs 1" in check_endpoints("obj", ok)
+
+
+def test_p2p_gets_the_nixl_patch_and_other_deployments_do_not():
+    p2p = _cmd(dep="p2p")
+    assert _opt(p2p, "-v")[1].endswith("scripts/nixl_patch:/kvtb-patch:ro")
+    env = dict(e.split("=", 1) for e in _opt(p2p, "-e"))
+    assert env["PYTHONPATH"] == "/kvtb-patch" and env["KVTB_NIXL_SKIP_DESC_MERGE"] == "1"
+    assert env["KVTB_NIXL_UCX_PARAMS"] == "split_batch_size=16"
+    assert _kv_config(p2p)["kv_connector_extra_config"]["secondary_tiers"][0]["num_threads"] == 16
+    assert "PYTHONPATH" not in dict(e.split("=", 1) for e in _opt(_cmd(dep="fs"), "-e"))

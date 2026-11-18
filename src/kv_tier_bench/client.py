@@ -71,7 +71,7 @@ class Engine:
 def block_size(samples: list[prom.Sample]) -> int:
     """Granularity of offloaded hits: the GPU block size times the offload chunk size, in blocks.
 
-    `vllm:cache_config_info` labels every CacheConfig field (v0.33.0 CacheConfig.metrics_info). For hybrid models
+    `vllm:cache_config_info` labels every CacheConfig field (v0.34.0 CacheConfig.metrics_info). For hybrid models
     the block size is enlarged at startup, so `mamba_block_size` is checked too and the larger value wins.
     UNVERIFIED: that the label holds the resolved (enlarged) value, not the CLI value. Compare it with the
     startup log line "Setting attention block size to N tokens" on day 1, and use --block-size until then.

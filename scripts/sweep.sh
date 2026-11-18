@@ -38,6 +38,9 @@ aws() {  # the AWS CLI in a container, as this user, so files it writes into res
 start() {  # start <self|peer> <model> <deploy> <ip>: replace whatever container is there, then start this one
   local cmd
   cmd=$(uv run -q kvtb serve-cmd --stage "$STAGE" --model "$2" --deploy "$3" --host-ip "$4" --s3-env "$S3_ENV")
+  if [[ $1 == peer ]]; then  # the p2p NIXL patch is mounted from this repo's path, so the peer needs it there too
+    peer "mkdir -p '$PWD/scripts'" && scp -q -o BatchMode=yes -r scripts/nixl_patch "$PEER:$PWD/scripts/"
+  fi
   on "$1" "docker rm -f $CONTAINER >/dev/null 2>&1 || true; $cmd >/dev/null"
 }
 

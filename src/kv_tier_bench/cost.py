@@ -55,8 +55,9 @@ def summarize(rows: list[dict], stage: str) -> Summary:
         model, tier, n = r["model"], r["tier"], r["prefix_tokens"]
         if r.get("valid"):
             reads[(model, tier, n)].append(r["read_s"])
-            if r.get("read_time_s"):
-                loads[(model, tier, n)].append(r["read_bytes"] / r["read_time_s"] / GIB)
+            # p2p reports no read time: fall back to its promotion latency, which also counts tier queueing
+            if t := r.get("read_time_s") or r.get("promotion_s"):
+                loads[(model, tier, n)].append(r["read_bytes"] / t / GIB)
         # every row of a job attempt carries the same write; count it once
         if r.get("write_s") is not None and (r["job"], r["attempt"]) not in seen:
             seen.add((r["job"], r["attempt"]))

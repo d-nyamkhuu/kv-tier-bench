@@ -45,6 +45,7 @@ def test_summary_pairs_each_deployment_with_its_own_cold_writes():
         fs | {"tier": "fs", "valid": False, "read_s": 9.0},  # invalid reads are left out, its write is not
         fs | {"attempt": 1, "write_s": 3.0, "tier": "fs", "valid": True, "read_s": 0.5},
         obj | {"tier": "obj", "valid": True, "read_s": 0.7},
+        fs | {"tier": "p2p", "valid": True, "read_s": 0.2, "read_bytes": GIB, "read_time_s": 0.0, "promotion_s": 0.25},
         fs | {"stage": "other", "tier": "cpu", "valid": True, "read_s": 7.0},
     ]
     s = summarize(rows, "s1")
@@ -52,6 +53,7 @@ def test_summary_pairs_each_deployment_with_its_own_cold_writes():
     assert s.read_s[("m", "recompute", 960)] == 2.0  # the single read: a cross-check, not pooled
     assert s.recompute_s == {("m", "fs", 960): 2.0, ("m", "obj", 960): 5.0}  # writes 1.0 and 3.0; obj's own
     assert s.load_gib_s[("m", "cpu", 960)] == 2.0
+    assert s.load_gib_s[("m", "p2p", 960)] == 4.0  # no read time: from the promotion latency
     assert s.store_gib_s[("m", "fs", 960)] == 2.0 and s.store_gib_s[("m", "obj", 960)] == 1.0
 
 

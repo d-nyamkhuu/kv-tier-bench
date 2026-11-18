@@ -25,7 +25,7 @@ compared.
 
 ## Stack
 
-- vLLM **v0.33.0**: `OffloadingConnector` with `TieringOffloadingSpec`. The secondary tiers are `fs`, `obj` and
+- vLLM **v0.34.0**: `OffloadingConnector` with `TieringOffloadingSpec`. The secondary tiers are `fs`, `obj` and
   `p2p`.
 - Two Nebius VMs with one RTX PRO 6000 each (TP=1), connected over TCP. vLLM runs in Docker; no Kubernetes.
 - Nebius Object Storage, Enhanced Throughput class, for the object-storage tier.
