@@ -52,7 +52,8 @@ def secondary_tiers(deployment: str, stage: dict, model: str, bucket: str) -> li
     if deployment == "p2p":
         # host comes from VLLM_P2P_SIDE_CHANNEL_HOST (the VM private IP), set in launch.docker_run
         tier = {"type": "p2p", "port": C.P2P_PORT}
-        if threads := stage.get("p2p_nixl", {}).get("num_threads"):
+        # 0 is meaningful (no dedicated UCX workers, the agent's own progress thread only): vLLM's default is 4
+        if (threads := stage.get("p2p_nixl", {}).get("num_threads")) is not None:
             tier["num_threads"] = threads
         return [tier]
     raise ValueError(f"unknown deployment {deployment!r}")

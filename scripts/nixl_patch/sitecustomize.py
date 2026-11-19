@@ -15,6 +15,16 @@ KVTB_NIXL_CUDA_MAJOR=12 makes the `nixl` meta package load its CUDA 12 build (ni
 the process's CUDA (13). Why: in the v0.34.0 image, nixl_cu13's OBJ plugin links libcuobjclient.so.1, which the
 image lacks, so the obj tier fails at startup with NIXL_ERR_NOT_FOUND; nixl_cu12's OBJ plugin has no such
 dependency. The obj tier moves host memory only.
+
+KVTB_NIXL_PTHR_DELAY_US=N sets the agent's progress-thread poll timeout (nixlAgentConfig.pthrDelay). Why: the
+Python nixl_agent hardcodes pthrDelay = 0, and the UCX backend's shared progress thread passes ceil(0 us) = 0 ms to
+poll(), so it never sleeps: every agent burns a full core even when idle, and in the poster's way it holds the UCX
+worker lock almost continuously. With N >= 1 the thread blocks in poll() until the worker's event fd fires (N is
+only the fallback wakeup).
+
+KVTB_NIXL_STRIPES=K (K > 1) gives vLLM's p2p tier K NIXL agents instead of one, and splits every pull across them
+(kvtb_stripe.py). Why: over TCP, a NIXL UCX agent receives on one thread whatever the sender does, so a pull is
+capped at what one core can receive. Every peer must use the same K.
 """
 
 import importlib.abc
@@ -25,7 +35,14 @@ import sys
 _EXTRA = dict(kv.split("=", 1) for kv in os.environ.get("KVTB_NIXL_UCX_PARAMS", "").split(",") if "=" in kv)
 _SKIP_MERGE = os.environ.get("KVTB_NIXL_SKIP_DESC_MERGE") == "1"
 _CUDA_MAJOR = os.environ.get("KVTB_NIXL_CUDA_MAJOR")
-_MODULES = {"nixl_cu13._api", "nixl_cu12._api", "nixl._api"} | ({"nixl_meta_utils"} if _CUDA_MAJOR else set())
+_STRIPES = int(os.environ.get("KVTB_NIXL_STRIPES", "1"))
+_PTHR_DELAY_US = os.environ.get("KVTB_NIXL_PTHR_DELAY_US")
+_P2P_NIXL = "vllm.v1.kv_offload.tiering.p2p.data.nixl"
+_MODULES = (
+    {"nixl_cu13._api", "nixl_cu12._api", "nixl._api"}
+    | ({"nixl_meta_utils"} if _CUDA_MAJOR else set())
+    | ({_P2P_NIXL} if _STRIPES > 1 else set())
+)
 
 
 def _patch(module) -> None:
@@ -33,9 +50,20 @@ def _patch(module) -> None:
         module.detect_cuda_major = lambda: int(_CUDA_MAJOR)
         print(f"kvtb nixl_patch: NIXL CUDA build forced to {_CUDA_MAJOR}", file=sys.stderr, flush=True)
         return
+    if module.__name__ == _P2P_NIXL:
+        if module._NixlAgent is not None:  # None when NIXL is missing: leave vLLM's own handling alone
+            import kvtb_stripe
+
+            async_post = os.environ.get("KVTB_NIXL_ASYNC_POST", "1") == "1"
+            module._NixlAgent = kvtb_stripe.factory(module._NixlAgent, _STRIPES, async_post)
+            print(f"kvtb nixl_patch: p2p tier striped over {_STRIPES} NIXL agents", file=sys.stderr, flush=True)
+        return
     cls = getattr(module, "nixl_agent", None)
     if cls is None or getattr(cls, "_kvtb_patched", False):
         return
+    if _PTHR_DELAY_US is not None:
+        module.nixlBind = _BindWithDelay(module.nixlBind, int(_PTHR_DELAY_US))
+        print(f"kvtb nixl_patch: progress-thread poll timeout {_PTHR_DELAY_US} us", file=sys.stderr, flush=True)
     create_backend = cls.create_backend
 
     def patched(self, backend, initParams=None):
@@ -55,6 +83,20 @@ def _patch(module) -> None:
 
         cls.make_prepped_xfer = no_merge
         print("kvtb nixl_patch: make_prepped_xfer with skip_desc_merge=True", file=sys.stderr, flush=True)
+
+
+class _BindWithDelay:
+    """The nixl bindings module, except that nixlAgent(name, config) gets config.pthrDelay = delay_us first."""
+
+    def __init__(self, bind, delay_us: int):
+        self._bind, self._delay_us = bind, delay_us
+
+    def __getattr__(self, name):
+        return getattr(self._bind, name)
+
+    def nixlAgent(self, name, config):
+        config.pthrDelay = self._delay_us
+        return self._bind.nixlAgent(name, config)
 
 
 class _PatchOnImport(importlib.abc.MetaPathFinder):
@@ -78,5 +120,5 @@ class _PatchOnImport(importlib.abc.MetaPathFinder):
         return spec
 
 
-if _EXTRA or _SKIP_MERGE or _CUDA_MAJOR:
+if _EXTRA or _SKIP_MERGE or _CUDA_MAJOR or _STRIPES > 1 or _PTHR_DELAY_US is not None:
     sys.meta_path.insert(0, _PatchOnImport())

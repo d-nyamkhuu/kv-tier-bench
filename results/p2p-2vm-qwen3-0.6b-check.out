@@ -1,0 +1,22 @@
+self ready after 196s
+peer ready after 16s
+kvtb nixl_patch: UCX backend params {'engine_config': 'TLS=^rc_gda', 'split_batch_size': '2'}
+kvtb nixl_patch: make_prepped_xfer with skip_desc_merge=True
+kvtb nixl_patch: p2p tier striped over 32 NIXL agents
+kvtb nixl_patch: progress-thread poll timeout 1000 us
+{"case": "single32768", "tokens": 32768, "conc": 1, "gib": 3.5, "wall_s": 0.37, "agg_gib_s": 9.45, "promo_mean_s": 0.232, "promotions": 1.0, "p2p_tokens": 32768.0, "expected_tokens": 32768, "errors": []}
+{"case": "single32768", "tokens": 32768, "conc": 1, "gib": 3.5, "wall_s": 0.253, "agg_gib_s": 13.83, "promo_mean_s": 0.117, "promotions": 1.0, "p2p_tokens": 32768.0, "expected_tokens": 32768, "errors": []}
+{"case": "single126976", "tokens": 126976, "conc": 1, "gib": 13.56, "wall_s": 0.871, "agg_gib_s": 15.57, "promo_mean_s": 0.439, "promotions": 1.0, "p2p_tokens": 126976.0, "expected_tokens": 126976, "errors": []}
+{"case": "single126976", "tokens": 126976, "conc": 1, "gib": 13.56, "wall_s": 0.883, "agg_gib_s": 15.36, "promo_mean_s": 0.433, "promotions": 1.0, "p2p_tokens": 126976.0, "expected_tokens": 126976, "errors": []}
+{"case": "conc1", "tokens": 32768, "conc": 1, "gib": 3.5, "wall_s": 0.256, "agg_gib_s": 13.69, "promo_mean_s": 0.125, "promotions": 1.0, "p2p_tokens": 32768.0, "expected_tokens": 32768, "errors": []}
+{"case": "conc1", "tokens": 32768, "conc": 1, "gib": 3.5, "wall_s": 0.25, "agg_gib_s": 14.0, "promo_mean_s": 0.118, "promotions": 1.0, "p2p_tokens": 32768.0, "expected_tokens": 32768, "errors": []}
+{"case": "conc2", "tokens": 32768, "conc": 2, "gib": 7.0, "wall_s": 0.37, "agg_gib_s": 18.92, "promo_mean_s": 0.188, "promotions": 2.0, "p2p_tokens": 65536.0, "expected_tokens": 65536, "errors": []}
+{"case": "conc2", "tokens": 32768, "conc": 2, "gib": 7.0, "wall_s": 0.368, "agg_gib_s": 19.02, "promo_mean_s": 0.188, "promotions": 2.0, "p2p_tokens": 65536.0, "expected_tokens": 65536, "errors": []}
+{"case": "conc4", "tokens": 32768, "conc": 4, "gib": 14.0, "wall_s": 0.587, "agg_gib_s": 23.86, "promo_mean_s": 0.272, "promotions": 4.0, "p2p_tokens": 131072.0, "expected_tokens": 131072, "errors": []}
+{"case": "conc4", "tokens": 32768, "conc": 4, "gib": 14.0, "wall_s": 0.609, "agg_gib_s": 22.99, "promo_mean_s": 0.298, "promotions": 4.0, "p2p_tokens": 131072.0, "expected_tokens": 131072, "errors": []}
+{"case": "conc8", "tokens": 32768, "conc": 8, "gib": 28.0, "wall_s": 1.07, "agg_gib_s": 26.17, "promo_mean_s": 0.442, "promotions": 8.0, "p2p_tokens": 262144.0, "expected_tokens": 262144, "errors": []}
+{"case": "conc8", "tokens": 32768, "conc": 8, "gib": 28.0, "wall_s": 1.065, "agg_gib_s": 26.3, "promo_mean_s": 0.515, "promotions": 8.0, "p2p_tokens": 262144.0, "expected_tokens": 262144, "errors": []}
+{"greedy": 0, "match": true, "ref": " The history of the printing press begin"}
+{"greedy": 1, "match": true, "ref": " Explain how a heat pump works, step by "}
+{"greedy": 2, "match": true, "ref": " List the planets of the solar system an"}
+CONC-DONE

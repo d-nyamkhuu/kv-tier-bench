@@ -123,9 +123,21 @@ def test_p2p_gets_the_nixl_patch_and_other_deployments_do_not():
     assert _opt(p2p, "-v")[1].endswith("scripts/nixl_patch:/kvtb-patch:ro")
     env = dict(e.split("=", 1) for e in _opt(p2p, "-e"))
     assert env["PYTHONPATH"] == "/kvtb-patch" and env["KVTB_NIXL_SKIP_DESC_MERGE"] == "1"
-    assert env["KVTB_NIXL_UCX_PARAMS"] == "split_batch_size=16"
-    assert _kv_config(p2p)["kv_connector_extra_config"]["secondary_tiers"][0]["num_threads"] == 16
+    assert env["KVTB_NIXL_UCX_PARAMS"] == "split_batch_size=2" and env["KVTB_NIXL_STRIPES"] == "32"
+    assert env["KVTB_NIXL_PTHR_DELAY_US"] == "1000"
+    assert _kv_config(p2p)["kv_connector_extra_config"]["secondary_tiers"][0]["num_threads"] == 0
     assert "PYTHONPATH" not in dict(e.split("=", 1) for e in _opt(_cmd(dep="fs"), "-e"))
+
+
+def test_p2p_passes_zero_nixl_threads_explicitly():
+    import copy
+
+    from kv_tier_bench.grid import load_experiment
+    from kv_tier_bench.tierconfig import secondary_tiers
+
+    st = copy.deepcopy(load_experiment("configs/experiment.yaml")["stages"]["s1"])
+    st["p2p_nixl"]["num_threads"] = 0  # else vLLM's default of 4 dedicated workers per agent applies
+    assert secondary_tiers("p2p", st, "qwen3.8-27b", "b")[0]["num_threads"] == 0
 
 
 def test_obj_loads_the_cuda12_nixl_build_through_the_patch():

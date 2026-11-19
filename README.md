@@ -5,7 +5,8 @@ is compared with simply **recomputing** the prefix. The tiers are GPU, CPU, disk
 instance's CPU memory. The benchmark runs a hybrid-attention model (Qwen3.8-27B, Gated DeltaNet 3:1) and a
 standard-attention model (Qwen3-VL-32B-Instruct) side by side, on two cloud GPU VMs.
 
-> **Status: stage s1 measured (2026-11-18), 390 of 390 points valid.** Raw results are in
+> **Status: stage s1 measured (2026-11-18), 390 of 390 points valid; p2p re-measured 2026-11-19 with a NIXL
+> tuning hook (75 of 75 valid), which made long-prefix p2p loads 5-6x faster.** Raw results are in
 > [results/s1.jsonl](results/s1.jsonl); `kvtb cost` and `kvtb charts` summarize them. The plan, decisions, day-1
 > findings and the NIXL workarounds behind the p2p and obj numbers are in [docs/plan.md](docs/plan.md).
 
@@ -73,4 +74,6 @@ deployment and resumes after preemption. The steps are in the runbook in [docs/p
 - Every point is a single request: there are no runs under concurrent load.
 - One hardware point only: RTX PRO 6000 at TP=1. No H100 or tensor-parallel numbers.
 - The p2p tier runs over TCP between two VMs. It is not RDMA, and there is no InfiniBand anywhere in
-  this benchmark.
+  this benchmark. The p2p numbers are "vLLM v0.34.0 + a NIXL tuning hook" (`scripts/nixl_patch`: 32 NIXL agents per
+  process, progress threads that sleep, posts off the scheduler thread). The earlier config (16 UCX streams, no hook) loaded
+  long prefixes 5-6x slower; its rows are kept in [results/s1-p2p-16stream.jsonl](results/s1-p2p-16stream.jsonl).

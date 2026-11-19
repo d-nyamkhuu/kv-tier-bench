@@ -80,6 +80,10 @@ def docker_run(
         patch_env["KVTB_NIXL_UCX_PARAMS"] = f"split_batch_size={nixl['split_batch_size']}"
         if nixl.get("skip_desc_merge"):
             patch_env["KVTB_NIXL_SKIP_DESC_MERGE"] = "1"
+        if nixl.get("stripes", 1) > 1:
+            patch_env["KVTB_NIXL_STRIPES"] = str(nixl["stripes"])
+        if (delay := nixl.get("pthr_delay_us")) is not None:
+            patch_env["KVTB_NIXL_PTHR_DELAY_US"] = str(delay)
     if deployment == "obj":
         if not s3_env:
             raise ValueError("the obj deployment needs --s3-env (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)")

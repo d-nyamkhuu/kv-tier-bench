@@ -210,16 +210,56 @@ These are unverified until checked on the VMs. Each one is in
       it first merges a prefix's contiguous blocks into ~1 descriptor. The patch sets 16 workers, split_batch_size
       16 and skip_desc_merge, so a pull uses 16 connections (verified with `ss`: ~equal bytes on each). Result:
       2.3 GiB/s at 16K, 2.7 at 64K, 2.8 at 128K (24 Gbit/s), against 1.5 stock at 16K. The cap is one receive
-      thread at 100% on the consumer (UCX/TCP emulates the remote write in software), not the link. Published
-      p2p numbers are "vLLM v0.34.0 + this NIXL tuning".
+      thread at 100% on the consumer (UCX/TCP emulates the remote write in software), not the link. The s1 p2p
+      rows in results/s1.jsonl were measured with this 16-stream config.
+      **p2p tuning, 2026-11-19 (s1 p2p rows re-run with it; old rows in results/s1-p2p-16stream.jsonl).** Three NIXL limits, all fixed in `scripts/nixl_patch` without
+      rebuilding NIXL or vLLM. Measured with `scripts/p2p_bench.py` (two NIXL processes in the vLLM image, the p2p
+      tier's WRITE pattern, every block's destination verified):
+      1. *One receive thread per agent.* NIXL 1.5.2's UCX backend advertises only worker 0's address
+         (`getConnInfo`), and every sender worker connects to it, so all receive work lands on the receiver's one
+         shared progress thread. Same on NIXL main. Fix: `kvtb_stripe.py` gives vLLM 32 NIXL agents per process and
+         splits each pull into 32 stripes, agent i to peer agent i (`KVTB_NIXL_STRIPES`). 64 agents fail to connect
+         across VMs (UCX "Destination is unreachable" in loadRemoteMD); 48 were no faster than 32.
+      2. *Progress threads never sleep.* The Python `nixl_agent` hardcodes `pthrDelay = 0`, so the shared progress
+         thread calls `poll()` with a 0 ms timeout: 100% of a core per agent even when idle (800% for 8 agents),
+         holding the UCX worker lock. Fix: `KVTB_NIXL_PTHR_DELAY_US=1000`. Idle CPU fell to ~11%.
+      3. *Posting is serial and blocking.* `postXferReq` sends inline and returns late (0.24-0.95 s of a 0.4-1.3 s
+         pull), so stripes posted in turn ran in turn, and vLLM's scheduler thread waited inside `write_blocks`.
+         Fix: one post thread per agent (the binding releases the GIL), agents in NIXL_THREAD_SYNC_RW;
+         `transfer()` returns in ~0.2 ms.
+      Ruled out (no effect): UCX fragment size (`UCX_TCP_RX_SEG_SIZE` 64K-8M), AppArmor/seccomp unconfined, socket
+      buffers (autotuned to 4-6 MiB), the TCP put ACK (puts are pipelined).
+      One VM, two containers on a Docker bridge (8 GiB pull): 6.2 GiB/s with the 16-stream config -> 14.8 striped ->
+      **31.0** with all three fixes (across VMs the 16-stream config gives 3.0). Ceilings there: plain sockets with DRAM-sized buffers 32-34 GiB/s (12-16 connections;
+      `iperf3` reads 76 because its buffer stays in L3), memcpy ~90 GiB/s. Across the two VMs (VPC, `iperf3` 34-41 GiB/s at 32
+      streams): striping alone gave 18.4 GiB/s (8 agents x 2 workers); all three fixes with 32 agents and no dedicated
+      UCX workers (`num_threads: 0`), 48 GiB registered as in vLLM: 24-34 GiB/s for an 8 GiB pull, 24-27 for 1 GiB.
+      Run-to-run network noise is 15% or more (one 13.2 GiB/s run, 33.7 on the interleaved retry).
+      In vLLM (Qwen3-0.6B pair on one VM, 32K prefix = 3.5 GiB): 5.4 -> 26.7-28.3 GiB/s, p2p TTFT 0.78 -> 0.25-0.27 s,
+      greedy output equal to recompute on 3 of 3 prompts, all tokens from `p2p`
+      (results/p2p-1vm-qwen3-0.6b-check.out). Where a 32K pull's 0.236 s engine TTFT goes: queue 0.223 s, of which
+      the deferred lookup 0.145 (almost all promotion, i.e. the transfer: 0.131); `lookup_sync_delay` (0.052 summed)
+      is time inside the scheduler's repeated lookup calls during that wait, not an extra stage. The remaining ~0.078 s
+      of queue is inferred (by subtraction) to be the CPU->GPU load, ~45 GiB/s; prefill 0.007. Overlapping the load
+      with the transfer would need a vLLM change: the CPU tier only loads a chunk once its promotion is complete.
+      Across the two VMs in vLLM (Qwen3-0.6B, 131K context via a YaRN override, 114688 B/token;
+      results/p2p-2vm-qwen3-0.6b-check.out), end to end from first request to last response, so including the
+      CPU->GPU load and prefill: one 32K pull (3.5 GiB) 9.4-14.0 GiB/s, transfer alone (promotion) 0.12-0.23 s, i.e.
+      15-29 GiB/s; one 124K pull (13.6 GiB) 15.4-15.6 GiB/s, promotion 0.43-0.44 s = 31 GiB/s; parallel 32K pulls
+      2 -> 19.0, 4 -> 23.0-23.9, 8 (28 GiB) -> 26.2-26.3 GiB/s. So a single long pull already runs the link at the
+      harness peak, and concurrent pulls hide the load and prefill. Every token came from `p2p`; greedy equal on 3 of
+      3. Published p2p numbers are "vLLM v0.34.0 + this NIXL tuning".
       **obj runs on the image's CUDA 12 NIXL build** (`obj_nixl_cuda_major` in configs/experiment.yaml, same hook).
       In vllm/vllm-openai:v0.34.0, nixl_cu13's OBJ plugin links libcuobjclient.so.1, which the image lacks, so the
       obj tier failed at startup (NIXL_ERR_NOT_FOUND, "unsupported backend 'OBJ'"). nixl_cu12 1.5.2's OBJ plugin
       loads, but its AWS SDK reads CA certs from /etc/pki/tls/certs/ca-bundle.crt (curl 77 otherwise), so launch.py
       mounts the host's bundle there. First obj rows: valid, `disk` source, bytes on `1:obj`.
-      The qwen3.8-27b p2p rows (40) predate `engine_queue_s`/`engine_prefill_s`; every other row has them. Use
-      `promotion_s` as their load time (on qwen3-vl-32b p2p at 64K, queue 6.01 s vs promotion 5.66 s: the queue
-      also holds the p2p lookup round trips).
+      **s1 p2p re-run, 2026-11-19, with this tuning:** 75 of 75 valid, all rows with `engine_queue_s` /
+      `engine_prefill_s`. Median read at the longest prefix, old (16-stream config) -> new: qwen3.8-27b 128K 3.45 ->
+      0.69 s (promotion 3.09 -> 0.35 s, 22.8 GiB/s), qwen3-vl-32b 64K 6.10 -> 1.00 s (promotion 0.58 s, 27.7 GiB/s).
+      p2p now reads about 2x faster than obj (1.27 and 2.32 s) and about 2x slower than cpu (0.31 and 0.40 s) at every
+      length. The 16-stream rows are kept in results/s1-p2p-16stream.jsonl. The sweep has no greedy check (the
+      validity runner is not built); greedy equality was checked on the Qwen3-0.6B pairs above.
 - [x] (2026-11-18: fs hits report as `disk`, 896 of 896 tokens in the first fs row.) Whether a hit from fs or obj reports as `disk` or as `host`, since loads stage through the CPU tier. Check
       `cached_by_source` in the first fs row; the breaker stops the run after 5 jobs with misattributed fs rows.
 - [x] (2026-11-18: passes. ext4 on /mnt/kv, no fallback warning in the vLLM log; v0.34.0 fs/manager.py logs
