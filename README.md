@@ -52,6 +52,38 @@ uv run kvtb run --stage s1 --model qwen3.8-27b --deploy fs --dry-run   # points 
 uv run pytest
 ```
 
+## Simulator (web/)
+
+s1 measures the cost of one hit from each tier, not how often a tier hits. [web/](web/) is a static page, the
+"KV cache calculator". You pick a GPU, nodes × GPUs per node × TP, cache tiers (CPU memory, local disk, peer nodes,
+shared storage) and a load (requests per minute, follow-up share, tokens in and out). It replays the workload
+through simulated LRU tiers on that cluster, with FIFO prefill queues and disaggregated batched decode. The result
+is the mean TTFT, the $ per 1,000 requests from provisioned GPUs plus storage, and the $ per 1M input, cached input
+and output tokens. Each tier row shows how many tokens (and, for models with a fixed state, how many prompts) it holds.
+Besides s1's two models, the page has ten current open-weight models (Qwen3.8-2.4T-A95B, Kimi K3, DeepSeek V4.1
+Flash, GLM-5.3 and GLM-5.3-Flash, Qwen3.8-Flash-Next, MiniMax-M3, Mistral Large 4, gpt-oss-120b, Gemma 4 31B). Their KV per token, fixed
+state and FLOPs are derived from each config.json by one function covering MoE, MLA, sliding-window, sparse and linear
+attention. A model too big for one node (Qwen3.8-2.4T, or Kimi K3 on anything smaller than 8 B300s) runs across nodes:
+tensor parallel inside each node, pipeline stages across them. The page also sets each model's modeled $ per 1M tokens beside every provider's price on
+[OpenRouter](https://openrouter.ai) (a dated snapshot in `web/data/openrouter.json`), from a reference deployment of 8
+instances loaded until the prefill GPUs are busy 60% of the time. A trade-off map plots every tier
+combination with its Pareto frontier, and a diagram shows the cluster. The workload can be synthetic conversations,
+a [Mooncake](https://github.com/kvcache-ai/Mooncake) trace, or an uploaded trace. Every input is a published figure
+with its source: NVIDIA datasheets, InferenceX vLLM runs, drive and cloud-storage documents (AWS S3, Nebius), and
+KV-transfer papers. The rest are marked as assumptions. vLLM's own overheads are published nowhere, so they are fitted
+on s1. s1 is otherwise the reference: the page compares the model with s1 and with published vLLM benchmarks. Every
+number is editable in the page, and the config imports and exports as JSON.
+
+```bash
+uv run kvtb export-web --stage s1 --results results/s1.jsonl --out web/data/s1.json   # after new results
+uv run kvtb openrouter-prices                                                        # refresh provider prices
+python -m http.server -d web                                                         # then open localhost:8000
+node --test "web/test/*.test.js"                                                     # simulator tests
+```
+
+[.github/workflows/pages.yml](.github/workflows/pages.yml) publishes `web/` to GitHub Pages on every push to
+`main`. The workflow fails until Pages is enabled with "GitHub Actions" as the source.
+
 On the VMs, `scripts/sweep.sh` runs a whole stage from VM A. For each deployment it starts vLLM in Docker (on both
 VMs for p2p), runs `kvtb run` next to it, and stops it. It copies the results to the bucket after every
 deployment and resumes after preemption. The steps are in the runbook in [docs/plan.md](docs/plan.md#runbook).

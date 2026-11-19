@@ -175,6 +175,40 @@ def cmd_charts(args) -> int:
     return 0
 
 
+def cmd_export_web(args) -> int:
+    """Measured medians, sizes and prices for the web simulator, as one JSON file."""
+    import yaml
+
+    from .webdata import export
+
+    rows = ResultStore(args.results).rows()
+    prices = yaml.safe_load(Path(args.prices).read_text())
+    try:
+        source = str(Path(args.results).resolve().relative_to(ROOT))
+    except ValueError:
+        source = Path(args.results).name
+    data = export(rows, _exp(args), prices, args.stage, ROOT, source)
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(data, indent=1) + "\n")
+    n = sum(len(v) for m in data["models"].values() for v in m["tiers"].values())
+    print(f"{out}: {len(data['models'])} models, {n} (model, tier, length) medians", file=sys.stderr)
+    return 0
+
+
+def cmd_openrouter_prices(args) -> int:
+    """Every provider's price for the simulator's models, from OpenRouter, as a dated JSON snapshot."""
+    from .openrouter import export
+
+    data = export()
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(data, indent=1) + "\n")
+    n = sum(len(m["providers"]) for m in data["models"].values())
+    print(f"{out}: {len(data['models'])} models, {n} provider endpoints ({data['fetched']})", file=sys.stderr)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="kvtb", description=__doc__)
     ap.add_argument("--experiment", default=str(ROOT / "configs" / "experiment.yaml"))
@@ -219,6 +253,17 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--results", required=True)
     c.add_argument("--out", default=str(ROOT / "results" / "charts"))
     c.set_defaults(fn=cmd_charts)
+
+    w = sub.add_parser("export-web", help="medians, sizes and prices for the web simulator, as JSON")
+    w.add_argument("--stage", required=True)
+    w.add_argument("--results", required=True)
+    w.add_argument("--prices", default=str(ROOT / "configs" / "prices.yaml"))
+    w.add_argument("--out", default=str(ROOT / "web" / "data" / "s1.json"))
+    w.set_defaults(fn=cmd_export_web)
+
+    o = sub.add_parser("openrouter-prices", help="provider prices for the web simulator's models, from OpenRouter")
+    o.add_argument("--out", default=str(ROOT / "web" / "data" / "openrouter.json"))
+    o.set_defaults(fn=cmd_openrouter_prices)
 
     args = ap.parse_args(argv)
     return args.fn(args)
