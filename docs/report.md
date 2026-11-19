@@ -35,9 +35,10 @@ The raw results are [results/s1.jsonl](../results/s1.jsonl), [results/s2.jsonl](
   nothing (a median 1.03× the time).
 - **Mooncake's defaults cost about 4×.** Its TCP transport ships with one I/O thread, 4 lanes per peer and 64 KiB
   slices. Tuned, the same reads ran 3.2–4.8× faster. A CPU VM 4× bigger gave more pool room, not more speed.
-- **Memory held only for cache needs many reads.** Priced at a CPU-only VM's rate for one hour per read, RAM costs
-  more than recomputing at every point. A 128K-token prefix pays for its hour after 15–17 reads on Qwen3-8B and about
-  8 on Qwen3.5-9B. A 4K one needs 96 or more on Qwen3-8B.
+- **At production reuse a remote memory tier pays, but a CPU-only VM over TCP is not the best one.** From about
+  100 reads of a prefix an hour, every remote tier saves 68–91% at 128K tokens. The GPU VM's own CPU memory saves
+  more. On Qwen3-8B, Object Storage saves at least as much as the store, at 1/55 of its price per GiB. A $2.11/h store VM
+  pays for itself at 240 hits an hour on 128K Qwen3-8B prefixes, but would need 134,000 an hour on 4K ones.
 
 ## Setup
 
@@ -149,7 +150,7 @@ One 128K-token prefix, tier by tier:
 | Recompute | | 22 s | | 9.1 s | |
 
 s2 counts the memory of the CPU and p2p tiers as free, part of a VM that is running anyway. Stage 3 also prices it
-as memory held only for cache; see [What memory costs](#what-memory-costs).
+as memory held only for cache; see [Cost at production reuse](#cost-at-production-reuse).
 
 ### The shared filesystem against the disk
 
@@ -259,16 +260,53 @@ Writing to the store also slows the prefill that writes it. At the same lengths,
 p2p's on Qwen3-8B and 1.14–1.22× on Qwen3.5-9B from 16K up. The cost model counts reads only, so this is not in the
 savings below.
 
-### What memory costs
+### Cost at production reuse
 
-s1 and s2 count p2p's memory as free. That fits a peer VM that runs anyway, for its own traffic. A node that holds
-KV and nothing else pays for its memory, and s3 prices that case: RAM at a CPU-only VM's rate, $6.02 per GiB-month
-($0.0083 per GiB-hour), held for one hour per read. On Nebius the GPU VM's RAM costs the same per GiB-hour. The
-price applies to p2p, store and store-p2p alike.
+A remote hit costs two things: the GPU's time during the load ($1.80/h, or $0.0005 per second), and the memory that
+holds the prefix until it is read. The memory's share of each read depends on how many reads share its residency.
+s1 and s2 counted memory as free. An earlier version of this section charged a full hour of RAM to every read,
+which fits a prefix read once an hour, not a production cache. This section varies the reuse instead.
 
-With the memory priced, every point costs more than recomputing, from −630% to −5,200%. That figure is almost
-entirely one hour of RAM against a few seconds of GPU, and barely depends on how fast the tier is. A better
-question is how often a prefix must be read in its hour to pay for it:
+Prices: RAM at a CPU-only VM's rate, $6.02 per GiB-month ($0.0083 per GiB-hour), for p2p and the store alike;
+Enhanced Object Storage at $0.11 per GiB-month; the GPU VM's own CPU memory free, since it comes with the GPU VM.
+Object Storage times are s2's, from us-central1.
+
+**By reuse.** The saving against recompute for one request, when one hour of residency is shared by that many reads:
+
+| Qwen3-8B | 1 read/h | 10 | 100 | 1,000 | Memory free |
+|---|---|---|---|---|---|
+| 4K, local CPU memory | 79% | 79% | 79% | 79% | 79% |
+| 4K, p2p | −4,849% | −439% | 2% | 46% | 51% |
+| 4K, store | −4,883% | −473% | −32% | 12% | 17% |
+| 4K, Object Storage | −67% | 14% | 22% | 23% | 23% |
+| 128K, local CPU memory | 98% | 98% | 98% | 98% | 98% |
+| 128K, p2p | −1,285% | −46% | 78% | 91% | 92% |
+| 128K, store | −1,295% | −56% | 68% | 80% | 81% |
+| 128K, Object Storage | 58% | 81% | 83% | 84% | 84% |
+
+| Qwen3.5-9B | 1 read/h | 10 | 100 | 1,000 | Memory free |
+|---|---|---|---|---|---|
+| 4K, local CPU memory | 82% | 82% | 82% | 82% | 82% |
+| 4K, p2p | −1,065% | −40% | 62% | 72% | 74% |
+| 4K, store | −1,075% | −51% | 52% | 62% | 63% |
+| 4K, Object Storage | 40% | 59% | 61% | 61% | 61% |
+| 128K, local CPU memory | 98% | 98% | 98% | 98% | 98% |
+| 128K, p2p | −625% | 24% | 89% | 96% | 97% |
+| 128K, store | −631% | 19% | 84% | 91% | 91% |
+| 128K, Object Storage | 74% | 85% | 87% | 87% | 87% |
+
+- **From about 100 reads an hour, the price of the memory stops mattering for long prefixes.** At 1,000 reads the
+  store is within a point of its free-memory saving.
+- **Short prefixes save little from any remote tier.** On Qwen3-8B the store loads a 4K prefix in 0.158 s against
+  0.189 s to recompute it, so even free memory saves only 17%.
+- **The local CPU tier beats every remote tier at every point.** A remote tier earns only on the hits that miss
+  the GPU VM's own memory.
+- **On Qwen3-8B, Object Storage saves at least as much as the store at every reuse.** On Qwen3.5-9B the store
+  pulls ahead only near 1,000 reads an hour (91% against 87% at 128K).
+- **p2p overtakes Object Storage only at high reuse.** On Qwen3-8B that happens between 100 and 1,000 reads an
+  hour; below that, Object Storage is the best remote tier, because holding a prefix there costs almost nothing.
+
+The reads in an hour needed to break even against recompute, where the measured saving crosses zero:
 
 | Prefix (1 request) | Qwen3-8B p2p | Qwen3-8B store | Qwen3-8B store-p2p | Qwen3.5-9B p2p | Qwen3.5-9B store |
 |---|---|---|---|---|---|
@@ -278,19 +316,63 @@ question is how often a prefix must be read in its hour to pay for it:
 | 64K | 26 | 31 | 32 | 9.7 | 10 |
 | 128K | 15 | 17 | 17 | 7.5 | 7.9 |
 
-*Reads per prefix per hour at which the RAM's cost equals the GPU time saved against recompute.*
+**By cache lifetime.** Commercial prompt caches keep an entry for minutes and refresh it on each hit; Anthropic's
+default is 5 minutes. For a 128K prefix read once in a 5-minute residency:
+- the store loses 33% against recompute on Qwen3-8B, and saves 31% on Qwen3.5-9B;
+- p2p loses 23% and saves 36%.
 
-Long prefixes and few bytes per token pay back soonest. The faster tier needs fewer reads, most of all at 4K, where
-the store saves little time per read.
+With few bytes per token, a short lifetime pays even on a single read.
 
-With the memory free, the remote tiers save as much as s2's did. One 128K-token request: p2p saves 92% on Qwen3-8B
-and 97% on Qwen3.5-9B; the store saves 81% and 91%.
+**One store for a fleet.** The CPU-only VM bills $2.11/h whatever it holds. It pays for itself when the hits that
+only it serves save that much GPU time. Measured against recompute:
 
-Two notes on the price:
-- **It assumes a full pool.** Storage is billed on bytes used. The CPU-only VM as run cost $2.11/h on demand, more
-  than the GPU VM's $1.80, whatever it held; its 200 GiB pool alone comes to $1.65/h at the RAM rate.
-- **Object Storage is far cheaper per byte.** In s2, Enhanced Object Storage loaded one 128K Qwen3-8B prefix in
-  3.5 s, against the store's 4.0 s here, at $0.11 per GiB-month against $6.02. The two ran in different regions.
+| Prefix | Qwen3-8B: hits per hour | Bandwidth that takes | Qwen3.5-9B: hits per hour | Bandwidth that takes |
+|---|---|---|---|---|
+| 4K | 134,000 | 21 GiB/s | 39,000 | 1.3 GiB/s |
+| 32K | 3,100 | 3.9 GiB/s | 3,000 | 0.8 GiB/s |
+| 128K | 240 | 1.2 GiB/s | 510 | 0.6 GiB/s |
+
+The store moved at most 5.0 GiB/s (Qwen3-8B) and 6.0 GiB/s (Qwen3.5-9B) to one reader; several readers at once
+were not measured. Long prefixes pay for the VM easily. Short Qwen3-8B prefixes cannot pay for it over TCP.
+
+Measured against Object Storage instead of recompute, the store never pays on Qwen3-8B, because it is both slower
+and 55× more expensive per GiB. On Qwen3.5-9B it saves 0.44 s per 128K hit. Paying for the VM that way takes
+9,700 such hits an hour, about 11 GiB/s, which is more than the store delivered. On cost alone, Object Storage is
+the store's real competitor, and over TCP the store cannot pay for itself against it on either model.
+
+**Latency.** Time to first token for one request:
+
+| Prefix | GPU | Local CPU | p2p | Store | Object Storage | Recompute |
+|---|---|---|---|---|---|---|
+| Qwen3-8B, 4K | 0.027 s | 0.039 s | 0.093 s | 0.158 s | 0.146 s | 0.19 s |
+| Qwen3-8B, 32K | 0.051 s | 0.14 s | 0.45 s | 1.00 s | 0.93 s | 2.4 s |
+| Qwen3-8B, 128K | 0.14 s | 0.50 s | 1.7 s | 4.0 s | 3.5 s | 22 s |
+| Qwen3.5-9B, 4K | 0.024 s | 0.031 s | 0.045 s | 0.062 s | 0.066 s | 0.17 s |
+| Qwen3.5-9B, 32K | 0.048 s | 0.068 s | 0.12 s | 0.22 s | 0.31 s | 1.6 s |
+| Qwen3.5-9B, 128K | 0.12 s | 0.21 s | 0.31 s | 0.78 s | 1.2 s | 9.1 s |
+
+In production a tier is often chosen to meet a TTFT target, which the dollar figures above do not price. Memory
+should beat Object Storage on latency, and on Qwen3.5-9B it does (1.06–1.56× faster). On Qwen3-8B, over TCP, the
+store was 7–13% slower than Object Storage, so it buys no latency there. With a 1 s target for a 32K Qwen3-8B
+prefix, local memory, p2p and Object Storage pass, and the store misses by 4 ms.
+
+**What the costs show.**
+- **At production reuse a remote memory tier pays for long prefixes.** The question is which memory. At 1,000
+  reads an hour the measured order is local CPU memory, then p2p, then Object Storage and the store (Object Storage
+  ahead on Qwen3-8B, the store on Qwen3.5-9B). At 100 or fewer, Object Storage is the best remote tier on Qwen3-8B.
+- **A CPU-only VM's case is capacity and latency beyond the GPU VMs' own memory, not price.** store-p2p ran as fast
+  with the pool in a GPU VM's spare RAM, which is already paid for. A dedicated VM is worth it only when all of
+  these hold, and none was measured here:
+  - the hot set outgrows the spare RAM of all the GPU VMs;
+  - the cache must outlive GPU VMs that are preempted or scaled away;
+  - a link fast enough (RDMA) for memory to clearly beat Object Storage.
+
+**Not in the model:**
+- **The write cost.** Writing to the store makes the prefill 1.11–1.22× slower.
+- **Bandwidth under load.** The store with many readers at once was not measured.
+- **A real hit-rate curve.** No production trace says how many hits each tier serves at a given capacity.
+- **Larger models.** Recompute here is cheap: an 8–9B model on one GPU. A larger model, or one on 8 GPUs, saves far
+  more GPU time per byte stored, which lowers every threshold above.
 
 ### Checks on s3
 
@@ -361,8 +443,9 @@ What the comparison shows:
   counters, at least 90% of the batch's KV bytes loaded and no failed keys.
 - **What is measured and what is modelled.** Times and rates are measured. Savings are modelled:
   - the GPU at $1.80/h on demand (the runs paid spot: $1.38 in eu-south1, $1.19 in us-central1);
-  - each prefix stored for one hour per read;
-  - in s3, the RAM behind p2p and the store at $6.02 per GiB-month, with the free-RAM case alongside;
+  - in s1 and s2, each prefix stored for one hour per read;
+  - in s3, the RAM behind p2p and the store at $6.02 per GiB-month, over a range of reads per hour and a 5-minute
+    cache lifetime, with the free-RAM case alongside;
   - storage billed on bytes used;
   - Standard Object Storage request fees ($0.0034 per 1,000 writes) left out.
 

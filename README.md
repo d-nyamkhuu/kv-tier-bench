@@ -73,8 +73,11 @@ second GPU VM. Batch time and end-to-end rate:
   5–6 GiB/s. With Mooncake's pool on the peer GPU VM instead (store-p2p, Qwen3-8B), times matched the CPU-only VM's.
 - **Mooncake's TCP defaults** (1 I/O thread, 4 lanes, 64 KiB slices) were 3.2–4.8× slower than the tuned settings
   in `configs/experiment.yaml`. A bigger CPU VM added pool room, not speed.
-- **RAM held only for cache is expensive.** Priced at a CPU-only VM's $6.02 per GiB-month for one hour per read, a
-  128K prefix needs 15–17 reads an hour on Qwen3-8B and about 8 on Qwen3.5-9B to beat recompute.
+- **At production reuse a remote memory tier pays, but not as a CPU-only VM over TCP.** From about 100 reads of a
+  prefix an hour, every remote tier saves 68–91% at 128K tokens. The GPU VM's own CPU memory saves more, and on
+  Qwen3-8B Object Storage saves at least as much as the store at 1/55 of its price per GiB. A dedicated store VM
+  needs RDMA, a hot set bigger than the GPU VMs' spare RAM, or a cache that outlives them
+  ([report](docs/report.md#cost-at-production-reuse)).
 
 Savings are modelled, not measured: the GPU at $1.80/h on demand (the runs paid spot), each prefix stored for one
 hour per read, Standard-class request fees left out. The aggregated tables behind these numbers are in

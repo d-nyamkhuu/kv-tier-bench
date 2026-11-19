@@ -523,9 +523,11 @@ Recompute, GPU and CPU were not re-run; `baseline_from: s2` reuses s2's rows.
 - **Tuning, not the VM, set the store's speed.** Mooncake's defaults were 3.2–4.8× slower than the final settings.
   The 16 vCPU CPU VM matched the 64 vCPU one at every shared point (0.96–1.05×), but its 48 GiB pool evicted parts of
   large batches before they were read; the run used 64 vCPU, 256 GiB, a 200 GiB pool and a 60 s lease.
-- **RAM priced as a CPU-only VM's** makes every remote point lose against recompute (−630% to −5,200% at one hour
-  per read). Break-even is 15–17 reads per prefix-hour at 128K on Qwen3-8B, about 8 on Qwen3.5-9B. With the RAM
-  free, the s1/s2 assumption, one 128K request saves 81–97%.
+- **Cost at production reuse** (report: "Cost at production reuse"). With RAM priced as a CPU-only VM's and one
+  hour of residency shared by 100–1,000 reads, the remote tiers save 68–91% at 128K on Qwen3-8B; a prefix read once
+  an hour loses (−630% to −5,200%). Break-even is 15–17 reads per prefix-hour at 128K on Qwen3-8B, about 8 on
+  Qwen3.5-9B. The local CPU tier beats every remote tier, and on Qwen3-8B Object Storage saves at least as much as
+  the store. A $2.11/h store VM pays for itself at 240 hits an hour on 128K Qwen3-8B prefixes, 134,000 on 4K ones.
 - **Recompute baselines from us-central1 hold.** s3's p2p write phase (a prefill on A) took 1–7% longer than s2's
   recompute at the same lengths.
 
