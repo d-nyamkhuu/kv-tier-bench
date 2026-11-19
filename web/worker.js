@@ -44,13 +44,13 @@ self.onmessage = async ({ data }) => {
 
 // The comparison with provider prices: one reference run per model, streamed row by row (market.js).
 let latestMarket = 0;
-async function marketJob({ id, config, models }) {
+async function marketJob({ id, config, models, speeds = {} }) {
   const { marketRun } = await import("./market.js");
   latestMarket = id;
   for (let i = 0; i < models.length; i++) {
     await yieldToMessages();
     if (latestMarket !== id) return;
-    self.postMessage({ id, kind: "market-row", row: marketRun(config, models[i]), done: i + 1, total: models.length });
+    self.postMessage({ id, kind: "market-row", row: marketRun(config, models[i], { speed: speeds[models[i]] }), done: i + 1, total: models.length });
   }
   self.postMessage({ id, kind: "market-done" });
 }

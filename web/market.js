@@ -4,7 +4,10 @@
 // The reference deployment per model: the page's settings (GPU, precision, tiers, serving, workload shape), 8
 // instances of the cheapest of three sizes (the fewest GPUs that hold the model, twice, four times: the fewest can
 // leave too little KV memory), loaded until the prefill GPUs are busy `util` of the time, with decode GPUs sized to
-// that load. A provider runs near capacity, so an idle cluster would overstate cost.
+// that load. A provider runs near capacity, so an idle cluster would overstate cost. Decode holds `speed` tokens/s per
+// request (OpenRouter's p50 for the model) by running the largest batch that keeps it, as a provider does; without
+// one it fills the batch. Holding OpenRouter's speed makes the simulated speed match it by construction: what the
+// comparison then tests is the price of that speed.
 
 import { fitFor, runScenario } from "./scenario.js";
 
@@ -58,7 +61,7 @@ function loadShape(c, sim, fit, util, steps) {
 
 // The reference: of the shapes tried, the one with the lowest cost per request, as a provider would pick.
 // Decode GPUs are pooled (sized to the load, not rounded to whole instances).
-export function marketRun(c, modelId, { util = 0.6, steps = 8 } = {}) {
+export function marketRun(c, modelId, { util = 0.6, steps = 8, speed = null } = {}) {
   const priced = (g) => g && g.usd_per_hour != null;
   let gpu = c.gpus.find((g) => g.id === c.sim.gpu);
   if (!priced(gpu) || !fitFor(c, modelId, gpu)) gpu = c.gpus.find((g) => g.id === "b200") ?? c.gpus.find(priced);
@@ -67,7 +70,7 @@ export function marketRun(c, modelId, { util = 0.6, steps = 8 } = {}) {
   const decodeGpu = c.gpus.find((g) => g.id === c.sim.decodeGpu);
   const sim = {
     ...c.sim, model: modelId, gpu: gpu.id, decodeGpu: priced(decodeGpu) && fitFor(c, modelId, decodeGpu) ? decodeGpu.id : gpu.id,
-    warmupMin: WINDOW.warmupMin, decodePooled: true,
+    warmupMin: WINDOW.warmupMin, decodePooled: true, decodeSpeed: speed ?? null,
   };
   let best = null, lastError = null;
   for (const shape of growths(fit)) {
@@ -79,6 +82,8 @@ export function marketRun(c, modelId, { util = 0.6, steps = 8 } = {}) {
   return {
     model: modelId, gpu: gpu.id, gpuName: gpu.name, tp: best.fit.tp, pp: best.fit.pp, instances: MARKET_INSTANCES, requestsPerMin: best.requestsPerMin,
     utilization: best.utilization, decodeGpus: best.decodeGpus, hit: 1 - best.share.miss, ttft: best.ttft.mean, tpot: best.tpot,
-    price: { input: best.price.input, cachedInput: best.price.cachedInput, output: best.price.output },
+    speedTarget: sim.decodeSpeed, decodeBatch: best.decodeBatch, belowSpeed: best.belowSpeed,
+    acceptedTokens: best.acceptedTokens, specSpeedup: best.specSpeedup, specUnavailable: best.specUnavailable, decodeEp: best.decodeEp,
+    price: { input: best.price.input, cachedInput: best.price.cachedInput, output: best.price.output, cachedParts: best.price.cachedParts },
   };
 }

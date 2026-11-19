@@ -4,9 +4,11 @@
 import { checks, s1Residuals } from "./checks.js";
 import { clear, exportConfig, FAMILIES, importConfig, save } from "./config.js";
 import { curve, fitTier, GIB, interpLogLog, prefixBytes, variantBandwidth } from "./model.js";
-import { FAMILY_INFO } from "./presets.js";
+import { FAMILY_INFO, SPEC_METHODS } from "./presets.js";
 import { $, assumptionBadge, cssVar, el, fmt, numField, pctf, sourceList, usd } from "./ui.js";
 import { MARKET_INSTANCES, providerStats } from "./market.js";
+
+const SPEC_NAME = (id) => (id && id !== "none" ? `speculative decoding: ${SPEC_METHODS.find((x) => x.id === id)?.name ?? id}` : "no speculative decoding");
 
 const TIERS = ["gpu", "cpu", "fs", "obj", "p2p"];
 const fitsFor = (m) => Object.fromEntries(["fs", "obj", "p2p"].map((t) => [t, m.tiers[t] ? fitTier(m, t) : null]));
@@ -52,7 +54,9 @@ function marketHint() {
   $("market-hint").replaceChildren(
     `Each model's $ per 1M tokens from the simulator beside every provider's price on OpenRouter (snapshot of ${data.fetched}). `,
     `Each model runs on your settings (${g?.usd_per_hour != null ? g.name : "B200, as your GPU has no price"}, ${c.sim.precision && c.sim.precision !== "released" ? `served in ${c.sim.precision.toUpperCase()}` : "served as released"}, tiers, serving, workload shape) with ${MARKET_INSTANCES} instances of the cheapest of three sizes (the fewest GPUs that hold it, twice, four times), `,
-    "loaded until the prefill GPUs are busy 60% of the time, with decode GPUs sized to that load. A provider runs near capacity and pools decode across clusters; an idle or rounded-up cluster would overstate the cost.");
+    "loaded until the prefill GPUs are busy 60% of the time, with decode GPUs sized to that load. A provider runs near capacity and pools decode across clusters; an idle or rounded-up cluster would overstate the cost. ",
+    `Speculative decoding and expert parallelism follow your serving settings (${SPEC_NAME(c.sim.spec)}; experts ${c.sim.decodeEp ? `over ${c.sim.decodeEp} GPUs` : "in the TP instance"}). `,
+    `Decode runs the largest batch that holds each model's p50 speed on OpenRouter (as of ${Object.values(data.models).find((m) => m.speed)?.speed.as_of ?? "–"}), so the speeds match by construction and the prices show what that speed costs; a model without one fills the batch.`);
 }
 
 function runMarket() {
@@ -69,32 +73,45 @@ function runMarket() {
     if (msg.kind === "market-row") { marketRows.push(msg.row); $("market-status").textContent = `Simulating ${msg.done} of ${msg.total} models…`; drawMarket(); }
     if (msg.kind === "market-done") { $("market-status").textContent = ""; $("market-run").disabled = false; $("market-run").textContent = "Run again with the current settings"; }
   };
-  marketWorker.postMessage({ kind: "market", id: marketId, config: JSON.parse(JSON.stringify(ctx.cfg())), models });
+  const speeds = Object.fromEntries(models.map((m) => [m, data.models[m].speed?.p50_tok_s ?? null]));
+  marketWorker.postMessage({ kind: "market", id: marketId, config: JSON.parse(JSON.stringify(ctx.cfg())), models, speeds });
 }
 
 function drawMarket() {
   const data = ctx.market, c = ctx.cfg();
   const ratio = (sim, or) => (sim > 0 && or > 0 ? sim / or : null);
   const ratioCell = (x) => el("td", { text: x == null ? "–" : `${fmt(x, 2)}×`, class: x != null && (x > 2 || x < 0.5) ? "bad" : null });
-  const head = ["model", "reference deployment", "simulator in / cached / out", "OpenRouter median in / cached / out", "output range", "simulator ÷ median, input", "simulator ÷ median, output"];
+  const head = ["model", "reference deployment", "decode tok/s per request: simulator (batch) / OpenRouter p50", "simulator in / cached / out", "OpenRouter median in / cached / out", "output range", "simulator ÷ median, input", "simulator ÷ median, output"];
+  const speedCell = (r, or) => {
+    const p50 = or.speed?.p50_tok_s;
+    if (!r || r.error || !r.tpot) return el("td", { text: p50 ? `– / ${fmt(p50, 3)}` : "–" });
+    const sim = `${fmt(1 / r.tpot, 3)} (${fmt(r.decodeBatch, 2)})`;
+    const short = r.belowSpeed > 0.005;
+    return el("td", { class: short ? "bad" : null, text: `${sim} / ${p50 ? fmt(p50, 3) : "none"}`,
+      title: short ? `${pctf(r.belowSpeed, 0)} of requests fall below ${fmt(p50, 3)} tok/s even at batch 1 (no speculative decoding modeled)` : null },
+    short ? el("div", { class: "note", text: "below target at batch 1" }) : null);
+  };
   const rows = Object.entries(data.models).filter(([id]) => c.models[id]).map(([id, or]) => {
     const st = providerStats(or.providers);
     const r = marketRows.find((x) => x.model === id);
     const trio = (a, b, d) => [a, b, d].map((x) => usd(x)).join(" / ");
-    const setup = !r ? "–" : r.error ? r.error : `${r.instances} × ${r.tp * r.pp} ${r.gpuName}${r.pp > 1 ? ` (${r.pp} nodes each)` : ""}, ${fmt(r.requestsPerMin, 3)} req/min, ${fmt(r.decodeGpus, 2)} decode GPUs`;
+    const setup = !r ? "–" : r.error ? r.error : `${r.instances} × ${r.tp * r.pp} ${r.gpuName}${r.pp > 1 ? ` (${r.pp} nodes each)` : ""}, ${fmt(r.requestsPerMin, 3)} req/min, ${fmt(r.decodeGpus, 2)} decode GPUs` +
+      `${r.decodeEp ? `, experts over ${r.decodeEp}` : ""}${r.specSpeedup != null ? (r.specSpeedup <= 1.0005 ? ", drafter off (slower at this batch)" : `, drafter ${fmt(r.specSpeedup, 2)}×`) : ""}${r.specUnavailable ? `; no ${r.specUnavailable.split(",")[0]} drafter` : ""}`;
     return el("tr", {},
       el("td", {}, el("a", { href: or.url, target: "_blank", rel: "noopener", text: c.models[id].name ?? id })),
       el("td", { text: setup }),
+      speedCell(r, or),
       el("td", { text: r && !r.error ? trio(r.price.input, r.price.cachedInput, r.price.output) : "–" }),
       el("td", { text: `${trio(st.input?.median, st.cached?.median, st.output?.median)} (${st.n} endpoints)` }),
       el("td", { text: st.output ? `${usd(st.output.min)}–${usd(st.output.max)}` : "–" }),
       ratioCell(r && !r.error ? ratio(r.price.input, st.input?.median) : null),
-      ratioCell(r && !r.error ? ratio(r.price.output, st.output?.median) : null));
+      r && !r.error && r.belowSpeed > 0.005 ? el("td", { text: "–", title: "decode runs one request at a time and still misses the speed: the output price is an artifact of batch 1" })
+        : ratioCell(r && !r.error ? ratio(r.price.output, st.output?.median) : null));
   });
   $("market-table").replaceChildren(el("thead", {}, el("tr", {}, head.map((t) => el("th", { text: t })))), el("tbody", {}, rows));
   $("market-note").textContent = "Prices are not costs: they carry margins and promotions, and many providers serve FP4 or FP8 quantizations " +
     "(listed per endpoint in data/openrouter.json); set Serving precision above to compare like with like. Cached-input prices are a pricing choice " +
-    "(often a tenth of the input price). The simulator pays Nebius on-demand GPU prices; large providers pay less, and use speculative decoding, which is not modeled.";
+    "(often a tenth of the input price). The simulator pays Nebius on-demand GPU prices; large providers pay less, and use speculative decoding (several tokens per step), which is not modeled: it is how the fastest endpoints reach their speed at a larger batch.";
 }
 
 // ------------------------------------------------------------------------------------------------ checks

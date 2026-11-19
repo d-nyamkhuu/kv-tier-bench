@@ -1,6 +1,7 @@
 // From the page's settings to one simulator run. DOM-free; the worker and the tests use it.
 
-import { decodeBatchCap, gpuKvGiB, served } from "./model.js";
+import { decodeBatchCap, decodeKvGiB, gpuKvGiB, served } from "./model.js";
+import { SPEC_METHODS } from "./presets.js";
 import { simulate, synthetic } from "./sim.js";
 
 // A larger cluster is replayed at this many nodes with its per-node load, and its totals scaled up. That is exact
@@ -8,6 +9,20 @@ import { simulate, synthetic } from "./sim.js";
 export const MAX_SIM_NODES = 8;
 
 const byId = (list, id) => (id ? list.find((x) => x.id === id) ?? null : null);
+
+// The speculative decoding the settings pick for a model: {draft, tau, layers, parallel} | null (none), with
+// unavailable set when the method needs a drafter the checkpoint does not ship (decode then runs without one).
+export function specFor(sim, model) {
+  const method = SPEC_METHODS.find((x) => x.id === (sim.spec ?? "none"));
+  if (!method || method.id === "none") return { spec: null };
+  if (method.requires && !(model.drafters ?? []).includes(method.requires)) return { spec: null, unavailable: method };
+  // a drafter the checkpoint ships keeps its own shape (DeepSeek V4.1 Flash's DSpark: block 5, 3 layers)
+  const p = method.id === "custom" ? { ...method, ...(sim.specCustom ?? {}) } : { ...method, ...(model.drafter_params?.[method.id] ?? {}) };
+  return { spec: { id: method.id, draft: Math.max(0, Math.round(p.draft)), tau: sim.specTau ?? p.tau, layers: p.layers, parallel: !!p.parallel } };
+}
+
+// Expert-parallel decode width for a model: a multiple of tp above it, for MoE models; null = the TP instance.
+export const epFor = (sim, model, tp) => (sim.decodeEp > tp && sim.decodeEp % tp === 0 && model.expert_share > 0 ? sim.decodeEp : null);
 
 // The setup a scenario runs: tier choices may be overridden (the trade-off sweep does) without touching the config.
 // Returns {error} when the model does not fit the GPU.
@@ -22,7 +37,10 @@ export function buildRun(c, over = {}, trace = null) {
   const kv = gpuKvGiB(m, gpu, sw, tp, pp);
   if (kv <= 0) return { error: `${sim.model} does not fit ${gpu.name} at ${where}` };
   const decodeGpu = byId(c.gpus, sim.decodeGpu) ?? gpu;
-  if (sim.decode && gpuKvGiB(m, decodeGpu, sw, tp, pp) <= 0) return { error: `${sim.model} does not fit the decode GPU ${decodeGpu.name} at ${where}` };
+  const ep = sim.decode ? epFor(sim, m, tp) : null;
+  if (sim.decode && decodeKvGiB(m, decodeGpu, sw, tp, pp, ep) <= 0)
+    return { error: `${sim.model} does not fit the decode GPU ${decodeGpu.name} at ${ep ? `TP=${tp}, experts over ${ep} GPUs` : where}` };
+  const sp = sim.decode ? specFor(sim, c.models[sim.model]) : { spec: null };
   // whole instances: a multiple of pp nodes
   const simNodes = trace ? sim.nodes : Math.min(sim.nodes, Math.max(pp, Math.floor(MAX_SIM_NODES / pp) * pp));
   const w = trace ?? synthetic({ ...c.workload, requestsPerMin: (c.workload.requestsPerMin * simNodes) / sim.nodes });
@@ -33,10 +51,14 @@ export function buildRun(c, over = {}, trace = null) {
     gpuGiB: kv, cpuGiB: sim.cpuGiB,
     disk: byId(c.variants, sim.disk), p2p: byId(c.variants, sim.p2p), shared: byId(c.variants, sim.shared),
     routing: sim.routing, seed: 7, warmupS: (sim.warmupMin ?? 0) * 60, retentionH: sim.retentionH, simBlockTokens: sim.simBlockTokens,
-    decode: sim.decode ? { gpu: decodeGpu, batch: sim.decodeBatch, pooled: !!sim.decodePooled, batchCap: (ctx) => decodeBatchCap(m, decodeGpu, sw, ctx, tp, pp) } : null,
+    decode: sim.decode ? {
+      gpu: decodeGpu, batch: sim.decodeBatch, pooled: !!sim.decodePooled, speed: sim.decodeSpeed ?? null,
+      spec: sp.spec, ep, overlap: !!sim.decodeOverlap,
+      batchCap: (ctx) => decodeBatchCap(m, decodeGpu, sw, ctx, tp, pp, ep),
+    } : null,
     transfer: sim.decode ? byId(c.variants, sim.transfer) : null,
   };
-  return { cfg, workload: w, gpu, kvGiB: kv, simNodes };
+  return { cfg, workload: w, gpu, kvGiB: kv, simNodes, specUnavailable: sp.unavailable?.name ?? null, decodeEp: ep };
 }
 
 // The fewest nodes per instance (pipeline stages), then the smallest TP, that hold `modelId` on `gpu` (TP 8 when it
@@ -53,7 +75,7 @@ export function runScenario(c, over = {}, trace = null) {
   const run = buildRun(c, over, trace);
   if (run.error) return { error: run.error };
   const r = simulate(run.workload, run.cfg);
-  return { ...r, kvGiB: run.kvGiB, simNodes: run.simNodes, gpuName: run.gpu.name };
+  return { ...r, kvGiB: run.kvGiB, simNodes: run.simNodes, gpuName: run.gpu.name, specUnavailable: run.specUnavailable, decodeEp: run.decodeEp };
 }
 
 // Every combination of the candidate variants per slot (null = slot off), for the trade-off map.

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import { clear, defaultConfig, exportConfig, importConfig, loadSaved, save, validate } from "../config.js";
-import { GPUS, SOFTWARE, VARIANTS } from "../presets.js";
+import { GPUS, MODELS, SOFTWARE, VARIANTS } from "../presets.js";
 
 const S1 = JSON.parse(readFileSync(new URL("../data/s1.json", import.meta.url)));
 const defaults = defaultConfig(S1, VARIANTS, GPUS, SOFTWARE);
@@ -69,4 +69,25 @@ test("browser storage is optional: failures are swallowed", () => {
   assert.deepEqual(loadSaved(ok, defaults), defaults);
   ok.setItem("kvtb-sim-config-v4", "{garbage");
   assert.equal(loadSaved(ok, defaults), null);
+});
+
+test("a config saved before the MoE decode fields gets them from the presets, edits kept", () => {
+  const d = defaultConfig(S1, VARIANTS, GPUS, SOFTWARE, MODELS);
+  const old = structuredClone(d);
+  delete old.models["kimi-k3"].expert_share; delete old.models["kimi-k3"].expert_pick; delete old.models["kimi-k3"].decode_params;
+  old.models["kimi-k3"].weights_bytes = 1.5e12; // an edit
+  delete old.models["gpt-oss-120b"];
+  const c = importConfig(exportConfig(old), d);
+  assert.equal(c.models["kimi-k3"].expert_pick, 16 / 896);
+  assert.equal(c.models["kimi-k3"].weights_bytes, 1.5e12);
+  assert.ok(c.models["gpt-oss-120b"].expert_share > 0.9);
+});
+
+test("GPUs saved before nvlink_domain get it from the presets", () => {
+  const d = defaultConfig(S1, VARIANTS, GPUS, SOFTWARE, MODELS);
+  const old = structuredClone(d);
+  for (const g of old.gpus) delete g.nvlink_domain;
+  const c = importConfig(exportConfig(old), d);
+  assert.equal(c.gpus.find((g) => g.id === "gb200").nvlink_domain, 72);
+  assert.equal(c.gpus.find((g) => g.id === "b200").nvlink_domain, 8);
 });

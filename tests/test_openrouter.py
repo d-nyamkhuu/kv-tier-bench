@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from kv_tier_bench.openrouter import MODEL_MAP, export, summarize
+from kv_tier_bench.openrouter import MODEL_MAP, SPEED, SPEED_AS_OF, export, summarize
 
 
 def ep(provider, prompt, completion, cache=None, quant="fp8"):
@@ -23,3 +23,12 @@ def test_export_covers_every_mapped_model_with_a_date():
     assert set(data["models"]) == set(MODEL_MAP)
     m = data["models"]["glm-5.3"]
     assert m["openrouter_id"] == "z-ai/glm-5.3" and m["providers"][0]["input"] == 1.0
+
+
+def test_export_keeps_the_recorded_speed_date_whatever_the_fetch_date():
+    data = export(lambda _id: [ep("X", "0.000001", "0.000002")], now=datetime(2030, 1, 1, tzinfo=UTC))
+    assert data["fetched"] == "2030-01-01"
+    assert set(SPEED) == set(MODEL_MAP)
+    s = data["models"]["kimi-k3"]["speed"]
+    assert s["as_of"] == SPEED_AS_OF and s["p50_tok_s"] == 101.0 and s["url"].startswith("https://openrouter.ai/compare/")
+    assert data["models"]["minimax-m3"]["speed"]["p50_tok_s"] is None

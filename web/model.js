@@ -83,7 +83,23 @@ export function deriveArch(spec) {
     compute_dtype: spec.compute_dtype ?? "bf16",
     hidden_size: spec.hidden_size ?? null,
     num_layers: spec.num_layers ?? spec.layers.reduce((a, g) => a + (g.count ?? 0), 0),
+    ...moeShape(spec),
   };
+}
+
+// The routed experts of an MoE model, for decode: the share of the weight bytes they hold and the chance a token
+// picks a given expert (per_token / routed). spec.experts = {routed, per_token, params (routed experts, all layers),
+// bytes_per_param (when they ship in another precision than the rest, as MXFP4 experts do)}. The dense part (attention,
+// shared experts, embeddings) is active params - per_token / routed x expert params. decode_active_params: a card's
+// decode figure where it differs from prefill's.
+function moeShape(spec) {
+  const decodeParams = spec.decode_active_params ?? spec.active_params ?? spec.total_params;
+  const e = spec.experts;
+  if (!e) return { decode_params: decodeParams, expert_share: 0, expert_pick: 0, experts_per_token: 0 };
+  const pick = e.per_token / e.routed;
+  const dense = Math.max(0, decodeParams - pick * e.params);
+  const share = e.bytes_per_param ? (e.params * e.bytes_per_param) / spec.weights_bytes : e.params / (e.params + dense);
+  return { decode_params: decodeParams, expert_share: Math.min(1, share), expert_pick: pick, experts_per_token: e.per_token };
 }
 
 // One Gated DeltaNet layer's state (recurrent + short convolution), as Qwen3.8's config.json describes it; the same
@@ -233,21 +249,83 @@ export function gpuKvGiB(m, gpu, sw, tp = 1, pp = 1) {
 
 const perSeqBytes = (m, ctxTokens) => m.state_bytes_per_prefix + m.kv_bytes_per_token * ctxTokens;
 
-// One batched decode step on a TP instance of its own (disaggregated prefill/decode). A step reads the weights once
-// (an MoE batch of more than a few dozen tokens touches nearly every expert), plus each sequence's KV and state, at
-// `mbu` of peak memory bandwidth; a large batch can instead be bound by its FLOPs (2 x active params per token, at
-// the prefill share of peak). Plus the TP all-reduces of every layer.
-export function decodeStepS(m, gpu, batch, ctxTokens, tp = 1, eff = TP_EFF) {
-  const memory = (m.weights_bytes + batch * perSeqBytes(m, ctxTokens)) / (tp * gpu.mem_bw_tb_s * 1e12 * gpu.mbu);
+// The share of an MoE model's routed experts a decode batch touches: each of `batch` tokens picks per_token of
+// routed experts, independently and evenly (an assumption: real routers are skewed, which touches fewer).
+export const expertCoverage = (m, batch) => (m.expert_pick ? 1 - (1 - m.expert_pick) ** Math.max(1, batch) : 1);
+
+// Weight bytes one decode step reads: the dense part, plus the experts the batch touches.
+export const decodeWeightBytes = (m, batch) => m.weights_bytes * (1 - (m.expert_share ?? 0) * (1 - expertCoverage(m, batch)));
+
+// One batched decode step on a TP instance of its own (disaggregated prefill/decode). A step reads the weights it
+// needs once (an MoE batch reads the dense part and only the experts its tokens picked: one token of Kimi K3 reads
+// 16 of 896, a batch of 256 nearly all), plus each sequence's KV and state, at `mbu` of peak memory bandwidth; a
+// large batch can instead be bound by its FLOPs (2 x active params per token, at the prefill share of peak). Plus
+// the TP all-reduces of every layer.
+//
+// opts.spec (speculative decoding, presets.SPEC_METHODS): each sequence computes 1 + draft positions in the step (the
+// drafted tokens and one more): FLOPs and expert coverage grow with them, the weights and KV are read once. The
+// drafter runs first: `layers` layers of the model's size, `draft` times in a row (autoregressive) or once over all
+// drafted positions (parallel). The step yields tau tokens per sequence, so a token takes step / tau.
+// opts.ep (expert parallelism): the routed experts spread over `ep` GPUs, a multiple of tp; the ep / tp attention
+// groups of tp GPUs each run `batch` sequences, and the experts see all of them. Each GPU reads the dense part / tp
+// and its own experts. Every MoE layer sends each token's hidden state to its experts and back (dispatch in FP8,
+// combine in BF16, as DeepSeek's decode does) over NVLink inside the GPU's NVLink domain, over InfiniBand beyond it.
+// opts.overlap: two-batch overlap (DeepSeek, SGLang) hides that communication behind the compute of the other half.
+//
+// Beyond the NVLink domain the rates are DeepEP's low-latency kernels (README v1.2.1: H800, one CX7 400 Gb/s
+// InfiniBand NIC per GPU, 128 tokens per GPU, 7168 hidden, top-8, FP8 dispatch, BF16 combine), per EP size: the
+// table's latencies are those bytes at these rates, so no separate latency is added. Inside the domain: NVLink at
+// DeepEP's intranode 153 GB/s of H800's 200 GB/s per direction (NVLINK_EP_EFF; H800's 400 GB/s is an assumption).
+// Plus a fixed time per layer either way (TP_SYNC_PER_LAYER_S at 8 GPUs, an assumption standing in for kernel and
+// synchronization cost, which DeepEP's table does not separate).
+export const DEEPEP_LL_GB_S = [[8, 98, 127], [16, 63, 74], [32, 48, 53], [64, 43, 46], [128, 39, 39], [256, 39, 40]]; // [EP, dispatch, combine]
+export const NVLINK_EP_EFF = 153 / 200;
+const deepepRates = (ep) => DEEPEP_LL_GB_S.find(([n]) => n >= ep) ?? DEEPEP_LL_GB_S[DEEPEP_LL_GB_S.length - 1];
+export function decodeStep(m, gpu, batch, ctxTokens, tp = 1, { spec = null, ep = null, overlap = false, eff = TP_EFF } = {}) {
+  const draft = spec?.draft ?? 0, q = 1 + draft;
+  const width = ep && ep > tp ? ep : tp, groups = width / tp;
+  const bw = gpu.mem_bw_tb_s * 1e12 * gpu.mbu;
+  const share = m.expert_share ?? 0;
+  const weights = (tokens) => (m.weights_bytes * (1 - share)) / tp + (m.weights_bytes * share * expertCoverage(m, tokens)) / width;
   const peak = peakTflops(m, gpu);
-  const compute = peak && gpu.prefill_mfu ? (2 * m.params * batch) / (peak * 1e12 * gpu.prefill_mfu * tp * tpEff(eff.prefill, tp)) : 0;
-  const sync = tp > 1 ? (m.num_layers ?? m.full_attn_layers ?? 0) * (TP_SYNC_PER_LAYER_S[tp] ?? TP_SYNC_PER_LAYER_S[8]) : 0;
-  return Math.max(memory, compute) + sync;
+  const flops = (tokens) => (peak && gpu.prefill_mfu ? (2 * (m.decode_params ?? m.params) * tokens) / (peak * 1e12 * gpu.prefill_mfu * tp * tpEff(eff.prefill, tp)) : 0);
+  const layers = m.num_layers ?? m.full_attn_layers ?? 0;
+  const memory = (weights(groups * batch * q) + (batch * perSeqBytes(m, ctxTokens)) / tp) / bw;
+  const compute = flops(batch * q);
+  const sync = tp > 1 ? layers * (TP_SYNC_PER_LAYER_S[tp] ?? TP_SYNC_PER_LAYER_S[8]) : 0;
+  let comm = 0;
+  if (width > tp && m.experts_per_token) {
+    const sends = ((batch * q) / tp) * m.experts_per_token * (m.hidden_size ?? 0); // token-expert pairs x hidden, per GPU
+    const inDomain = width <= (gpu.nvlink_domain ?? 1) && gpu.nvlink_gb_s;
+    const nv = (gpu.nvlink_gb_s / 2) * NVLINK_EP_EFF * 1e9;
+    const [, dGb, cGb] = deepepRates(width);
+    const move = inDomain ? (sends * 3) / nv : sends / (dGb * 1e9) + (sends * 2) / (cGb * 1e9);
+    comm = layers * (TP_SYNC_PER_LAYER_S[8] + move);
+  }
+  const verify = overlap ? Math.max(Math.max(memory, compute) + sync, comm) : Math.max(memory, compute) + sync + comm;
+  const frac = draft && layers ? (spec.layers ?? 1) / layers : 0;
+  const draftS = !draft ? 0 : spec.parallel
+    ? frac * Math.max(weights(groups * batch * draft) / bw, flops(batch * draft))
+    : draft * frac * Math.max(weights(groups * batch) / bw, flops(batch));
+  const step = verify + draftS;
+  const tokens = Math.max(1, Math.min(spec?.tau ?? 1, q));
+  return { step, tokens, perToken: step / tokens, memory, compute, sync, comm, draft: draftS };
 }
 
-// The largest decode batch whose KV fits the instance's GPU memory.
-export function decodeBatchCap(m, gpu, sw, ctxTokens, tp = 1, pp = 1) {
-  return Math.floor((gpuKvGiB(m, gpu, sw, tp, pp) * GIB) / perSeqBytes(m, ctxTokens));
+export const decodeStepS = (m, gpu, batch, ctxTokens, tp = 1, eff = TP_EFF) => decodeStep(m, gpu, batch, ctxTokens, tp, { eff }).step;
+
+// KV memory of one attention group of a decode instance whose experts spread over `ep` GPUs: each GPU holds the dense
+// part / tp and its share of the experts. Without ep, an instance of tp GPUs in each of pp nodes (gpuKvGiB).
+export function decodeKvGiB(m, gpu, sw, tp = 1, pp = 1, ep = null) {
+  if (!ep || ep <= tp) return gpuKvGiB(m, gpu, sw, tp, pp);
+  const share = m.expert_share ?? 0;
+  const perGpu = (m.weights_bytes * (1 - share)) / tp + (m.weights_bytes * share) / ep;
+  return tp * (gpu.mem_gib * sw.gpu_memory_utilization - sw.activation_gib_per_gpu) - (tp * perGpu) / GIB;
+}
+
+// The largest decode batch whose KV fits the instance's (or, with ep, one attention group's) GPU memory.
+export function decodeBatchCap(m, gpu, sw, ctxTokens, tp = 1, pp = 1, ep = null) {
+  return Math.floor((decodeKvGiB(m, gpu, sw, tp, pp, ep) * GIB) / perSeqBytes(m, ctxTokens));
 }
 
 // Prefill FLOPs of n tokens: 2 x params per token, plus causal attention in the full-attention layers.

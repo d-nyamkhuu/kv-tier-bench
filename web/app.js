@@ -5,7 +5,7 @@ import { defaultConfig, loadSaved, save } from "./config.js";
 import { renderDiagram } from "./diagram.js";
 import { drawFitChart, initMethods, renderMethods, slotOf } from "./methods.js";
 import { gpuKvGiB, served, variantBandwidth } from "./model.js";
-import { GPUS, MODELS, MOONCAKE_TRACES, SOFTWARE, VARIANTS } from "./presets.js";
+import { GPUS, MODELS, MOONCAKE_TRACES, SOFTWARE, SPEC_METHODS, VARIANTS } from "./presets.js";
 import { fitFor, MAX_SIM_NODES, paretoFrontier } from "./scenario.js";
 import { parseTrace } from "./sim.js";
 import { $, assumptionBadge, cssVar, el, fmt, gibf, numField, pctf, secs, usd } from "./ui.js";
@@ -464,6 +464,9 @@ function renderSettings() {
       el("label", { class: "field" }, el("span", { text: "Decode GPU" }),
         el("select", { onchange: (ev) => { sim.decodeGpu = ev.target.value; re(); } }, cfg.gpus.map((g) => el("option", { value: g.id, text: gpuShort(g), selected: g.id === sim.decodeGpu })))),
       numField("Max decode batch", sim, "decodeBatch", { step: 1, onchange: () => { sim.decodeBatch = Math.max(1, Math.round(sim.decodeBatch ?? 1)); re(); } }),
+      speedField(sim, re),
+      ...specFields(sim, re),
+      ...epFields(sim, re),
       el("label", { class: "field" }, el("span", { text: "KV transfer to decode" }),
         el("select", { onchange: (ev) => { sim.transfer = ev.target.value || null; re(); } },
           el("option", { value: "", text: "free (same machine)", selected: !sim.transfer }),
@@ -471,6 +474,63 @@ function renderSettings() {
     ] : []),
     numField("Simulated block (tokens)", sim, "simBlockTokens", { step: 1, onchange: () => { sim.simBlockTokens = Math.max(16, Math.round(sim.simBlockTokens ?? 512)); re(); } }),
   );
+}
+
+// Speculative decoding: the method, its accepted tokens per step (blank: the method's), and the custom method's numbers.
+// MTP and DSpark need the drafter the checkpoint ships; the others need a draft model trained for it.
+function specFields(sim, re) {
+  const model = cfg.models[sim.model] ?? {};
+  const has = (m) => !m.requires || (model.drafters ?? []).includes(m.requires);
+  const method = SPEC_METHODS.find((x) => x.id === (sim.spec ?? "none")) ?? SPEC_METHODS[0];
+  const out = [el("label", { class: "field" }, el("span", { text: "Speculative decoding" }),
+    el("select", { id: "ctl-spec", onchange: (ev) => { sim.spec = ev.target.value; sim.specTau = null; re(); } },
+      SPEC_METHODS.map((x) => el("option", { value: x.id, selected: x.id === method.id, disabled: !has(x) && x.id !== method.id,
+        text: x.id === "none" ? x.name : `${x.name}${x.id === "custom" ? "" : `: ${fmt(x.tau, 3)} tokens per step`}${has(x) ? "" : " (not in this checkpoint)"}` }))))];
+  if (method.id === "none") return out;
+  const p = method.id === "custom" ? { ...method, ...(sim.specCustom ?? {}) } : method;
+  out.push(numField("Accepted tokens per step", sim, "specTau", { id: "ctl-spec-tau", placeholder: `${fmt(p.tau, 3)} (${method.id === "custom" ? "custom" : "measured on 4–14B models"})`,
+    assumption: !!(model.expert_share > 0), onchange: () => { if (!(sim.specTau >= 1)) sim.specTau = null; re(); } }));
+  if (method.id === "custom") {
+    const c = (sim.specCustom = { draft: method.draft, tau: method.tau, layers: method.layers, parallel: method.parallel, ...(sim.specCustom ?? {}) });
+    out.push(
+      numField("Draft tokens per step", c, "draft", { step: 1, onchange: () => { c.draft = Math.max(1, Math.round(c.draft ?? 1)); re(); } }),
+      numField("Custom accepted tokens per step", c, "tau", { onchange: () => { c.tau = Math.max(1, c.tau ?? 1); re(); } }),
+      numField("Draft layers (the model's size)", c, "layers", { onchange: () => { c.layers = Math.max(0, c.layers ?? 0); re(); } }),
+      el("label", { class: "field" }, el("span", { text: "Drafting" }),
+        el("select", { onchange: (ev) => { c.parallel = ev.target.value === "parallel"; re(); } },
+          el("option", { value: "parallel", text: "Parallel: one pass for all drafted tokens", selected: !!c.parallel }),
+          el("option", { value: "ar", text: "Autoregressive: one pass per token", selected: !c.parallel }))));
+  }
+  if (!has(method)) out.push(el("p", { class: "note warn", text: `${model.name ?? sim.model} ships no ${method.requires.toUpperCase()} drafter: decode runs without one.` }));
+  return out;
+}
+
+// Expert parallelism in decode: the routed experts spread over more GPUs than one TP instance (MoE models only).
+function epFields(sim, re) {
+  const model = cfg.models[sim.model] ?? {};
+  if (!(model.expert_share > 0)) return [];
+  const widths = [8, 16, 32, 64, 72, 128, 144, 256].filter((n) => n > sim.tp && n % sim.tp === 0);
+  const dom = gpuOf(sim.decodeGpu).nvlink_domain ?? 1;
+  const out = [el("label", { class: "field" }, el("span", { text: "Decode experts spread over" }),
+    el("select", { id: "ctl-ep", onchange: (ev) => { sim.decodeEp = ev.target.value ? Number(ev.target.value) : null; re(); } },
+      el("option", { value: "", text: `the TP instance (${sim.tp * (sim.pp ?? 1)} GPUs)`, selected: !sim.decodeEp }),
+      widths.map((n) => el("option", { value: n, selected: n === sim.decodeEp, text: `${n} GPUs${n > dom ? " (InfiniBand beyond the NVLink domain)" : " (NVLink)"}` }))))];
+  if (sim.decodeEp) out.push(el("label", { class: "field check" },
+    el("input", { type: "checkbox", id: "ctl-overlap", checked: !!sim.decodeOverlap, onchange: (ev) => { sim.decodeOverlap = ev.target.checked; re(); } }),
+    el("span", { text: "Hide the expert all-to-all behind compute (two-batch overlap)" })));
+  return out;
+}
+
+// Decode speed per request: blank fills the batch; a number runs the largest batch that holds it. OpenRouter's p50 for
+// the model, when the snapshot has one, is a click away.
+function speedField(sim, re) {
+  const p50 = market?.models?.[sim.model]?.speed;
+  const field = numField("Decode speed per request (tok/s)", sim, "decodeSpeed", { id: "ctl-decode-speed", placeholder: "blank: fill the batch",
+    onchange: () => { if (!(sim.decodeSpeed > 0)) sim.decodeSpeed = null; re(); } });
+  if (p50?.p50_tok_s) field.append(el("button", { type: "button", class: "link", id: "ctl-decode-speed-or",
+    text: `OpenRouter p50: ${fmt(p50.p50_tok_s, 3)} tok/s (${p50.as_of})`, title: p50.url,
+    onclick: () => { sim.decodeSpeed = p50.p50_tok_s; re(); } }));
+  return field;
 }
 
 // ------------------------------------------------------------------------------------------------ estimate
@@ -515,6 +575,8 @@ function renderEstimate() {
   $("est-ttft-sub").textContent = overloaded ? `no steady value; ${secs(r.ttft.mean)} mean in this window` : `p50 ${secs(r.ttft.p50)} · p90 ${secs(r.ttft.p90)}`;
   $("est-usd").textContent = r.priced ? usd(r.usdPer1kRequests) : "no price";
   const hours = r.windowS / 3600;
+  if (r.specUnavailable) alert(`${cfg.models[sim.model]?.name ?? sim.model} ships no drafter for ${r.specUnavailable}: decode runs without speculative decoding.`);
+  if (r.belowSpeed > 0.005) alert(`${pctf(r.belowSpeed, 0)} of requests decode slower than ${fmt(sim.decodeSpeed, 3)} tok/s even one at a time on ${gpuShort(gpuOf(sim.decodeGpu))} (speculative decoding, which reaches it, is not modeled).`);
   $("est-usd-sub").textContent = r.priced ? `${usd(r.usdPer1MTokens)} per 1M tokens · ${usd(r.usd.total / Math.max(hours, 1e-9))} per hour` : "a GPU or tier here has no price";
   $("mini-ttft").textContent = overloaded ? "overloaded" : secs(r.ttft.mean);
   $("mini-usd").textContent = r.priced ? usd(r.usdPer1kRequests) : "no price";
@@ -558,6 +620,10 @@ function renderEstimate() {
     r.tpot != null ? ["First decode step", secs(r.tpot)] : null,
     ["TTFT p50 / p90", `${secs(r.ttft.p50)} / ${secs(r.ttft.p90)}`],
     r.tpot != null ? ["Time per output token", secs(r.tpot)] : null,
+    r.tpot != null ? ["Decode speed per request", `${fmt(1 / r.tpot, 3)} tok/s at a batch of ${fmt(r.decodeBatch, 3)}${r.decodeEp ? ` per ${sim.tp}-GPU group` : ""}${sim.decodeSpeed ? ` (target ${fmt(sim.decodeSpeed, 3)})` : ""}`] : null,
+    r.specSpeedup != null ? ["Speculative decoding", r.specSpeedup <= 1.0005 ? "switched off: at this batch checking drafts would slow decode down"
+      : `${fmt(r.acceptedTokens, 3)} tokens per step, ${fmt(r.specSpeedup, 3)}× faster than none at this batch`] : null,
+    r.decodeEp ? ["Decode experts spread over", `${r.decodeEp} GPUs (${r.decodeEp / sim.tp} attention groups)`] : null,
     ["Whole answer, mean", secs(r.e2e.mean)],
   ]);
   const gp = gpuOf(sim.gpu), gd = gpuOf(sim.decodeGpu);

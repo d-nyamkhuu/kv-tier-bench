@@ -6,7 +6,7 @@ export const STORAGE_KEY = "kvtb-sim-config-v4";
 // what the estimate uses of each model in s1.json; its measured medians stay out of the config
 const ARCH_KEYS = ["hf_id", "hybrid", "params", "weights_bytes", "full_attn_layers", "attn_width", "kv_bytes_per_token", "kv_bytes_per_token_by_tp", "state_bytes_per_prefix", "read_fixed_bytes", "block_size"];
 const S1_MODEL_INFO = {
-  "qwen3.8-27b": { name: "Qwen3.8-27B (s1)", arch: "dense, Gated DeltaNet 3:1 with full attention", released: "BF16", hidden_size: 5120, num_layers: 64 },
+  "qwen3.8-27b": { name: "Qwen3.8-27B (s1)", arch: "dense, Gated DeltaNet 3:1 with full attention", released: "BF16", hidden_size: 5120, num_layers: 64, drafters: ["mtp"], drafter_source: '"mtp_num_hidden_layers": 1' },
   "qwen3-vl-32b": { name: "Qwen3-VL-32B-Instruct (s1)", arch: "dense, grouped-query attention", released: "BF16", hidden_size: 5120, num_layers: 64 },
 };
 export const FAMILIES = ["fs", "obj", "p2p"];
@@ -21,7 +21,12 @@ export const DEFAULT_SIM = {
   model: "qwen3.8-27b", gpu: "rtx-pro-6000", nodes: 2, gpusPerNode: 2, tp: 1, pp: 1, stageLink: "p2p-ib-ndr", attention: "dp", precision: "released", routing: "sticky",
   cpuGiB: 96, disk: null, p2p: null, shared: "obj-aws-s3-standard",
   // decodeBatch: vLLM's default max_num_seqs on GPUs with 70+ GiB (256 below), docs.vllm.ai SchedulerConfig
-  decode: true, decodeGpu: "rtx-pro-6000", decodeBatch: 1024, transfer: "p2p-tcp-400",
+  // decodeSpeed: tokens/s each request decodes at (null: fill the batch, the most tokens per GPU)
+  decode: true, decodeGpu: "rtx-pro-6000", decodeBatch: 1024, decodeSpeed: null, transfer: "p2p-tcp-400",
+  // spec: presets.SPEC_METHODS id; specTau: accepted tokens per step, overriding the method's; specCustom: the
+  // "custom" method's numbers. decodeEp: GPUs the experts spread over in decode (null: the TP instance);
+  // decodeOverlap: two-batch overlap hides the expert all-to-all (off: the measured EP runs sit nearer to no overlap)
+  spec: "none", specTau: null, specCustom: { draft: 7, tau: 3, layers: 5, parallel: true }, decodeEp: null, decodeOverlap: false,
   warmupMin: 20, retentionH: 1, simBlockTokens: 512,
   // the variants the trade-off map combines, per slot (plus "off")
   candidates: { disk: ["fs-nvme-gen5", "fs-nebius-nrd"], p2p: ["p2p-tcp-100", "p2p-roce-400"], shared: ["obj-aws-s3-standard", "obj-aws-s3-express"] },
@@ -68,6 +73,9 @@ export function validate(c) {
   if (![1, 2, 4, 8].includes(sim.tp)) errs.push("sim.tp must be 1, 2, 4 or 8");
   if (sim.gpusPerNode % sim.tp) errs.push("sim.tp must divide sim.gpusPerNode");
   if (sim.precision != null && !["released", "fp8", "fp4"].includes(sim.precision)) errs.push('sim.precision must be "released", "fp8" or "fp4"');
+  if (sim.decodeSpeed != null && !(Number.isFinite(sim.decodeSpeed) && sim.decodeSpeed > 0)) errs.push("sim.decodeSpeed must be a positive number of tokens/s, or null");
+  if (sim.specTau != null && !(Number.isFinite(sim.specTau) && sim.specTau >= 1)) errs.push("sim.specTau must be at least 1 (tokens per step), or null");
+  if (sim.decodeEp != null && !(Number.isInteger(sim.decodeEp) && sim.decodeEp >= 1 && sim.decodeEp <= 1024)) errs.push("sim.decodeEp must be a whole number of GPUs, or null");
   if (sim.attention != null && !["dp", "tp"].includes(sim.attention)) errs.push('sim.attention must be "dp" or "tp"');
   if (sim.pp != null && !(Number.isInteger(sim.pp) && sim.pp >= 1 && sim.pp <= 8)) errs.push("sim.pp must be a whole number from 1 to 8");
   else if (sim.nodes % (sim.pp ?? 1)) errs.push("sim.pp must divide sim.nodes");
@@ -102,8 +110,23 @@ export function importConfig(text, defaults) {
   if (c && typeof c === "object" && defaults) {
     c.workload = { ...defaults.workload, ...(c.workload || {}) };
     c.sim = { ...defaults.sim, ...(c.sim || {}) };
-    c.gpus = c.gpus ?? structuredClone(defaults.gpus);
+    c.gpus = Array.isArray(c.gpus) ? c.gpus : structuredClone(defaults.gpus);
+    // GPUs saved before a field existed (nvlink_domain, say) take it from the current presets
+    for (const g of c.gpus) {
+      const d = defaults.gpus?.find((x) => x.id === g?.id);
+      if (d) for (const [k, v] of Object.entries(d)) if (g[k] === undefined) g[k] = structuredClone(v);
+    }
     c.software = { ...defaults.software, ...(c.software || {}) };
+    // models saved before a field existed (decode's expert shares, say) take it from the current presets; edited
+    // fields stay as saved, and a model the save lacks comes back whole
+    if (defaults.models) {
+      c.models = c.models && typeof c.models === "object" ? c.models : {};
+      for (const [id, d] of Object.entries(defaults.models)) {
+        const m = c.models[id];
+        if (!m || typeof m !== "object") { c.models[id] = structuredClone(d); continue; }
+        for (const [k, v] of Object.entries(d)) if (m[k] === undefined) m[k] = structuredClone(v);
+      }
+    }
   }
   const errs = validate(c);
   if (errs.length) throw new Error(errs.join("\n"));

@@ -291,11 +291,15 @@ export const SOFTWARE = {
   sources: [S1_CALIBRATION, { ...S.plan, quote: "`max_model_len` is set per model: 66K for Qwen3-VL-32B on RTX, at `--gpu-memory-utilization 0.95`." }],
   assumptions: ["activation_gib_per_gpu"],
 };
-// nvlink_gb_s: GPU-to-GPU NVLink per GPU (both directions), drawn in the cluster diagram only: the numbers do not use it
-// (tensor parallel efficiency comes from TP_EFF, and GPUs in one node do not share KV caches).
+// nvlink_gb_s: GPU-to-GPU NVLink per GPU (both directions); nvlink_domain: how many GPUs one NVLink fabric joins (8 on
+// an HGX board, 72 in a GB200 NVL72 rack, 1 without NVLink). Decode with expert parallelism moves tokens to their
+// experts over NVLink inside the domain and over the node network beyond it. Tensor parallel efficiency comes from
+// TP_EFF, and GPUs in one node do not share KV caches.
 const NVL = {
   hopper: (url, name) => src(`NVIDIA ${name}`, url, "NVIDIA NVLink: 900GB/s"),
   blackwell: src("NVIDIA HGX", NV.bw, "NVLink GPU-to-GPU Bandwidth 1.8 TB/s"),
+  hgx: src("NVIDIA HGX", "https://www.nvidia.com/en-us/data-center/hgx/", "HGX B200: 8x NVIDIA Blackwell SXM ... HGX B300: 8x NVIDIA Blackwell Ultra SXM ... Total NVLink Bandwidth 14.4 TB/s"),
+  nvl72: src("NVIDIA GB200 NVL72", "https://www.nvidia.com/en-us/data-center/gb200-nvl72/", "a 72-GPU NVIDIA NVLink™ domain that acts as a single, massive GPU"),
   blackwellBrief: src("NVIDIA Blackwell architecture technical brief (V2.1)", "https://dam-cdn.nvd.orangelogic.com/AssetLink/gl2l4l4812s5fw0p614s6i8bv6mi3vx5.pdf", "Blackwell and Blackwell Ultra GPUs include 18 fifth-generation NVLink links to provide 1.8 TB/sec total bandwidth"),
 };
 // tflops_fp8: dense FP8 peak, used for models released in FP8 (weights and activations). Set to twice BF16, the ratio
@@ -303,7 +307,7 @@ const NVL = {
 // tflops_fp4: dense FP4, on GPUs with FP4 tensor cores (Blackwell) only, set to twice FP8 (assumption, same ratio);
 // Hopper and Ada have none, so FP4 weights compute at FP8 there.
 const BLACKWELL = new Set(["rtx-pro-6000", "b200", "b300", "gb200"]);
-const gpu = (g) => ({ mbu: MBU, nvlink_gb_s: null, tflops_fp8: 2 * g.tflops_bf16, tflops_fp4: BLACKWELL.has(g.id) ? 4 * g.tflops_bf16 : null, ...g,
+const gpu = (g) => ({ mbu: MBU, nvlink_gb_s: null, nvlink_domain: g.pcie_only || !g.nvlink_gb_s ? 1 : 8, tflops_fp8: 2 * g.tflops_bf16, tflops_fp4: BLACKWELL.has(g.id) ? 4 * g.tflops_bf16 : null, ...g,
   assumptions: [...(g.assumptions ?? []), "tflops_fp8", ...(BLACKWELL.has(g.id) ? ["tflops_fp4"] : [])],
   sources: [...g.sources, ...MBU_SOURCES, ...(g.prefill_mfu === RTX_MFU ? [S1_CALIBRATION] : [INFERENCEX])] });
 
@@ -334,18 +338,20 @@ export const GPUS = [
       src("NVIDIA H100", NV.h100, "80GB ... 3.35TB/s ... PCIe Gen5: 128GB/s"),
       GEN5_MEASURED, src("Nebius prices", NEBIUS_PRICES, "NVIDIA HGX H100 | $4.50"), NVL.hopper(NV.h100, "H100"),
     ],
+    assumptions: ["nvlink_domain (8, an HGX board)"],
   }),
   gpu({
     id: "h200", name: "H200 SXM", prefill_mfu: HOPPER_MFU, tflops_bf16: 989.5, mem_gib: usable(141), mem_bw_tb_s: 4.8, host_gib_s: GEN5_HOST, usd_per_hour: 5.4, nvlink_gb_s: 900,
     sources: [src("NVIDIA H200", NV.h200, "BFLOAT16 Tensor Core 1,979 TFLOPS (with sparsity) ... 141GB of HBM3e ... 4.8TB/s"), GEN5_MEASURED, src("Nebius prices", NEBIUS_PRICES, "NVIDIA HGX H200 | $5.40"), NVL.hopper(NV.h200, "H200")],
+    assumptions: ["nvlink_domain (8, an HGX board)"],
   }),
   gpu({
     id: "b200", name: "B200 (HGX)", prefill_mfu: BLACKWELL_MFU, tflops_bf16: 2250, mem_gib: usable(180), mem_bw_tb_s: 7.7, host_gib_s: GEN5_HOST, usd_per_hour: 8.5, nvlink_gb_s: 1800,
-    sources: [src("NVIDIA HGX / Blackwell datasheet", NV.bw, "HGX B200: FP16/BF16 Tensor Core 4.5 PFLOPS (sparse; dense is one-half) ... 180 GB HBM3E ... 7.7 TB/s ... PCIe Gen5"), GEN5_MEASURED, src("Nebius prices", NEBIUS_PRICES, "NVIDIA HGX B200 | $8.50"), NVL.blackwell],
+    sources: [src("NVIDIA HGX / Blackwell datasheet", NV.bw, "HGX B200: FP16/BF16 Tensor Core 4.5 PFLOPS (sparse; dense is one-half) ... 180 GB HBM3E ... 7.7 TB/s ... PCIe Gen5"), GEN5_MEASURED, src("Nebius prices", NEBIUS_PRICES, "NVIDIA HGX B200 | $8.50"), NVL.blackwell, NVL.hgx],
   }),
   gpu({
     id: "b300", name: "B300 (HGX, Blackwell Ultra)", prefill_mfu: BLACKWELL_MFU, tflops_bf16: 2250, mem_gib: usable(270), mem_bw_tb_s: 7.7, host_gib_s: 2 * GEN5_HOST, usd_per_hour: 9.5, nvlink_gb_s: 1800,
-    sources: [src("NVIDIA HGX / Blackwell Ultra datasheet", NV.bw, "HGX B300: FP16/BF16 Tensor Core 4.5 PFLOPS (sparse) ... 270 GB HBM3E ... 7.7 TB/s ... PCIe Gen6: 256 GB/s"), src("Nebius prices", NEBIUS_PRICES, "NVIDIA HGX B300 | $9.50"), NVL.blackwell],
+    sources: [src("NVIDIA HGX / Blackwell Ultra datasheet", NV.bw, "HGX B300: FP16/BF16 Tensor Core 4.5 PFLOPS (sparse) ... 270 GB HBM3E ... 7.7 TB/s ... PCIe Gen6: 256 GB/s"), src("Nebius prices", NEBIUS_PRICES, "NVIDIA HGX B300 | $9.50"), NVL.blackwell, NVL.hgx],
     assumptions: ["host_gib_s"], note: "Host link: twice the measured Gen5 rate, assuming the host runs PCIe Gen6; not verified.",
   }),
   gpu({
@@ -354,8 +360,8 @@ export const GPUS = [
     assumptions: ["usd_per_hour"], note: "CPU memory over NVLink-C2C at ~350 GB/s measured. Not offered by Nebius: no price.",
   }),
   gpu({
-    id: "gb200", name: "GB200 (per GPU)", prefill_mfu: BLACKWELL_MFU, tflops_bf16: 2500, mem_gib: usable(186), mem_bw_tb_s: 8, host_gib_s: 326, usd_per_hour: null, nvlink_gb_s: 1800,
-    sources: [NVL.blackwellBrief, src("NVIDIA GB200 NVL72", NV.gb200, "per GPU: FP16/BF16 Tensor Core 5 PFLOPS (sparse) ... 186 GB HBM3E ... 8 TB/s ... 900 GB/s of bidirectional bandwidth (C2C)"), C2C_MEASURED],
+    id: "gb200", name: "GB200 (per GPU)", prefill_mfu: BLACKWELL_MFU, tflops_bf16: 2500, mem_gib: usable(186), mem_bw_tb_s: 8, host_gib_s: 326, usd_per_hour: null, nvlink_gb_s: 1800, nvlink_domain: 72,
+    sources: [NVL.blackwellBrief, NVL.nvl72, src("NVIDIA GB200 NVL72", NV.gb200, "per GPU: FP16/BF16 Tensor Core 5 PFLOPS (sparse) ... 186 GB HBM3E ... 8 TB/s ... 900 GB/s of bidirectional bandwidth (C2C)"), C2C_MEASURED],
     assumptions: ["host_gib_s", "usd_per_hour"], note: "One Grace CPU serves two GPUs; the per-GPU C2C share is not published, so the GH200 measurement is used. Nebius: contact sales, no price.",
   }),
 ];
@@ -368,6 +374,11 @@ const HF = (repo) => `https://huggingface.co/${repo}`;
 const cfgSrc = (repo) => src(`${repo} config.json`, `${HF(repo)}/blob/main/config.json`);
 const cardSrc = (repo, quote) => src(`${repo} model card`, HF(repo), quote);
 const filesSrc = (repo, bytes) => src(`${repo} files: *.safetensors at the repo root`, `${HF(repo)}/tree/main`, `${bytes.toLocaleString("en-US")} bytes of weights`);
+// Routed experts from config.json: params = MoE layers x routed x 3 matrices (gate, up, down) x width x moe_intermediate_size.
+const moe = ({ layers, routed, per_token, width, inter, bytes_per_param }) =>
+  ({ routed, per_token, params: layers * routed * 3 * width * inter, ...(bytes_per_param ? { bytes_per_param } : {}) });
+const expertSrc = (repo, quote) => src(`${repo} config.json (experts)`, `${HF(repo)}/blob/main/config.json`, quote);
+const MXFP4 = 4.25 / 8; // 4-bit values + one 8-bit scale per 32
 const VLLM_MLA_TP = src("vLLM docs: context parallel deployment", "https://docs.vllm.ai/en/stable/serving/context_parallel_deployment/",
   "For DeepSeek-R1, we have 1 kv-head when MLA is enabled. The typical single-node deployment with `-tp 8` causes 8x KV cache duplication.");
 const VLLM_STATE_TP = src("vLLM docs: MambaStateShapeCalculator", "https://docs.vllm.ai/en/stable/api/vllm/model_executor/layers/mamba/mamba_utils/",
@@ -378,15 +389,15 @@ const INDEX_BYTES = 132;
 
 const MODEL_SPECS = {
   "qwen3.8-2.4t-a95b": {
-    name: "Qwen3.8-2.4T-A95B", hf_id: "Qwen/Qwen3.8-2.4T-A95B", released: "BF16", arch: "MoE 2.4T / 95B active; 69 Gated DeltaNet + 23 full attention layers",
+    name: "Qwen3.8-2.4T-A95B", hf_id: "Qwen/Qwen3.8-2.4T-A95B", drafters: ["mtp"], drafter_source: '"mtp_num_hidden_layers": 1', released: "BF16", arch: "MoE 2.4T / 95B active; 69 Gated DeltaNet + 23 full attention layers",
     spec: {
-      num_layers: 92, hidden_size: 8192, total_params: 2.4e12, active_params: 95e9, weights_bytes: 4892365649336, compute_dtype: "bf16", block_size: 64,
+      num_layers: 92, hidden_size: 8192, total_params: 2.4e12, active_params: 95e9, weights_bytes: 4892365649336, compute_dtype: "bf16", block_size: 64, experts: moe({ layers: 92, routed: 512, per_token: 10, width: 8192, inter: 2048 }),
       layers: [
         { type: "linear", count: 69, state_bytes: gdnStateBytes({ k_heads: 16, v_heads: 128, k_dim: 128, v_dim: 128, conv: 4 }) },
         { type: "full", count: 23, q_heads: 64, kv_heads: 4, k_dim: 256, v_dim: 256 },
       ],
     },
-    sources: [cfgSrc("Qwen/Qwen3.8-2.4T-A95B"), filesSrc("Qwen/Qwen3.8-2.4T-A95B", 4892365649336),
+    sources: [expertSrc("Qwen/Qwen3.8-2.4T-A95B", '"num_experts": 512, "num_experts_per_tok": 10, "moe_intermediate_size": 2048, "hidden_size": 8192'), cfgSrc("Qwen/Qwen3.8-2.4T-A95B"), filesSrc("Qwen/Qwen3.8-2.4T-A95B", 4892365649336),
       cardSrc("Qwen/Qwen3.8-2.4T-A95B", "Number of Parameters: 2.4T in total and 95B activated ... Gated Attention: Number of Attention Heads: 64 for Q and 4 for KV; Head Dimension: 256"), VLLM_STATE_TP],
     assumptions: ["block_size"],
     note: "4.9 TB of bf16 weights: more than any 8-GPU node holds, so it runs across nodes (pipeline stages).",
@@ -394,96 +405,96 @@ const MODEL_SPECS = {
   "kimi-k3": {
     name: "Kimi K3", hf_id: "moonshotai/Kimi-K3", released: "MXFP4 experts, BF16 attention", arch: "MoE 2.8T / 104B active; 69 KDA linear + 24 MLA layers",
     spec: {
-      num_layers: 93, hidden_size: 7168, total_params: 2.8e12, active_params: 104e9, weights_bytes: 1560936091448, compute_dtype: "fp8", block_size: 64,
+      num_layers: 93, hidden_size: 7168, total_params: 2.8e12, active_params: 104e9, weights_bytes: 1560936091448, compute_dtype: "fp8", block_size: 64, experts: moe({ layers: 92, routed: 896, per_token: 16, width: 3584, inter: 3072, bytes_per_param: MXFP4 }),
       layers: [
         { type: "linear", count: 69, state_bytes: gdnStateBytes({ k_heads: 96, v_heads: 96, k_dim: 128, v_dim: 128, conv: 4 }) },
         { type: "mla", count: 24, q_heads: 96, latent: 512, rope: 64, qk_dim: 128 + 64, v_dim: 128 },
       ],
     },
-    sources: [cfgSrc("moonshotai/Kimi-K3"), filesSrc("moonshotai/Kimi-K3", 1560936091448),
+    sources: [expertSrc("moonshotai/Kimi-K3", '"num_experts": 896, "num_experts_per_token": 16, "routed_expert_hidden_size": 3584, "moe_intermediate_size": 3072, "first_k_dense_replace": 1'), cfgSrc("moonshotai/Kimi-K3"), filesSrc("moonshotai/Kimi-K3", 1560936091448),
       cardSrc("moonshotai/Kimi-K3", "Total Parameters 2.8T; Activated Parameters 104B; Attention-Layer Composition 69 KDA + 24 Gated MLA; MXFP4 weights / MXFP8 activations"), VLLM_MLA_TP, VLLM_STATE_TP],
-    assumptions: ["block_size", "KDA state as Gated DeltaNet's shape, bf16"],
+    assumptions: ["block_size", "KDA state as Gated DeltaNet's shape, bf16", "routed experts at MXFP4's 4.25 bits per parameter (the rest of the weight bytes are the dense part)"],
     note: "Weights alone are 1.56 TB: in one node only 8 B300s hold it (vLLM's recipe runs it at TP 8 on Blackwell Ultra); other GPUs need two or more nodes.",
   },
   "deepseek-v4.1-flash": {
-    name: "DeepSeek V4.1 Flash", hf_id: "deepseek-ai/DeepSeek-V4.1-Flash", released: "FP8, FP4 experts, FP4 KV", arch: "MoE 552B / 8B active in prefill; CSA2 compressed sparse attention, FP4 KV",
+    name: "DeepSeek V4.1 Flash", hf_id: "deepseek-ai/DeepSeek-V4.1-Flash", drafters: ["dspark"], drafter_params: { dspark: { draft: 4, layers: 3 } }, drafter_source: '"num_nextn_predict_layers": 3, "dspark_block_size": 5, "dspark_n_routed_experts": 128, "dspark_num_experts_per_tok": 3', released: "FP8, FP4 experts, FP4 KV", arch: "MoE 552B / 8B active in prefill; CSA2 compressed sparse attention, FP4 KV",
     spec: {
-      num_layers: 40, hidden_size: 5120, kv_dtype_bytes: 0.5, total_params: 552e9, active_params: 8e9, weights_bytes: 510296708312, compute_dtype: "fp8", block_size: 64,
+      num_layers: 40, hidden_size: 5120, kv_dtype_bytes: 0.5, total_params: 552e9, active_params: 8e9, weights_bytes: 510296708312, compute_dtype: "fp8", block_size: 64, decode_active_params: 16e9, experts: moe({ layers: 40, routed: 384, per_token: 6, width: 5120, inter: 2304 }),
       layers: [
         { type: "given", kv_bytes_per_token: 890, copies_per_tp: true },
         { type: "full", stores: false, count: 40, q_heads: 64, kv_heads: 1, k_dim: 512, v_dim: 512, topk: 512 },
         { type: "full", stores: false, count: 8, q_heads: 0, kv_heads: 1, k_dim: 0, v_dim: 0, topk: 1, index_heads: 32, index_dim: 128 }, // the indexer only
       ],
     },
-    sources: [cfgSrc("deepseek-ai/DeepSeek-V4.1-Flash"), filesSrc("deepseek-ai/DeepSeek-V4.1-Flash", 510296708312),
+    sources: [expertSrc("deepseek-ai/DeepSeek-V4.1-Flash", '"n_routed_experts": 384, "num_experts_per_tok": 6, "moe_intermediate_size": 2304, "expert_dtype": "fp4"'), cfgSrc("deepseek-ai/DeepSeek-V4.1-Flash"), filesSrc("deepseek-ai/DeepSeek-V4.1-Flash", 510296708312),
       cardSrc("deepseek-ai/DeepSeek-V4.1-Flash", "these designs reduce the global KV cache footprint to 890 bytes per token ... activate only 8B parameters per token during prefill and 16B during decode ... SWA Bounded Replay reconstructs missing SWA KV states by replaying only the most recent n_win tokens, avoiding the need to persist SWA KV to SSD"), VLLM_MLA_TP],
-    assumptions: ["block_size", "attention FLOPs (64 heads of 512 over the top 512 tokens on 40 layers, indexer on 8)", "the 890 B copied on every TP rank, like MLA"],
-    note: "KV per token is the card's figure (FP4). The sliding-window part is replayed, not stored, so nothing fixed is cached; the replay of 128 tokens is not modeled. Decode uses 16B active parameters; the model uses 8B throughout.",
+    assumptions: ["block_size", "its DSpark drafter: 4 drafted tokens per block of 5 and 3 layers of the model's size (the config's dspark_block_size and next-token layers); accepted tokens as measured on Qwen3-8B", "attention FLOPs (64 heads of 512 over the top 512 tokens on 40 layers, indexer on 8)", "the 890 B copied on every TP rank, like MLA"],
+    note: "KV per token is the card's figure (FP4). The sliding-window part is replayed, not stored, so nothing fixed is cached; the replay of 128 tokens is not modeled. Prefill uses the card's 8B active parameters, decode its 16B.",
   },
   "glm-5.3": {
-    name: "GLM-5.3", hf_id: "zai-org/GLM-5.3", released: "FP8", arch: "MoE 744B / 40B active; MLA with DeepSeek sparse attention on all 78 layers",
+    name: "GLM-5.3", hf_id: "zai-org/GLM-5.3", drafters: ["mtp"], drafter_source: '"num_nextn_predict_layers": 1', released: "FP8", arch: "MoE 744B / 40B active; MLA with DeepSeek sparse attention on all 78 layers",
     spec: {
-      num_layers: 78, hidden_size: 6144, total_params: 744e9, active_params: 40e9, weights_bytes: 755632050320, compute_dtype: "fp8", block_size: 64,
+      num_layers: 78, hidden_size: 6144, total_params: 744e9, active_params: 40e9, weights_bytes: 755632050320, compute_dtype: "fp8", block_size: 64, experts: moe({ layers: 75, routed: 256, per_token: 8, width: 6144, inter: 2048 }),
       layers: [
         { type: "mla", count: 21, q_heads: 64, latent: 512, rope: 64, qk_dim: 192 + 64, v_dim: 256, topk: 2048, index_heads: 32, index_dim: 128, index_bytes: INDEX_BYTES },
         { type: "mla", count: 57, q_heads: 64, latent: 512, rope: 64, qk_dim: 192 + 64, v_dim: 256, topk: 2048 },
       ],
     },
-    sources: [cfgSrc("zai-org/GLM-5.3"), filesSrc("zai-org/GLM-5.3", 755632050320),
+    sources: [expertSrc("zai-org/GLM-5.3", '"n_routed_experts": 256, "num_experts_per_tok": 8, "moe_intermediate_size": 2048, "first_k_dense_replace": 3'), cfgSrc("zai-org/GLM-5.3"), filesSrc("zai-org/GLM-5.3", 755632050320),
       src("zai-org/GLM-5 model card", HF("zai-org/GLM-5"), "GLM-5 scales from 355B parameters (32B active) to 744B parameters (40B active)"),
       cardSrc("zai-org/GLM-5.3", "GLM-5.3 uses the same base model as GLM-5.2"), VLLM_MLA_TP],
     assumptions: ["active_params (GLM-5's 40B; the 5.3 card gives none)", "block_size", "indexer key cache 132 B per token on its 21 own-indexer layers"],
   },
   "glm-5.3-flash": {
-    name: "GLM-5.3-Flash", hf_id: "zai-org/GLM-5.3-Flash", released: "FP8", arch: "MoE 320B / 18B active; 34 KDA linear + 11 MLA sparse layers",
+    name: "GLM-5.3-Flash", hf_id: "zai-org/GLM-5.3-Flash", drafters: ["mtp"], drafter_source: '"num_nextn_predict_layers": 1', released: "FP8", arch: "MoE 320B / 18B active; 34 KDA linear + 11 MLA sparse layers",
     spec: {
-      num_layers: 45, hidden_size: 4096, total_params: 320e9, active_params: 18e9, weights_bytes: 328337455672, compute_dtype: "fp8", block_size: 64,
+      num_layers: 45, hidden_size: 4096, total_params: 320e9, active_params: 18e9, weights_bytes: 328337455672, compute_dtype: "fp8", block_size: 64, experts: moe({ layers: 42, routed: 288, per_token: 8, width: 4096, inter: 2048 }),
       layers: [
         { type: "linear", count: 34, state_bytes: gdnStateBytes({ k_heads: 64, v_heads: 64, k_dim: 128, v_dim: 128, conv: 4 }) },
         { type: "mla", count: 11, q_heads: 64, latent: 512, rope: 0, qk_dim: 256, v_dim: 256, topk: 2048, index_heads: 32, index_dim: 128, index_bytes: INDEX_BYTES },
       ],
     },
-    sources: [cfgSrc("zai-org/GLM-5.3-Flash"), filesSrc("zai-org/GLM-5.3-Flash", 328337455672),
+    sources: [expertSrc("zai-org/GLM-5.3-Flash", '"n_routed_experts": 288, "num_experts_per_tok": 8, "moe_intermediate_size": 2048, "first_k_dense_replace": 3'), cfgSrc("zai-org/GLM-5.3-Flash"), filesSrc("zai-org/GLM-5.3-Flash", 328337455672),
       cardSrc("zai-org/GLM-5.3-Flash", "With 320B total parameters and just 18B active parameters ... we introduce a hybrid architecture combining sparse and linear attention"), VLLM_MLA_TP, VLLM_STATE_TP],
     assumptions: ["block_size", "KDA state as Gated DeltaNet's shape, bf16", "indexer key cache 132 B per token per layer"],
   },
   "qwen3.8-flash-next": {
-    name: "Qwen3.8-Flash-Next", hf_id: "Qwen/Qwen3.8-Flash-Next", released: "BF16", arch: "MoE 125B / 6B active; 36 Gated DeltaNet + 12 sparse attention layers",
+    name: "Qwen3.8-Flash-Next", hf_id: "Qwen/Qwen3.8-Flash-Next", drafters: ["mtp"], drafter_source: '"mtp_num_hidden_layers": 1', released: "BF16", arch: "MoE 125B / 6B active; 36 Gated DeltaNet + 12 sparse attention layers",
     spec: {
-      num_layers: 48, hidden_size: 2560, total_params: 180e9, active_params: 6e9, weights_bytes: 360000192888, compute_dtype: "bf16", block_size: 64,
+      num_layers: 48, hidden_size: 2560, total_params: 180e9, active_params: 6e9, weights_bytes: 360000192888, compute_dtype: "bf16", block_size: 64, experts: moe({ layers: 48, routed: 512, per_token: 10, width: 2560, inter: 640 }),
       layers: [
         { type: "linear", count: 36, state_bytes: gdnStateBytes({ k_heads: 16, v_heads: 48, k_dim: 128, v_dim: 128, conv: 4 }) },
         { type: "full", count: 12, q_heads: 24, kv_heads: 2, k_dim: 256, v_dim: 256, topk: 2048, index_heads: 4, index_dim: 128, index_bytes: (128 * 2) / 4 },
       ],
     },
-    sources: [cfgSrc("Qwen/Qwen3.8-Flash-Next"), filesSrc("Qwen/Qwen3.8-Flash-Next", 360000192888),
+    sources: [expertSrc("Qwen/Qwen3.8-Flash-Next", '"num_experts": 512, "num_experts_per_tok": 10, "moe_intermediate_size": 640, "hidden_size": 2560'), cfgSrc("Qwen/Qwen3.8-Flash-Next"), filesSrc("Qwen/Qwen3.8-Flash-Next", 360000192888),
       cardSrc("Qwen/Qwen3.8-Flash-Next", "125B with 6B activated, plus 51B n-gram embedding and 4B MTP ... Qwen Sparse Attention: Number of Attention Heads: 24 for Q and 2 for KV; Head Dimension: 256 ... Indexer Structure: MQA with 4 Query Heads and 1 Shared Key Head; Indexer Head Dimension: 128; Budget: 512 blocks or 2048 tokens"), VLLM_STATE_TP],
     assumptions: ["block_size", "indexer key cache: one bf16 key of 128 per 4 tokens (indexer_compress_ratio 4)"],
   },
   "minimax-m3": {
-    name: "MiniMax-M3", hf_id: "MiniMaxAI/MiniMax-M3", released: "BF16", arch: "MoE 428B / 23B active; GQA, MiniMax sparse attention on 57 of 60 layers",
+    name: "MiniMax-M3", hf_id: "MiniMaxAI/MiniMax-M3", drafters: ["mtp"], drafter_source: '"num_nextn_predict_layers": 1, "num_mtp_modules": 7', released: "BF16", arch: "MoE 428B / 23B active; GQA, MiniMax sparse attention on 57 of 60 layers",
     spec: {
-      num_layers: 60, hidden_size: 6144, total_params: 428e9, active_params: 23e9, weights_bytes: 854176398808, compute_dtype: "bf16", block_size: 64,
+      num_layers: 60, hidden_size: 6144, total_params: 428e9, active_params: 23e9, weights_bytes: 854176398808, compute_dtype: "bf16", block_size: 64, experts: moe({ layers: 60, routed: 128, per_token: 4, width: 6144, inter: 3072 }),
       layers: [
         { type: "full", count: 3, q_heads: 64, kv_heads: 4, k_dim: 128, v_dim: 128 },
         { type: "full", count: 57, q_heads: 64, kv_heads: 4, k_dim: 128, v_dim: 128, topk: 17 * 128, index_heads: 4, index_dim: 128, index_bytes: 128 * 2 },
       ],
     },
-    sources: [cfgSrc("MiniMaxAI/MiniMax-M3"), filesSrc("MiniMaxAI/MiniMax-M3", 854176398808),
+    sources: [expertSrc("MiniMaxAI/MiniMax-M3", '"num_local_experts": 128, "num_experts_per_tok": 4, "intermediate_size": 3072, "n_shared_experts": 1'), cfgSrc("MiniMaxAI/MiniMax-M3"), filesSrc("MiniMaxAI/MiniMax-M3", 854176398808),
       cardSrc("MiniMaxAI/MiniMax-M3", "It has ~428B parameters and ~23B activated parameters ... Compared with GQA, MSA dramatically reduces the attention compute and memory footprint")],
     assumptions: ["block_size", "sparse span: 16 top blocks + 1 local block of 128 tokens", "indexer key cache: one bf16 key of 128 per token"],
   },
   "mistral-large-4": {
     name: "Mistral Large 4", hf_id: "mistralai/Mistral-Large-4-1T-A52B", released: "FP8", arch: "MoE 1T / 52B active; MLA sparse attention, 9 layers share KV",
     spec: {
-      num_layers: 72, hidden_size: 6144, total_params: 1e12, active_params: 52e9, weights_bytes: 1060554587912, compute_dtype: "fp8", block_size: 64,
+      num_layers: 72, hidden_size: 6144, total_params: 1e12, active_params: 52e9, weights_bytes: 1060554587912, compute_dtype: "fp8", block_size: 64, experts: moe({ layers: 71, routed: 128, per_token: 4, width: 6144, inter: 6144 }),
       layers: [
         { type: "mla", count: 35, q_heads: 64, latent: 512, rope: 64, qk_dim: 128, v_dim: 128, topk: 2048, index_heads: 32, index_dim: 128, index_bytes: INDEX_BYTES },
         { type: "mla", count: 28, q_heads: 64, latent: 512, rope: 64, qk_dim: 128, v_dim: 128, topk: 2048 },
         { type: "mla", stores: false, count: 9, q_heads: 64, latent: 512, rope: 64, qk_dim: 128, v_dim: 128, topk: 2048, index_heads: 32, index_dim: 128, index_bytes: INDEX_BYTES },
       ],
     },
-    sources: [cfgSrc("mistralai/Mistral-Large-4-1T-A52B"), filesSrc("mistralai/Mistral-Large-4-1T-A52B", 1060554587912),
+    sources: [expertSrc("mistralai/Mistral-Large-4-1T-A52B", '"n_routed_experts": 128, "num_experts_per_tok": 4, "moe_intermediate_size": 6144, "first_k_dense_replace": 1'), cfgSrc("mistralai/Mistral-Large-4-1T-A52B"), filesSrc("mistralai/Mistral-Large-4-1T-A52B", 1060554587912),
       cardSrc("mistralai/Mistral-Large-4-1T-A52B", "~1T total / ~52B active parameters: granular Mixture-of-Experts with 128 routed experts (4 active per token) and 1 shared expert"), VLLM_MLA_TP],
     assumptions: ["block_size", "indexer key cache 132 B per token on its 44 own-indexer layers"],
     note: "kv_source_layers points 9 layers at layer 35's KV, so 63 of 72 layers store their own.",
@@ -491,15 +502,15 @@ const MODEL_SPECS = {
   "gpt-oss-120b": {
     name: "gpt-oss-120b", hf_id: "openai/gpt-oss-120b", released: "MXFP4 experts, BF16 attention", arch: "MoE 117B / 5.1B active; full and 128-token sliding-window GQA, alternating",
     spec: {
-      num_layers: 36, hidden_size: 2880, total_params: 116.8e9, active_params: 5.1e9, weights_bytes: 65248893184, compute_dtype: "bf16", block_size: 64,
+      num_layers: 36, hidden_size: 2880, total_params: 116.8e9, active_params: 5.1e9, weights_bytes: 65248893184, compute_dtype: "bf16", block_size: 64, experts: moe({ layers: 36, routed: 128, per_token: 4, width: 2880, inter: 2880, bytes_per_param: MXFP4 }),
       layers: [
         { type: "full", count: 18, q_heads: 64, kv_heads: 8, k_dim: 64, v_dim: 64 },
         { type: "swa", count: 18, q_heads: 64, kv_heads: 8, k_dim: 64, v_dim: 64, window: 128 },
       ],
     },
-    sources: [cfgSrc("openai/gpt-oss-120b"), filesSrc("openai/gpt-oss-120b", 65248893184),
+    sources: [expertSrc("openai/gpt-oss-120b", '"num_local_experts": 128, "num_experts_per_tok": 4, "intermediate_size": 2880, "hidden_size": 2880'), cfgSrc("openai/gpt-oss-120b"), filesSrc("openai/gpt-oss-120b", 65248893184),
       cardSrc("openai/gpt-oss-120b", "fit into a single 80GB GPU (like NVIDIA H100 or AMD MI300X) (117B parameters with 5.1B active parameters)")],
-    assumptions: ["block_size"],
+    assumptions: ["block_size", "routed experts at MXFP4's 4.25 bits per parameter (the rest of the weight bytes are the dense part)"],
   },
   "gemma-4-31b": {
     name: "Gemma 4 31B", hf_id: "google/gemma-4-31B-it", released: "BF16", arch: "dense 31B; 50 sliding-window (1024) + 10 global layers",
@@ -515,6 +526,31 @@ const MODEL_SPECS = {
     assumptions: ["block_size", "attention_k_eq_v: K and V stored once, on every layer"],
   },
 };
+
+// Speculative decoding: a drafter proposes `draft` tokens per sequence, the model checks them (and computes one more)
+// in one step, and `tau` tokens are accepted per step on average, the bonus token included. The drafter's cost is
+// `layers` layers of the model's own size, run `draft` times one after another (autoregressive) or once (parallel).
+// requires: a drafter the checkpoint must ship ("mtp"); the other methods need a separately trained draft model
+// (published for many models). A checkpoint that ships one (drafter_params) keeps its own shape. tau is measured on 4-14B dense models at
+// temperature 1 on MT-Bench (chat); on large MoE models and other workloads it differs, so it is an assumption there.
+const DSPARK_PAPER = "https://arxiv.org/abs/2607.05147";
+const DSPARK_TABLE = (method, tau) => src(`DSpark paper, Table 1: ${method} accepts ${tau} tokens per step on Qwen3-8B, MT-Bench, temperature 1.0`, DSPARK_PAPER,
+  "we align Eagle3's TTT horizon (7) with the block size (7) ... we set 1 for Eagle3 and 5 for DSpark and DFlash");
+export const SPEC_METHODS = [
+  { id: "none", name: "None", draft: 0, tau: 1, layers: 0, parallel: false },
+  { id: "mtp", name: "MTP, 1 draft token (the model's own head)", draft: 1, tau: 1.875, layers: 1, parallel: false, requires: "mtp",
+    sources: [src("DeepSeek-V3 technical report, 5.4.3", "https://arxiv.org/abs/2412.19437", "the acceptance rate of the second token prediction ranges between 85% and 90% ... delivering 1.8 times TPS")],
+    note: "tau = 1 + 0.875, the middle of DeepSeek-V3's 85-90% acceptance of the drafted token." },
+  { id: "eagle3", name: "EAGLE-3 (separate draft head)", draft: 7, tau: 2.66, layers: 1, parallel: false,
+    sources: [DSPARK_TABLE("Eagle3", 2.66), src("EAGLE-3 paper, Table 3: SGLang, H100, LLaMA-Instruct 3.1 8B, chain length 3; throughput 1.81x at batch 2, 1.38x at batch 64", "https://arxiv.org/abs/2503.01840")] },
+  { id: "dflash", name: "DFlash (block diffusion drafter)", draft: 7, tau: 3.11, layers: 5, parallel: true,
+    sources: [DSPARK_TABLE("DFlash", 3.11), src("DFlash paper, Table 3: SGLang, B200, Qwen3-8B, Math500, block 16; speed-up 5.1x at concurrency 1, 4.5x at 4 and 8, 3.9x at 16, 2.8x at 32", "https://arxiv.org/abs/2602.06036")] },
+  { id: "dspark", name: "DSpark (semi-autoregressive drafter)", draft: 7, tau: 3.72, layers: 5, parallel: true,
+    sources: [DSPARK_TABLE("DSpark", 3.72), src("DSpark paper: DeepSeek-V4-Flash in production, against the MTP-1 baseline, at matched aggregate throughput", DSPARK_PAPER, "accelerates per-user generation speeds by 60%–85%")],
+    note: "Its sequential head is small next to the parallel backbone and is left out." },
+  { id: "custom", name: "Custom (set the numbers)", draft: 7, tau: 3, layers: 5, parallel: true,
+    note: "For drafters without a preset here (DFlash2 and others): set draft tokens, accepted tokens, draft layers and whether drafting is parallel." },
+];
 
 export const MODELS = Object.fromEntries(Object.entries(MODEL_SPECS).map(([id, x]) => {
   const { spec, ...info } = x;

@@ -181,7 +181,13 @@
      "cached": 0.99,
      "output": 1.49
     }
-   ]
+   ],
+   "speed": {
+    "p50_tok_s": 28.0,
+    "p50_latency_s": 4.81,
+    "as_of": "2026-11-18",
+    "url": "https://openrouter.ai/compare/qwen/qwen3.8-27b/qwen/qwen3.8-2.4t-a95b"
+   }
   },
   "gpt-oss-120b": {
    "openrouter_id": "openai/gpt-oss-120b",
@@ -355,7 +361,13 @@
      "cached": 0.35,
      "output": 0.75
     }
-   ]
+   ],
+   "speed": {
+    "p50_tok_s": 65.0,
+    "p50_latency_s": 0.62,
+    "as_of": "2026-11-18",
+    "url": "https://openrouter.ai/compare/openai/gpt-oss-120b/google/gemma-4-31b-it"
+   }
   },
   "gemma-4-31b": {
    "openrouter_id": "google/gemma-4-31b-it",
@@ -487,7 +499,13 @@
      "cached": 0.25,
      "output": 1.0
     }
-   ]
+   ],
+   "speed": {
+    "p50_tok_s": 148.0,
+    "p50_latency_s": 0.74,
+    "as_of": "2026-11-18",
+    "url": "https://openrouter.ai/compare/openai/gpt-oss-120b/google/gemma-4-31b-it"
+   }
   },
   "deepseek-v4.1-flash": {
    "openrouter_id": "deepseek/deepseek-v4.1-flash",
@@ -766,7 +784,13 @@
      "cached": 0.06,
      "output": 12.0
     }
-   ]
+   ],
+   "speed": {
+    "p50_tok_s": 154.0,
+    "p50_latency_s": 0.23,
+    "as_of": "2026-11-18",
+    "url": "https://openrouter.ai/compare/deepseek/deepseek-v4.1-flash/moonshotai/kimi-k3"
+   }
   },
   "glm-5.3-flash": {
    "openrouter_id": "z-ai/glm-5.3-flash",
@@ -1066,7 +1090,13 @@
      "cached": 0.045,
      "output": 0.75
     }
-   ]
+   ],
+   "speed": {
+    "p50_tok_s": 83.0,
+    "p50_latency_s": 0.94,
+    "as_of": "2026-11-18",
+    "url": "https://openrouter.ai/compare/z-ai/glm-5.3/z-ai/glm-5.3-flash"
+   }
   },
   "minimax-m3": {
    "openrouter_id": "minimax/minimax-m3",
@@ -1128,7 +1158,13 @@
      "cached": 0.09,
      "output": 1.8
     }
-   ]
+   ],
+   "speed": {
+    "p50_tok_s": null,
+    "p50_latency_s": null,
+    "as_of": "2026-11-18",
+    "url": "https://openrouter.ai/compare/minimax/minimax-m3/mistralai/mistral-large-4-0"
+   }
   },
   "glm-5.3": {
    "openrouter_id": "z-ai/glm-5.3",
@@ -1477,7 +1513,13 @@
      "cached": 0.21,
      "output": 6.6
     }
-   ]
+   ],
+   "speed": {
+    "p50_tok_s": 75.0,
+    "p50_latency_s": 0.26,
+    "as_of": "2026-11-18",
+    "url": "https://openrouter.ai/compare/z-ai/glm-5.3/z-ai/glm-5.3-flash"
+   }
   },
   "mistral-large-4": {
    "openrouter_id": "mistralai/mistral-large-4-0",
@@ -1497,7 +1539,13 @@
      "cached": 0.077,
      "output": 2.31
     }
-   ]
+   ],
+   "speed": {
+    "p50_tok_s": 54.0,
+    "p50_latency_s": 1.79,
+    "as_of": "2026-11-18",
+    "url": "https://openrouter.ai/compare/minimax/minimax-m3/mistralai/mistral-large-4-0"
+   }
   },
   "kimi-k3": {
    "openrouter_id": "moonshotai/kimi-k3",
@@ -1706,7 +1754,13 @@
      "cached": 0.45,
      "output": 22.5
     }
-   ]
+   ],
+   "speed": {
+    "p50_tok_s": 101.0,
+    "p50_latency_s": 1.27,
+    "as_of": "2026-11-18",
+    "url": "https://openrouter.ai/compare/deepseek/deepseek-v4.1-flash/moonshotai/kimi-k3"
+   }
   },
   "qwen3.8-2.4t-a95b": {
    "openrouter_id": "qwen/qwen3.8-2.4t-a95b",
@@ -1740,7 +1794,13 @@
      "cached": 0.25,
      "output": 6.0
     }
-   ]
+   ],
+   "speed": {
+    "p50_tok_s": 53.0,
+    "p50_latency_s": 1.78,
+    "as_of": "2026-11-18",
+    "url": "https://openrouter.ai/compare/qwen/qwen3.8-27b/qwen/qwen3.8-2.4t-a95b"
+   }
   }
  }
 }

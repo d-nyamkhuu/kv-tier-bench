@@ -26,6 +26,20 @@ test("the model against published results and s1: calibrated rows agree, the che
   assert.ok(by("Prefix of 32,768 tokens from a peer VM").gap < -0.5);
 });
 
+test("decode checks beyond one dense instance: their known gaps (none of these rows sets a parameter)", () => {
+  const { rows } = checks(S1, C);
+  const gap = (what) => rows.find((r) => r.what.startsWith(what)).gap;
+  assert.ok(Math.abs(gap("Decode time per token, B200, Qwen3-8B")) < 0.25); // ~0.8 ms per step the model leaves out
+  assert.ok(Math.abs(gap("Decode time per token, B200 TP4, Kimi K2.5 (MoE), batch 64")) < 0.2);
+  assert.ok(gap("Decode time per token, B200 TP4, Kimi K2.5 (MoE), batch 4") < -0.2); // too fast at small MoE batches
+  assert.ok(Math.abs(gap("Decode time per token, GB200 NVL72, Kimi K2.5, experts over 16 GPUs, 4096")) < 0.25);
+  assert.ok(Math.abs(gap("Decode time per token, DeepSeek-V3 in production")) < 0.25); // no overlap; with it, 43% too fast
+  assert.ok(gap("Decode time per token, GB200 NVL72, Kimi K2.5, experts over 16 GPUs, 512") < -0.15); // too fast at 32 per GPU
+  assert.ok(Math.abs(gap("Speculative decoding speed-up, one request, DFlash")) < 0.25);
+  assert.ok(Math.abs(gap("Speculative decoding speed-up at 32 requests")) < 0.2); // DFlash's fall with load
+  assert.ok(gap("Speculative decoding speed-up at batch 64") > 0.2); // EAGLE-3's fall: the model keeps more of the gain
+});
+
 test("against every s1 point, cold prefill, GPU hits and CPU hits stay within 20%", () => {
   for (const { name, rows } of s1Residuals(S1, C)) {
     for (const r of rows) for (const k of ["cold", "gpu", "cpu"]) {

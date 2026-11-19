@@ -66,7 +66,11 @@ state and FLOPs are derived from each config.json by one function covering MoE, 
 attention. A model too big for one node (Qwen3.8-2.4T, or Kimi K3 on anything smaller than 8 B300s) runs across nodes:
 tensor parallel inside each node, pipeline stages across them. The page also sets each model's modeled $ per 1M tokens beside every provider's price on
 [OpenRouter](https://openrouter.ai) (a dated snapshot in `web/data/openrouter.json`), from a reference deployment of 8
-instances loaded until the prefill GPUs are busy 60% of the time. A trade-off map plots every tier
+instances loaded until the prefill GPUs are busy 60% of the time. Decode there holds each model's p50 throughput on
+OpenRouter (recorded by hand in `openrouter.py`, since the API's throughput fields are empty) by running the largest
+batch that keeps it; an MoE step reads only the experts its batch picked. Decode can add speculative decoding (MTP, EAGLE-3, DFlash, DSpark or
+custom numbers) and expert parallelism over more GPUs than one node, with all-to-all traffic at DeepEP's measured rates;
+both are checked against published runs (Kimi K2.5 on B200 and GB200, DeepSeek-V3 in production, EAGLE-3 and DFlash). A trade-off map plots every tier
 combination with its Pareto frontier, and a diagram shows the cluster. The workload can be synthetic conversations,
 a [Mooncake](https://github.com/kvcache-ai/Mooncake) trace, or an uploaded trace. Every input is a published figure
 with its source: NVIDIA datasheets, InferenceX vLLM runs, drive and cloud-storage documents (AWS S3, Nebius), and

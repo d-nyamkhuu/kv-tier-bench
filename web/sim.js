@@ -5,7 +5,7 @@
 // over the network, and shared storage for the whole cluster. As in vLLM's tiered offloading, every tier is written
 // through and evicts on its own (LRU).
 
-import { decodeStepS, GIB, timing } from "./model.js";
+import { decodeStep, GIB, timing } from "./model.js";
 
 // Byte-bounded LRU: a doubly linked list (oldest at head) indexed by a Map, so every operation is O(1).
 export class LRU {
@@ -150,7 +150,11 @@ const pct = (sorted, q) => sorted[Math.min(sorted.length - 1, Math.floor(q * sor
 //   gpuGiB (KV per instance), cpuGiB (per node, 0 = none),
 //   disk: fs variant per node | null, p2p: network variant | null (a hit = a block in another node's CPU tier),
 //   shared: object storage / shared filesystem variant for the whole cluster | null,
-//   decode: {gpu, batch, batchCap(ctx), pooled?} | null: disaggregated, batched decode on GPUs of its own (same TP),
+//   decode: {gpu, batch, batchCap(ctx), pooled?, speed?, spec?, ep?, overlap?} | null: disaggregated, batched
+//     decode on GPUs of its own (same TP); speed (tokens/s per request): the batch is the largest that keeps each
+//     request at least this fast, as a provider holding a per-user speed runs it (none: as large as max batch and
+//     memory allow); spec: speculative decoding (a token takes step / accepted tokens); ep: experts spread over ep
+//     GPUs (decode then needs no pipeline stages), batch per attention group of tp GPUs (model.decodeStep),
 //   transfer: network variant for the prefill -> decode KV | null, simBlockTokens,
 //   costScale: real nodes / simulated nodes (a large cluster is replayed at <= 8 nodes with its per-node load).
 // Every tier is written through and evicts on its own (LRU). Lookup per block, nearest first: own GPU, own node's CPU,
@@ -161,7 +165,9 @@ export function simulate(workload, cfg) {
   const cl = { nodes: 1, gpusPerNode: 1, tp: 1, pp: 1, ...cfg.cluster };
   const pp = cl.pp;
   const T = timing(m, cfg.gpu, cfg.software, cl.tp, undefined, { stages: pp, link: cfg.stageLink });
-  const stepHops = pp > 1 && cfg.stageLink ? (pp - 1) * (cfg.stageLink.latency_s ?? 0) : 0; // a decode step's hidden state is tiny
+  const decodeEp = cfg.decode?.ep > cl.tp ? cfg.decode.ep : null; // experts over ep GPUs: decode runs without stages
+  const stepHops = !decodeEp && pp > 1 && cfg.stageLink ? (pp - 1) * (cfg.stageLink.latency_s ?? 0) : 0; // a decode step's hidden state is tiny
+  const decodeOpts = cfg.decode ? { spec: cfg.decode.spec ?? null, ep: decodeEp, overlap: !!cfg.decode.overlap } : null;
   const B = workload.blockTokens ?? Math.max(m.block_size, Math.ceil((cfg.simBlockTokens ?? 0) / m.block_size) * m.block_size);
   const blockBytes = B * m.kv_bytes_per_token;
   const perNode = Math.max(1, Math.floor(cl.gpusPerNode / cl.tp));
@@ -196,8 +202,10 @@ export function simulate(workload, cfg) {
   const keys = ["gpu", "cpu", ...lower.map((t) => t.key), "miss"];
   const tokens = Object.fromEntries(keys.map((k) => [k, 0]));
   const ttfts = [], e2es = [], waits = [], prefills = [], transfers = [], steps = [];
-  let promptTokens = 0, outputTokens = 0, busy = 0, decodeGpuSeconds = 0, counted = 0;
+  let promptTokens = 0, outputTokens = 0, busy = 0, decodeGpuSeconds = 0, counted = 0, slowRequests = 0;
+  const batches = [], accepted = [], speedups = [];
   let busyUncached = 0, busyCached = 0, cachedTokens = 0; // prefill time by what it served, for the price sheet
+  let busyLoads = 0; // of busyCached: loading blocks (the rest is the cached tokens' share of vLLM's overhead)
   const reqs = workload.requests;
   const t0 = reqs.length ? reqs[0].t + (cfg.warmupS ?? 0) : 0;
   let sharedAddedAtT0 = null, diskAddedAtT0 = null;
@@ -228,20 +236,45 @@ export function simulate(workload, cfg) {
     if (req.t >= t0) {
       const out = req.out ?? 0;
       const ctx = req.n + out / 2;
-      const batch = dec ? Math.max(1, Math.min(dec.batch, dec.batchCap ? dec.batchCap(ctx) : dec.batch)) : 1;
-      const step = dec ? decodeStepS(m, dec.gpu, batch, ctx, cl.tp) + stepHops : 0;
+      const most = dec ? Math.max(1, Math.min(dec.batch, dec.batchCap ? dec.batchCap(ctx) : dec.batch)) : 1;
+      // time per output token at a batch: one step (plus pipeline hops) over the tokens it yields per sequence. A
+      // drafter that would slow the step down (a large batch is compute-bound, and checking drafts multiplies the
+      // FLOPs) is switched off, as production drafters shrink their checking with load (the DSpark paper's budget
+      // "decreases smoothly with load"); off or on is a simplification of that
+      const run = (b) => {
+        const plain = decodeStep(m, dec.gpu, b, ctx, cl.tp, { ...decodeOpts, spec: null });
+        const r = decodeOpts.spec ? decodeStep(m, dec.gpu, b, ctx, cl.tp, decodeOpts) : plain;
+        const best = (r.step + stepHops) / r.tokens < plain.step + stepHops ? r : plain;
+        return { step: best.step + stepHops, perToken: (best.step + stepHops) / best.tokens, tokens: best.tokens, plain: plain.step + stepHops };
+      };
+      const perTokenAt = (b) => run(b).perToken;
+      let batch = most;
+      if (dec?.speed > 0 && perTokenAt(most) > 1 / dec.speed) {
+        // a token's time grows with the batch: bisect for the largest batch at the speed; batch 1 when even that is slower
+        let lo = 1, hi = most;
+        if (perTokenAt(1) > 1 / dec.speed) { hi = 1; slowRequests++; }
+        while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (perTokenAt(mid) <= 1 / dec.speed) lo = mid; else hi = mid; }
+        batch = hi === 1 ? 1 : lo;
+      }
+      const at = dec ? run(batch) : { step: 0, perToken: 0, tokens: 1 };
+      const step = at.step, perToken = at.perToken;
+      if (dec) {
+        batches.push(batch); accepted.push(at.tokens);
+        if (decodeOpts.spec?.draft) speedups.push(at.plain / perToken);
+      }
       const tr = xfer(req.n);
       const ttft = start - req.t + prefill + tr + step;
       ttfts.push(ttft); waits.push(start - req.t); prefills.push(prefill); transfers.push(tr);
-      e2es.push(ttft + Math.max(0, out - 1) * step);
-      if (dec) steps.push(step);
+      e2es.push(ttft + Math.max(0, out - 1) * perToken);
+      if (dec) steps.push(perToken);
       busy += prefill / pp;
       // overhead by token share; recompute (with its attention over the cached part) to uncached, loads to cached
       const over = T.overhead(req.n), hh = Math.min(h, req.n);
       busyCached += loads + (over * hh) / req.n;
+      busyLoads += loads;
       busyUncached += prefill - loads - (over * hh) / req.n;
       cachedTokens += hh;
-      decodeGpuSeconds += ((out * step) / batch) * cl.tp;
+      decodeGpuSeconds += ((out * perToken) / batch) * cl.tp; // the ep / tp groups of an EP instance each run a batch
       promptTokens += req.n;
       outputTokens += out;
       for (const kk of keys) if (kk !== "miss") tokens[kk] += k[kk] * B;
@@ -269,7 +302,8 @@ export function simulate(workload, cfg) {
   // decode instances span pp nodes too and keep pp batches in flight, so a step's GPU time is tp, not tp x pp
   // (decode.pooled: sized to the load in GPU fractions, as a provider pooling many clusters' decode would)
   const decodeNeed = (decodeGpuSeconds * scaleUp) / Math.max(windowS, 1);
-  const decodeGpus = !dec ? 0 : dec.pooled ? decodeNeed : Math.ceil(decodeNeed / (cl.tp * pp)) * cl.tp * pp;
+  const decodeWidth = decodeEp ?? cl.tp * pp; // whole decode instances
+  const decodeGpus = !dec ? 0 : dec.pooled ? decodeNeed : Math.ceil(decodeNeed / decodeWidth) * decodeWidth;
   const prefillUsd = prefillGpus * usdH(cfg.gpu) * windowH;
   const decodeUsd = decodeGpus * usdH(dec?.gpu) * windowH;
   const storageOf = (v, lru, copies) => {
@@ -304,6 +338,11 @@ export function simulate(workload, cfg) {
     requests: counted, promptTokens, outputTokens, tokens, share, order: keys, blockTokens: B, windowS,
     ttft: stats(ttfts), e2e: stats(e2es), wait: stats(waits).mean, prefill: stats(prefills).mean, transfer: stats(transfers).mean,
     tpot: steps.length ? stats(steps).mean : null,
+    // decode batch per request (mean), and the share of requests below the speed target even at batch 1
+    decodeBatch: batches.length ? stats(batches).mean : null, belowSpeed: counted && dec?.speed ? slowRequests / counted : 0,
+    // speculative decoding: tokens accepted per step, and the speed-up over no drafter at the same batch (1 where it was
+    // switched off)
+    acceptedTokens: accepted.length ? stats(accepted).mean : null, specSpeedup: speedups.length ? stats(speedups).mean : null,
     utilization: windowS ? busy / windowS / inst.length : 0, // above 1, requests queue without bound
     instances: inst.length * scaleUp, prefillGpus, decodeGpus, priced,
     usd: { prefill: prefillUsd, decode: decodeUsd, storage: storageUsd, fixed: fixedUsd, total },
@@ -316,7 +355,12 @@ export function simulate(workload, cfg) {
       const usd = { input: prefillUsd * split, cachedInput: prefillUsd * (1 - split) + storageUsd + fixedUsd, output: decodeUsd };
       const tok = { input: promptTokens - cachedTokens, cachedInput: cachedTokens, output: dec ? outputTokens : 0 };
       const per1M = (k) => (tok[k] ? (usd[k] / scaleUp / tok[k]) * 1e6 : null);
-      return { usd, tokens: tok, input: per1M("input"), cachedInput: per1M("cachedInput"), output: per1M("output") };
+      // what a cached token's price is made of, $ per 1M cached tokens
+      const busy = busyUncached + busyCached;
+      const parts = tok.cachedInput ? Object.fromEntries(Object.entries({
+        loads: busy ? (prefillUsd * busyLoads) / busy : 0, overhead: busy ? (prefillUsd * (busyCached - busyLoads)) / busy : 0, storage: storageUsd, fixed: fixedUsd,
+      }).map(([k, v]) => [k, (v / scaleUp / tok.cachedInput) * 1e6])) : null;
+      return { usd, tokens: tok, input: per1M("input"), cachedInput: per1M("cachedInput"), output: per1M("output"), cachedParts: parts };
     })(),
     evictions: { gpu: inst.reduce((a, i) => a + i.gpu.evictions, 0), cpu: nodes.reduce((a, n) => a + n.cpu.evictions, 0) },
   };
