@@ -3,7 +3,8 @@
 
 gpu_hour_usd:
   rtx-pro-6000: 1.80        # gpu-rtx6000, on demand, per GPU (vCPU/RAM included). Stage 1 runs preemptible in
-                            # eu-south1: spot $1.38 at launch (api.nebius.cloud, 2026-11-18).
+                            # eu-south1: spot $1.38 at launch (api.nebius.cloud, 2026-11-18). Stage 2 runs in
+                            # us-central1: on demand also $1.80, spot $1.19 at launch (2026-11-19).
                             # The table uses on demand, the price a reader can count on.
 
 # "included" = already paid for with the GPU VM (HBM, host RAM). null = price not known yet; `kvtb cost` refuses
@@ -11,6 +12,14 @@ gpu_hour_usd:
 storage_gib_month_usd:
   gpu: included
   cpu: included
-  p2p: included             # peer CPU memory, as for cpu
+  p2p: included             # peer CPU memory, as for cpu (s1, s2: the peer is a GPU VM serving traffic anyway)
+  ram_cpu_vm: 6.02          # RAM of a CPU-only VM held for KV (s3's p2p and store): cpu-d3 (AMD EPYC Genoa) bills
+                            # $0.015 per vCPU-hour + $0.0045 per GiB-hour, on demand, and its presets have 4 GiB per
+                            # vCPU, so $0.00825 per GiB-hour = $6.02 per GiB-month. The GPU VM's RAM costs about the
+                            # same ($1.80/h for 218 GiB). docs.nebius.com/compute/resources/pricing, 2026-11-19
   fs_network_ssd_nrd: 0.053 # network_ssd_non_replicated
+  fs_shared_network_ssd: 0.08 # shared filesystem, network_ssd type (docs.nebius.com/compute/storage/types, 2026-11-19)
   obj_enhanced: 0.11        # Object Storage, Enhanced Throughput class; its requests and same-region traffic are free
+  obj_standard: 0.0147      # Standard class (docs.nebius.com/object-storage/resources/pricing, 2026-11-19). Unlike
+                            # Enhanced, it bills requests: $0.0034 per 1000 PUTs, $0.00028 per 1000 GETs. `kvtb cost`
+                            # leaves requests out; reads are throttled to 20 GBps per tenant per region.

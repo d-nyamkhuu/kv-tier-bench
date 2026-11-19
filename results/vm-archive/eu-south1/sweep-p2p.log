@@ -1,0 +1,97 @@
+self: 10.88.0.69  peer: kvtb@10.88.0.63  stage: s1  models: qwen3.8-27b qwen3-vl-32b  deployments: p2p  backup: s3://kvtb-cache/results/s1.jsonl
+== s1/qwen3.8-27b/p2p: start vLLM (40 of 40 points to run, in 8 jobs (one prefill each))
+== s1/qwen3.8-27b/p2p: measure
+40 points in 8 jobs to run, 0 already done, block size 448
+[job 1/8      2s] ok  s1/qwen3.8-27b/p2p/1024/r0 a1 read=0.171s 
+[job 1/8      2s] ok  s1/qwen3.8-27b/p2p/1024/r1 a1 read=0.151s 
+[job 1/8      3s] ok  s1/qwen3.8-27b/p2p/1024/r2 a1 read=0.142s 
+[job 1/8      3s] ok  s1/qwen3.8-27b/p2p/1024/r3 a1 read=0.157s 
+[job 1/8      3s] ok  s1/qwen3.8-27b/p2p/1024/r4 a1 read=0.135s 
+[job 2/8      5s] ok  s1/qwen3.8-27b/p2p/2048/r0 a0 read=0.161s 
+[job 2/8      5s] ok  s1/qwen3.8-27b/p2p/2048/r1 a0 read=0.197s 
+[job 2/8      6s] ok  s1/qwen3.8-27b/p2p/2048/r2 a0 read=0.210s 
+[job 2/8      6s] ok  s1/qwen3.8-27b/p2p/2048/r3 a0 read=0.208s 
+[job 2/8      6s] ok  s1/qwen3.8-27b/p2p/2048/r4 a0 read=0.187s 
+[job 3/8      9s] ok  s1/qwen3.8-27b/p2p/4096/r0 a0 read=0.254s 
+[job 3/8      9s] ok  s1/qwen3.8-27b/p2p/4096/r1 a0 read=0.210s 
+[job 3/8      9s] ok  s1/qwen3.8-27b/p2p/4096/r2 a0 read=0.203s 
+[job 3/8      9s] ok  s1/qwen3.8-27b/p2p/4096/r3 a0 read=0.251s 
+[job 3/8     10s] ok  s1/qwen3.8-27b/p2p/4096/r4 a0 read=0.256s 
+[job 4/8     13s] ok  s1/qwen3.8-27b/p2p/8192/r0 a0 read=0.336s 
+[job 4/8     13s] ok  s1/qwen3.8-27b/p2p/8192/r1 a0 read=0.374s 
+[job 4/8     14s] ok  s1/qwen3.8-27b/p2p/8192/r2 a0 read=0.385s 
+[job 4/8     14s] ok  s1/qwen3.8-27b/p2p/8192/r3 a0 read=0.423s 
+[job 4/8     15s] ok  s1/qwen3.8-27b/p2p/8192/r4 a0 read=0.434s 
+[job 5/8     19s] ok  s1/qwen3.8-27b/p2p/16384/r0 a0 read=0.506s 
+[job 5/8     20s] ok  s1/qwen3.8-27b/p2p/16384/r1 a0 read=0.504s 
+[job 5/8     20s] ok  s1/qwen3.8-27b/p2p/16384/r2 a0 read=0.518s 
+[job 5/8     21s] ok  s1/qwen3.8-27b/p2p/16384/r3 a0 read=0.557s 
+[job 5/8     22s] ok  s1/qwen3.8-27b/p2p/16384/r4 a0 read=0.758s 
+[job 6/8     30s] ok  s1/qwen3.8-27b/p2p/32768/r0 a0 read=1.218s 
+[job 6/8     31s] ok  s1/qwen3.8-27b/p2p/32768/r1 a0 read=1.171s 
+[job 6/8     32s] ok  s1/qwen3.8-27b/p2p/32768/r2 a0 read=0.928s 
+[job 6/8     33s] ok  s1/qwen3.8-27b/p2p/32768/r3 a0 read=1.225s 
+[job 6/8     34s] ok  s1/qwen3.8-27b/p2p/32768/r4 a0 read=1.263s 
+[job 7/8     50s] ok  s1/qwen3.8-27b/p2p/65536/r0 a0 read=2.337s 
+[job 7/8     52s] ok  s1/qwen3.8-27b/p2p/65536/r1 a0 read=1.987s 
+[job 7/8     54s] ok  s1/qwen3.8-27b/p2p/65536/r2 a0 read=1.936s 
+[job 7/8     56s] ok  s1/qwen3.8-27b/p2p/65536/r3 a0 read=1.855s 
+[job 7/8     58s] ok  s1/qwen3.8-27b/p2p/65536/r4 a0 read=1.810s 
+[job 8/8     92s] ok  s1/qwen3.8-27b/p2p/131072/r0 a0 read=3.455s 
+[job 8/8     95s] ok  s1/qwen3.8-27b/p2p/131072/r1 a0 read=3.423s 
+[job 8/8     99s] ok  s1/qwen3.8-27b/p2p/131072/r2 a0 read=3.452s 
+[job 8/8    102s] ok  s1/qwen3.8-27b/p2p/131072/r3 a0 read=3.501s 
+[job 8/8    106s] ok  s1/qwen3.8-27b/p2p/131072/r4 a0 read=3.434s 
+{"valid": 40, "invalid": 0, "skipped": 0}
+== s1/qwen3.8-27b/p2p: stop vLLM
+Unable to find image 'busybox:1.37' locally
+1.37: Pulling from library/busybox
+68fe9bff2ad4: Pulling fs layer
+68fe9bff2ad4: Verifying Checksum
+68fe9bff2ad4: Download complete
+68fe9bff2ad4: Pull complete
+Digest: sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+Status: Downloaded newer image for busybox:1.37
+cleaned fs and obj tiers for qwen3.8-27b
+== s1/qwen3-vl-32b/p2p: start vLLM (35 of 35 points to run, in 7 jobs (one prefill each))
+== s1/qwen3-vl-32b/p2p: measure
+35 points in 7 jobs to run, 0 already done, block size 64
+[job 1/7      2s] ok  s1/qwen3-vl-32b/p2p/1024/r0 a0 read=0.201s 
+[job 1/7      2s] ok  s1/qwen3-vl-32b/p2p/1024/r1 a0 read=0.198s 
+[job 1/7      3s] ok  s1/qwen3-vl-32b/p2p/1024/r2 a0 read=0.203s 
+[job 1/7      3s] ok  s1/qwen3-vl-32b/p2p/1024/r3 a0 read=0.203s 
+[job 1/7      3s] ok  s1/qwen3-vl-32b/p2p/1024/r4 a0 read=0.207s 
+[job 2/7      5s] ok  s1/qwen3-vl-32b/p2p/2048/r0 a0 read=0.293s 
+[job 2/7      6s] ok  s1/qwen3-vl-32b/p2p/2048/r1 a0 read=0.297s 
+[job 2/7      6s] ok  s1/qwen3-vl-32b/p2p/2048/r2 a0 read=0.305s 
+[job 2/7      6s] ok  s1/qwen3-vl-32b/p2p/2048/r3 a0 read=0.305s 
+[job 2/7      7s] ok  s1/qwen3-vl-32b/p2p/2048/r4 a0 read=0.296s 
+[job 3/7     10s] ok  s1/qwen3-vl-32b/p2p/4096/r0 a0 read=0.499s 
+[job 3/7     10s] ok  s1/qwen3-vl-32b/p2p/4096/r1 a0 read=0.462s 
+[job 3/7     11s] ok  s1/qwen3-vl-32b/p2p/4096/r2 a0 read=0.453s 
+[job 3/7     11s] ok  s1/qwen3-vl-32b/p2p/4096/r3 a0 read=0.454s 
+[job 3/7     12s] ok  s1/qwen3-vl-32b/p2p/4096/r4 a0 read=0.519s 
+[job 4/7     16s] ok  s1/qwen3-vl-32b/p2p/8192/r0 a0 read=0.835s 
+[job 4/7     17s] ok  s1/qwen3-vl-32b/p2p/8192/r1 a0 read=0.838s 
+[job 4/7     18s] ok  s1/qwen3-vl-32b/p2p/8192/r2 a0 read=0.864s 
+[job 4/7     19s] ok  s1/qwen3-vl-32b/p2p/8192/r3 a0 read=0.854s 
+[job 4/7     19s] ok  s1/qwen3-vl-32b/p2p/8192/r4 a0 read=0.877s 
+[job 5/7     26s] ok  s1/qwen3-vl-32b/p2p/16384/r0 a0 read=1.593s 
+[job 5/7     28s] ok  s1/qwen3-vl-32b/p2p/16384/r1 a0 read=1.583s 
+[job 5/7     30s] ok  s1/qwen3-vl-32b/p2p/16384/r2 a0 read=1.601s 
+[job 5/7     31s] ok  s1/qwen3-vl-32b/p2p/16384/r3 a0 read=1.603s 
+[job 5/7     33s] ok  s1/qwen3-vl-32b/p2p/16384/r4 a0 read=1.591s 
+[job 6/7     47s] ok  s1/qwen3-vl-32b/p2p/32768/r0 a0 read=3.158s 
+[job 6/7     50s] ok  s1/qwen3-vl-32b/p2p/32768/r1 a0 read=3.136s 
+[job 6/7     53s] ok  s1/qwen3-vl-32b/p2p/32768/r2 a0 read=3.107s 
+[job 6/7     57s] ok  s1/qwen3-vl-32b/p2p/32768/r3 a0 read=3.146s 
+[job 6/7     60s] ok  s1/qwen3-vl-32b/p2p/32768/r4 a0 read=3.098s 
+[job 7/7     93s] ok  s1/qwen3-vl-32b/p2p/65536/r0 a0 read=6.096s 
+[job 7/7     99s] ok  s1/qwen3-vl-32b/p2p/65536/r1 a0 read=6.092s 
+[job 7/7    106s] ok  s1/qwen3-vl-32b/p2p/65536/r2 a0 read=6.080s 
+[job 7/7    112s] ok  s1/qwen3-vl-32b/p2p/65536/r3 a0 read=6.172s 
+[job 7/7    118s] ok  s1/qwen3-vl-32b/p2p/65536/r4 a0 read=6.138s 
+{"valid": 35, "invalid": 0, "skipped": 0}
+== s1/qwen3-vl-32b/p2p: stop vLLM
+cleaned fs and obj tiers for qwen3-vl-32b
+SWEEP_EXIT=0

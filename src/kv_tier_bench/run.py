@@ -6,6 +6,7 @@ prompt for those points only, until each is valid or has `max_attempts` attempts
 
 from __future__ import annotations
 
+import asyncio
 import re
 import sys
 import time
@@ -18,7 +19,7 @@ from .client import Engine
 from .grid import Point, expand, group_jobs
 from .measure import run_job, warm_up
 from .store import ResultStore
-from .tierconfig import DEPLOYMENT_FOR_TIER
+from .tierconfig import READER_DEPLOYMENTS, STORE_DEPLOYMENTS, deployment_for
 
 
 class Abort(RuntimeError):
@@ -26,6 +27,9 @@ class Abort(RuntimeError):
 
 
 BREAKER = 5  # consecutive invalid attempts with the same reason before the run stops
+# MooncakeStoreConnector skips lookups for 30 s after three failed ones (vLLM docs), so a retry right after a failed
+# store attempt would miss too. Wait that window out first.
+STORE_LOOKUP_BACKOFF_S = 31.0
 
 
 @dataclass
@@ -41,7 +45,7 @@ def reason_kind(reason: str | None) -> str:
 
 
 def points_for(exp: dict, stage: str, model: str, deployment: str, tiers: list[str] | None = None) -> list[Point]:
-    pts = [p for p in expand(exp, stage) if p.model == model and DEPLOYMENT_FOR_TIER[p.tier] == deployment]
+    pts = [p for p in expand(exp, stage) if p.model == model and deployment_for(stage, p.tier) == deployment]
     return [p for p in pts if p.tier in tiers] if tiers else pts
 
 
@@ -101,15 +105,15 @@ async def run_deployment(
                 else:
                     bad.setdefault(row["tier"], row)
 
-            p2p = job.deployment == "p2p"
+            two = job.deployment in READER_DEPLOYMENTS
             try:
                 await run_job(
                     job,
                     missing,
                     block_size,
                     peers.writer,
-                    reader=peers.reader if p2p else None,
-                    source_host=peers.source_host if p2p else None,
+                    reader=peers.reader if two else None,
+                    source_host=peers.source_host if job.deployment == "p2p" else None,
                     attempt=attempt,
                     kv_bytes_per_token=kv_bytes_per_token,
                     emit=emit,
@@ -133,6 +137,8 @@ async def run_deployment(
                                 "started": time.time(),
                             }
                         )
+            if bad and job.deployment in STORE_DEPLOYMENTS:
+                await asyncio.sleep(STORE_LOOKUP_BACKOFF_S)
             # The breaker counts job attempts, once the attempt is over: its reps share a prefill and fail
             # together, and a tier that only fails from rep 2 on (say, CPU after an fs read) must still count.
             for tier in good - bad.keys():

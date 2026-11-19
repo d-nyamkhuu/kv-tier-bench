@@ -42,15 +42,19 @@ class Summary:
     load_gib_s: dict  # valid reads: the tier's read bytes / read time, as vLLM reports them
     recompute_s: dict  # cold writes (`write_s`): the recompute baseline, one sample per job attempt
     store_gib_s: dict  # cold writes: the secondary tier's write bytes / write time
+    queue_s: dict  # valid reads: vLLM's queue time (≈ the load), where the row has it
+    prefill_s: dict  # valid reads: vLLM's prefill time (the uncached tail), where the row has it
+    read_bytes: dict  # valid reads: bytes read from the tier under test
 
 
 def summarize(rows: list[dict], stage: str) -> Summary:
-    from .tierconfig import DEPLOYMENT_FOR_TIER
+    from .tierconfig import deployment_for
 
-    reads, loads, cold, stores = (defaultdict(list) for _ in range(4))
+    reads, loads, cold, stores, queue, prefill, nbytes = (defaultdict(list) for _ in range(7))
     seen: set[tuple[str, int]] = set()
     for r in rows:
-        if r.get("stage") != stage:
+        # one request at a time only; batches (concurrency > 1) are summarized by load.summarize
+        if r.get("stage") != stage or r.get("concurrency", 1) != 1:
             continue
         model, tier, n = r["model"], r["tier"], r["prefix_tokens"]
         if r.get("valid"):
@@ -58,10 +62,13 @@ def summarize(rows: list[dict], stage: str) -> Summary:
             # p2p reports no read time: fall back to its promotion latency, which also counts tier queueing
             if t := r.get("read_time_s") or r.get("promotion_s"):
                 loads[(model, tier, n)].append(r["read_bytes"] / t / GIB)
+            for d, field in ((queue, "engine_queue_s"), (prefill, "engine_prefill_s"), (nbytes, "read_bytes")):
+                if r.get(field) is not None:
+                    d[(model, tier, n)].append(r[field])
         # every row of a job attempt carries the same write; count it once
         if r.get("write_s") is not None and (r["job"], r["attempt"]) not in seen:
             seen.add((r["job"], r["attempt"]))
-            key = (model, DEPLOYMENT_FOR_TIER[tier], n)
+            key = (model, deployment_for(stage, tier), n)
             cold[key].append(r["write_s"])
             if r.get("write_time_s"):
                 stores[key].append(r["write_bytes"] / r["write_time_s"] / GIB)
@@ -69,7 +76,7 @@ def summarize(rows: list[dict], stage: str) -> Summary:
     def med(d: dict) -> dict:
         return {k: median(v) for k, v in d.items()}
 
-    return Summary(med(reads), med(loads), med(cold), med(stores))
+    return Summary(med(reads), med(loads), med(cold), med(stores), med(queue), med(prefill), med(nbytes))
 
 
 def gpu_usd(seconds: float, c: CostInputs) -> float:

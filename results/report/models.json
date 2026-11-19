@@ -1,0 +1,38 @@
+[
+{
+"stage": "s1",
+"model": "qwen3.8-27b",
+"hf_id": "Qwen/Qwen3.8-27B",
+"attention": "hybrid",
+"params_b": 27.8,
+"kv_kib_per_token": 64,
+"state_mib_per_prefix": 74.8
+},
+{
+"stage": "s1",
+"model": "qwen3-vl-32b",
+"hf_id": "Qwen/Qwen3-VL-32B-Instruct",
+"attention": "standard",
+"params_b": 33.4,
+"kv_kib_per_token": 256,
+"state_mib_per_prefix": 0.0
+},
+{
+"stage": "s2",
+"model": "qwen3.5-9b",
+"hf_id": "Qwen/Qwen3.5-9B",
+"attention": "hybrid",
+"params_b": 9.7,
+"kv_kib_per_token": 32,
+"state_mib_per_prefix": 25.1
+},
+{
+"stage": "s2",
+"model": "qwen3-8b",
+"hf_id": "Qwen/Qwen3-8B",
+"attention": "standard",
+"params_b": 8.2,
+"kv_kib_per_token": 144,
+"state_mib_per_prefix": 0.0
+}
+]

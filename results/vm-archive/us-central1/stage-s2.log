@@ -1,0 +1,77 @@
+Unable to find image 'python:3.12-slim' locally
+Unable to find image 'python:3.12-slim' locally
+3.12-slim: Pulling from library/python
+37fb86c2a767: Pulling fs layer
+68bced9e0afa: Pulling fs layer
+2dc99d2d0a39: Pulling fs layer
+05e0eee5572e: Pulling fs layer
+37fb86c2a767: Waiting
+2dc99d2d0a39: Waiting
+05e0eee5572e: Waiting
+68bced9e0afa: Waiting
+3.12-slim: Pulling from library/python
+37fb86c2a767: Pulling fs layer
+68bced9e0afa: Pulling fs layer
+2dc99d2d0a39: Pulling fs layer
+05e0eee5572e: Pulling fs layer
+2dc99d2d0a39: Waiting
+05e0eee5572e: Waiting
+68bced9e0afa: Waiting
+37fb86c2a767: Waiting
+37fb86c2a767: Download complete
+68bced9e0afa: Verifying Checksum
+68bced9e0afa: Download complete
+2dc99d2d0a39: Verifying Checksum
+2dc99d2d0a39: Download complete
+05e0eee5572e: Verifying Checksum
+05e0eee5572e: Download complete
+37fb86c2a767: Verifying Checksum
+37fb86c2a767: Download complete
+68bced9e0afa: Verifying Checksum
+68bced9e0afa: Download complete
+37fb86c2a767: Pull complete
+2dc99d2d0a39: Verifying Checksum
+2dc99d2d0a39: Download complete
+05e0eee5572e: Verifying Checksum
+05e0eee5572e: Download complete
+68bced9e0afa: Pull complete
+2dc99d2d0a39: Pull complete
+05e0eee5572e: Pull complete
+Digest: sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+Status: Downloaded newer image for python:3.12-slim
+37fb86c2a767: Pull complete
+68bced9e0afa: Pull complete
+2dc99d2d0a39: Pull complete
+05e0eee5572e: Pull complete
+Digest: sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+Status: Downloaded newer image for python:3.12-slim
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+
+[notice] A new release of pip is available: 25.0.1 -> 26.3
+[notice] To update, run: pip install --upgrade pip
+[90mHint: The `hf-cli` skill is not installed. Run `hf skills add -g` to teach your AI agents how to use the `hf` CLI.[0m
+Fetching 16 files:   0%|          | 0/16 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Fetching 16 files:  19%|█▉        | 3/16 [00:00<00:00, 28.61it/s]Fetching 16 files:  56%|█████▋    | 9/16 [00:00<00:00, 35.85it/s]WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+
+[notice] A new release of pip is available: 25.0.1 -> 26.3
+[notice] To update, run: pip install --upgrade pip
+[90mHint: The `hf-cli` skill is not installed. Run `hf skills add -g` to teach your AI agents how to use the `hf` CLI.[0m
+Fetching 16 files:   0%|          | 0/16 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Fetching 16 files:  25%|██▌       | 4/16 [00:00<00:00, 39.08it/s]Fetching 16 files:  69%|██████▉   | 11/16 [00:00<00:00, 44.80it/s]Fetching 16 files:  75%|███████▌  | 12/16 [00:20<00:00, 35.85it/s]Fetching 16 files:  75%|███████▌  | 12/16 [00:20<00:00, 44.80it/s]Fetching 16 files:  81%|████████▏ | 13/16 [01:11<00:22,  7.35s/it]Fetching 16 files:  81%|████████▏ | 13/16 [01:21<00:27,  9.20s/it]Fetching 16 files:  88%|████████▊ | 14/16 [02:14<00:29, 14.56s/it]Fetching 16 files:  88%|████████▊ | 14/16 [02:12<00:29, 14.96s/it]Fetching 16 files:  94%|█████████▍| 15/16 [02:14<00:12, 12.81s/it][32m✓ Downloaded[0m
+  path: /models/hub/models--Qwen--Qwen3.5-9B/snapshots/c202236235762e1c871ad0ccb60c8ee5ba337b9a
+Fetching 16 files: 100%|██████████| 16/16 [02:18<00:00,  8.67s/it]
+Fetching 15 files:   0%|          | 0/15 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Fetching 15 files:  27%|██▋       | 4/15 [00:00<00:00, 39.55it/s]Fetching 15 files:  53%|█████▎    | 8/15 [00:00<00:00, 38.87it/s]Fetching 16 files:  94%|█████████▍| 15/16 [02:24<00:13, 13.80s/it]Fetching 16 files: 100%|██████████| 16/16 [02:25<00:00,  9.06s/it]
+[32m✓ Downloaded[0m
+  path: /models/hub/models--Qwen--Qwen3.5-9B/snapshots/c202236235762e1c871ad0ccb60c8ee5ba337b9a
+Fetching 15 files:   0%|          | 0/15 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Fetching 15 files:  33%|███▎      | 5/15 [00:00<00:00, 48.22it/s]Fetching 15 files:  67%|██████▋   | 10/15 [00:00<00:00,  8.85it/s]Fetching 15 files:  67%|██████▋   | 10/15 [00:20<00:00, 38.87it/s]Fetching 15 files:  67%|██████▋   | 10/15 [00:20<00:00,  8.85it/s]Fetching 15 files:  73%|███████▎  | 11/15 [00:22<00:12,  3.15s/it]Fetching 15 files:  73%|███████▎  | 11/15 [00:45<00:23,  5.91s/it]Fetching 15 files:  80%|████████  | 12/15 [01:38<00:39, 13.09s/it]Fetching 15 files:  80%|████████  | 12/15 [01:51<00:53, 17.88s/it]Fetching 15 files:  87%|████████▋ | 13/15 [01:56<00:28, 14.10s/it]Fetching 15 files:  93%|█████████▎| 14/15 [02:01<00:12, 12.09s/it]Fetching 15 files:  87%|████████▋ | 13/15 [02:00<00:32, 16.03s/it][32m✓ Downloaded[0m
+  path: /models/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218
+Fetching 15 files: 100%|██████████| 15/15 [02:04<00:00,  8.30s/it]
+Fetching 15 files: 100%|██████████| 15/15 [02:07<00:00, 11.59s/it]Fetching 15 files: 100%|██████████| 15/15 [02:07<00:00,  8.50s/it]
+[32m✓ Downloaded[0m
+  path: /models/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218
+docker.io/vllm/vllm-openai:v0.34.0
+docker.io/vllm/vllm-openai:v0.34.0
+weights staged: Qwen/Qwen3.5-9B Qwen/Qwen3-8B
+STAGE-DONE

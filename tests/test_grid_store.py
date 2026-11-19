@@ -75,7 +75,7 @@ def test_no_point_overflows_the_tiers_it_uses():
         st = EXP["stages"][stage]
         for p in expand(EXP, stage):
             shape = load_shape(p.model, root / EXP["models"][p.model]["config"])
-            need = shape.prefix_bytes(p.target_tokens, tp=st["tp"])
+            need = p.concurrency * shape.prefix_bytes(p.target_tokens, tp=st["tp"])  # a batch is in memory at once
             assert need <= FIT_FRACTION * gpu_kv_budget(EXP, stage, p.model), p.id
             if p.tier in CPU_TIERS:
                 assert need <= FIT_FRACTION * st["cpu_tier_gib"] * GIB, p.id

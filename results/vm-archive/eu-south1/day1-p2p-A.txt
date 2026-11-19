@@ -1,0 +1,47 @@
+== vLLM version
+0.34.0
+== NIXL plugins
+/usr/local/lib/python3.12/dist-packages/nixl
+['__init__.py', '__pycache__', '_api.py', 'logging.py']
+== attention block size
+(EngineCore pid=117) INFO 11-18 21:17:47 [interface.py:1120] Setting attention block size to 448 tokens to ensure that attention page size is >= mamba page size.
+== HMA / hybrid manager
+(EngineCore pid=117) INFO 11-18 21:16:33 [core.py:153] Initializing a V1 LLM engine (v0.34.0) with config: model='/models/hub/models--Qwen--Qwen3.8-27B/snapshots/37561816e66b5b9153b1b64c10968c18c1e6f4a0', speculative_config=None, tokenizer='/models/hub/models--Qwen--Qwen3.8-27B/snapshots/37561816e66b5b9153b1b64c10968c18c1e6f4a0', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.bfloat16, max_seq_len=140000, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=None, quantization_config=None, enforce_eager=False, aux_output_config=AuxOutputConfig(enable_return_routed_experts=False, max_bytes=None), kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, per_request_spec_decode_metrics='none', kv_cache_metrics=False, kv_cache_metrics_sample=0.01, custom_histogram_buckets=None, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False, jit_monitor_mode='warn', jit_monitor_verbose=False), seed=0, served_model_name=/models/hub/models--Qwen--Qwen3.8-27B/snapshots/37561816e66b5b9153b1b64c10968c18c1e6f4a0, enable_prefix_caching=True, enable_chunked_prefill=True, pooler_config=None, compilation_config={'mode': <CompilationMode.NONE: 0>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['all'], 'ir_enable_torch_wrap': False, 'splitting_ops': [], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_token_budget': 5120, 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'cudagraph_decoder_replay': True, 'decoder_replay_cudagraph_capture_sizes': [], 'decoder_replay_trim_threshold': 768, 'compile_sizes': [], 'compile_ranges_endpoints': [8192], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.FULL_AND_PIECEWISE: (2, 1)>, 'use_breakable_cudagraph': True, 'cudagraph_num_of_warmups': 1, 'cudagraph_capture_sizes': [1, 2, 4, 8, 16, 24, 32, 40, 48, 56, 64], 'prefill_cudagraph_capture_token_sizes': [1, 2, 4, 8, 16, 24, 32, 40, 48, 56, 64], 'max_prefill_cudagraph_capture_tokens': 64, 'decode_cudagraph_capture_request_sizes': [1, 2, 4, 8, 16, 24, 32], 'max_decode_cudagraph_capture_requests': 32, 'max_decode_cudagraph_capture_tokens': None, 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': True, 'fuse_act_quant': True, 'fuse_attn_quant': False, 'fuse_allreduce_rms': False, 'enable_qk_norm_rope_fusion': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False, 'fuse_qk_norm_rope_kvcache': False}, 'max_cudagraph_capture_size': 64, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'], gelu_and_mul_sparse=['triton', 'native']), enable_flashinfer_autotune=True, enable_rocm_segmented_attn_autotune=False, enable_rocm_aiter_gemm_warmup=False, enable_cutedsl_warmup=True, enable_jit_warmup=True, monokernel=False, moe_backend='auto', sparse_indexer_topk_backend='auto', linear_backend='auto', linear_backend_per_quant=None, rdna_hybrid_w4a16_prefill_dequant='disable')
+== UCX transport (p2p)
+(EngineCore pid=117) INFO 11-18 21:20:37 [nixl_utils.py:33] Setting UCX_RCACHE_MAX_UNRELEASED to '1024' to avoid a rare memory leak in UCX when using NIXL.
+(APIServer pid=1) INFO 11-18 21:20:41 [nixl_utils.py:33] Setting UCX_RCACHE_MAX_UNRELEASED to '1024' to avoid a rare memory leak in UCX when using NIXL.
+== fs tier I/O mode
+(no O_DIRECT warning: direct I/O in use, or not an fs deployment)
+   GATE: without O_DIRECT every fs read can come from the page cache; fs numbers are not valid (plan.md, day-1)
+== compile cache
+12K	/models/vllm-cache
+14M	/models/triton-cache
+== /dev/shm
+Filesystem      Size  Used Avail Use% Mounted on
+shm              56G   49G  8.0G  86% /dev/shm
+== metric names
+vllm:kv_offload_size_bucket
+vllm:kv_offload_size_count
+vllm:kv_offload_size_created
+vllm:kv_offload_size_sum
+vllm:kv_offload_total_bytes_created
+vllm:kv_offload_total_bytes_total
+vllm:kv_offload_total_time_created
+vllm:kv_offload_total_time_total
+vllm:prompt_tokens_cached_by_source_created
+vllm:prompt_tokens_cached_by_source_total
+== cached_by_source labels
+vllm:prompt_tokens_cached_by_source_total{engine="0",model_name="/models/hub/models--Qwen--Qwen3.8-27B/snapshots/37561816e66b5b9153b1b64c10968c18c1e6f4a0",source="device"} 0.0
+vllm:prompt_tokens_cached_by_source_total{engine="0",model_name="/models/hub/models--Qwen--Qwen3.8-27B/snapshots/37561816e66b5b9153b1b64c10968c18c1e6f4a0",source="host"} 0.0
+vllm:prompt_tokens_cached_by_source_total{engine="0",model_name="/models/hub/models--Qwen--Qwen3.8-27B/snapshots/37561816e66b5b9153b1b64c10968c18c1e6f4a0",source="p2p"} 0.0
+vllm:prompt_tokens_cached_by_source_total{engine="0",model_name="/models/hub/models--Qwen--Qwen3.8-27B/snapshots/37561816e66b5b9153b1b64c10968c18c1e6f4a0",source="disk"} 0.0
+vllm:prompt_tokens_cached_by_source_total{engine="0",model_name="/models/hub/models--Qwen--Qwen3.8-27B/snapshots/37561816e66b5b9153b1b64c10968c18c1e6f4a0",source="external_unspecified"} 0.0
+vllm:prompt_tokens_cached_by_source_created{engine="0",model_name="/models/hub/models--Qwen--Qwen3.8-27B/snapshots/37561816e66b5b9153b1b64c10968c18c1e6f4a0",source="device"} 1.7950368410292022e+09
+vllm:prompt_tokens_cached_by_source_created{engine="0",model_name="/models/hub/models--Qwen--Qwen3.8-27B/snapshots/37561816e66b5b9153b1b64c10968c18c1e6f4a0",source="host"} 1.7950368410292077e+09
+vllm:prompt_tokens_cached_by_source_created{engine="0",model_name="/models/hub/models--Qwen--Qwen3.8-27B/snapshots/37561816e66b5b9153b1b64c10968c18c1e6f4a0",source="p2p"} 1.7950368410292127e+09
+vllm:prompt_tokens_cached_by_source_created{engine="0",model_name="/models/hub/models--Qwen--Qwen3.8-27B/snapshots/37561816e66b5b9153b1b64c10968c18c1e6f4a0",source="disk"} 1.795036841029218e+09
+vllm:prompt_tokens_cached_by_source_created{engine="0",model_name="/models/hub/models--Qwen--Qwen3.8-27B/snapshots/37561816e66b5b9153b1b64c10968c18c1e6f4a0",source="external_unspecified"} 1.795036841029223e+09
+== offload config
+== tier labels
+== GDS
+gdscheck not in image

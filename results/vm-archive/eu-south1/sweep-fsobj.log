@@ -1,0 +1,431 @@
+self: 10.88.0.69  peer: none  stage: s1  models: qwen3.8-27b qwen3-vl-32b  deployments: fs obj  backup: s3://kvtb-cache/results/s1.jsonl
+== s1/qwen3.8-27b/fs: start vLLM (128 of 128 points to run, in 8 jobs (one prefill each))
+== s1/qwen3.8-27b/fs: measure
+128 points in 8 jobs to run, 0 already done, block size 448
+[job 1/8      2s] ok  s1/qwen3.8-27b/gpu/1024/r0 a0 read=0.052s 
+[job 1/8      2s] ok  s1/qwen3.8-27b/cpu/1024/r0 a0 read=0.055s 
+[job 1/8      2s] ok  s1/qwen3.8-27b/fs/1024/r0 a0 read=0.161s 
+[job 1/8      2s] ok  s1/qwen3.8-27b/recompute/1024/r0 a0 read=0.157s 
+[job 1/8      2s] ok  s1/qwen3.8-27b/gpu/1024/r1 a0 read=0.048s 
+[job 1/8      2s] ok  s1/qwen3.8-27b/cpu/1024/r1 a0 read=0.055s 
+[job 1/8      2s] ok  s1/qwen3.8-27b/fs/1024/r1 a0 read=0.159s 
+[job 1/8      2s] ok  s1/qwen3.8-27b/gpu/1024/r2 a0 read=0.048s 
+[job 1/8      2s] ok  s1/qwen3.8-27b/cpu/1024/r2 a0 read=0.054s 
+[job 1/8      3s] ok  s1/qwen3.8-27b/fs/1024/r2 a0 read=0.150s 
+[job 1/8      3s] ok  s1/qwen3.8-27b/gpu/1024/r3 a0 read=0.048s 
+[job 1/8      3s] ok  s1/qwen3.8-27b/cpu/1024/r3 a0 read=0.054s 
+[job 1/8      3s] ok  s1/qwen3.8-27b/fs/1024/r3 a0 read=0.170s 
+[job 1/8      3s] ok  s1/qwen3.8-27b/gpu/1024/r4 a0 read=0.051s 
+[job 1/8      3s] ok  s1/qwen3.8-27b/cpu/1024/r4 a0 read=0.055s 
+[job 1/8      3s] ok  s1/qwen3.8-27b/fs/1024/r4 a0 read=0.154s 
+[job 2/8      5s] ok  s1/qwen3.8-27b/gpu/2048/r0 a0 read=0.051s 
+[job 2/8      5s] ok  s1/qwen3.8-27b/cpu/2048/r0 a0 read=0.057s 
+[job 2/8      5s] ok  s1/qwen3.8-27b/fs/2048/r0 a0 read=0.195s 
+[job 2/8      6s] ok  s1/qwen3.8-27b/recompute/2048/r0 a0 read=0.274s 
+[job 2/8      6s] ok  s1/qwen3.8-27b/gpu/2048/r1 a0 read=0.049s 
+[job 2/8      6s] ok  s1/qwen3.8-27b/cpu/2048/r1 a0 read=0.055s 
+[job 2/8      6s] ok  s1/qwen3.8-27b/fs/2048/r1 a0 read=0.205s 
+[job 2/8      6s] ok  s1/qwen3.8-27b/gpu/2048/r2 a0 read=0.049s 
+[job 2/8      6s] ok  s1/qwen3.8-27b/cpu/2048/r2 a0 read=0.056s 
+[job 2/8      6s] ok  s1/qwen3.8-27b/fs/2048/r2 a0 read=0.198s 
+[job 2/8      6s] ok  s1/qwen3.8-27b/gpu/2048/r3 a0 read=0.048s 
+[job 2/8      7s] ok  s1/qwen3.8-27b/cpu/2048/r3 a0 read=0.055s 
+[job 2/8      7s] ok  s1/qwen3.8-27b/fs/2048/r3 a0 read=0.200s 
+[job 2/8      7s] ok  s1/qwen3.8-27b/gpu/2048/r4 a0 read=0.049s 
+[job 2/8      7s] ok  s1/qwen3.8-27b/cpu/2048/r4 a0 read=0.055s 
+[job 2/8      7s] ok  s1/qwen3.8-27b/fs/2048/r4 a0 read=0.198s 
+[job 3/8      9s] ok  s1/qwen3.8-27b/gpu/4096/r0 a0 read=0.054s 
+[job 3/8      9s] ok  s1/qwen3.8-27b/cpu/4096/r0 a0 read=0.061s 
+[job 3/8     10s] ok  s1/qwen3.8-27b/fs/4096/r0 a0 read=0.359s 
+[job 3/8     10s] ok  s1/qwen3.8-27b/recompute/4096/r0 a0 read=0.569s 
+[job 3/8     11s] ok  s1/qwen3.8-27b/gpu/4096/r1 a0 read=0.050s 
+[job 3/8     11s] ok  s1/qwen3.8-27b/cpu/4096/r1 a0 read=0.060s 
+[job 3/8     11s] ok  s1/qwen3.8-27b/fs/4096/r1 a0 read=0.348s 
+[job 3/8     11s] ok  s1/qwen3.8-27b/gpu/4096/r2 a0 read=0.050s 
+[job 3/8     11s] ok  s1/qwen3.8-27b/cpu/4096/r2 a0 read=0.060s 
+[job 3/8     12s] ok  s1/qwen3.8-27b/fs/4096/r2 a0 read=0.356s 
+[job 3/8     12s] ok  s1/qwen3.8-27b/gpu/4096/r3 a0 read=0.050s 
+[job 3/8     12s] ok  s1/qwen3.8-27b/cpu/4096/r3 a0 read=0.061s 
+[job 3/8     12s] ok  s1/qwen3.8-27b/fs/4096/r3 a0 read=0.356s 
+[job 3/8     12s] ok  s1/qwen3.8-27b/gpu/4096/r4 a0 read=0.051s 
+[job 3/8     12s] ok  s1/qwen3.8-27b/cpu/4096/r4 a0 read=0.061s 
+[job 3/8     13s] ok  s1/qwen3.8-27b/fs/4096/r4 a0 read=0.355s 
+[job 4/8     15s] ok  s1/qwen3.8-27b/gpu/8192/r0 a0 read=0.059s 
+[job 4/8     16s] ok  s1/qwen3.8-27b/cpu/8192/r0 a0 read=0.070s 
+[job 4/8     16s] ok  s1/qwen3.8-27b/fs/8192/r0 a0 read=0.498s 
+[job 4/8     17s] ok  s1/qwen3.8-27b/recompute/8192/r0 a0 read=1.160s 
+[job 4/8     17s] ok  s1/qwen3.8-27b/gpu/8192/r1 a0 read=0.054s 
+[job 4/8     17s] ok  s1/qwen3.8-27b/cpu/8192/r1 a0 read=0.070s 
+[job 4/8     18s] ok  s1/qwen3.8-27b/fs/8192/r1 a0 read=0.519s 
+[job 4/8     18s] ok  s1/qwen3.8-27b/gpu/8192/r2 a0 read=0.054s 
+[job 4/8     18s] ok  s1/qwen3.8-27b/cpu/8192/r2 a0 read=0.069s 
+[job 4/8     19s] ok  s1/qwen3.8-27b/fs/8192/r2 a0 read=0.453s 
+[job 4/8     19s] ok  s1/qwen3.8-27b/gpu/8192/r3 a0 read=0.054s 
+[job 4/8     19s] ok  s1/qwen3.8-27b/cpu/8192/r3 a0 read=0.068s 
+[job 4/8     19s] ok  s1/qwen3.8-27b/fs/8192/r3 a0 read=0.503s 
+[job 4/8     19s] ok  s1/qwen3.8-27b/gpu/8192/r4 a0 read=0.054s 
+[job 4/8     20s] ok  s1/qwen3.8-27b/cpu/8192/r4 a0 read=0.070s 
+[job 4/8     20s] ok  s1/qwen3.8-27b/fs/8192/r4 a0 read=0.506s 
+[job 5/8     24s] ok  s1/qwen3.8-27b/gpu/16384/r0 a0 read=0.065s 
+[job 5/8     25s] ok  s1/qwen3.8-27b/cpu/16384/r0 a0 read=0.085s 
+[job 5/8     25s] ok  s1/qwen3.8-27b/fs/16384/r0 a0 read=0.888s 
+[job 5/8     28s] ok  s1/qwen3.8-27b/recompute/16384/r0 a0 read=2.385s 
+[job 5/8     28s] ok  s1/qwen3.8-27b/gpu/16384/r1 a0 read=0.062s 
+[job 5/8     28s] ok  s1/qwen3.8-27b/cpu/16384/r1 a0 read=0.085s 
+[job 5/8     29s] ok  s1/qwen3.8-27b/fs/16384/r1 a0 read=0.895s 
+[job 5/8     29s] ok  s1/qwen3.8-27b/gpu/16384/r2 a0 read=0.061s 
+[job 5/8     29s] ok  s1/qwen3.8-27b/cpu/16384/r2 a0 read=0.084s 
+[job 5/8     30s] ok  s1/qwen3.8-27b/fs/16384/r2 a0 read=0.900s 
+[job 5/8     30s] ok  s1/qwen3.8-27b/gpu/16384/r3 a0 read=0.061s 
+[job 5/8     30s] ok  s1/qwen3.8-27b/cpu/16384/r3 a0 read=0.085s 
+[job 5/8     31s] ok  s1/qwen3.8-27b/fs/16384/r3 a0 read=0.907s 
+[job 5/8     31s] ok  s1/qwen3.8-27b/gpu/16384/r4 a0 read=0.061s 
+[job 5/8     31s] ok  s1/qwen3.8-27b/cpu/16384/r4 a0 read=0.088s 
+[job 5/8     32s] ok  s1/qwen3.8-27b/fs/16384/r4 a0 read=0.923s 
+[job 6/8     40s] ok  s1/qwen3.8-27b/gpu/32768/r0 a0 read=0.080s 
+[job 6/8     40s] ok  s1/qwen3.8-27b/cpu/32768/r0 a0 read=0.120s 
+[job 6/8     41s] ok  s1/qwen3.8-27b/fs/32768/r0 a0 read=1.667s 
+[job 6/8     47s] ok  s1/qwen3.8-27b/recompute/32768/r0 a0 read=5.193s 
+[job 6/8     47s] ok  s1/qwen3.8-27b/gpu/32768/r1 a0 read=0.072s 
+[job 6/8     47s] ok  s1/qwen3.8-27b/cpu/32768/r1 a0 read=0.117s 
+[job 6/8     49s] ok  s1/qwen3.8-27b/fs/32768/r1 a0 read=1.725s 
+[job 6/8     49s] ok  s1/qwen3.8-27b/gpu/32768/r2 a0 read=0.076s 
+[job 6/8     49s] ok  s1/qwen3.8-27b/cpu/32768/r2 a0 read=0.123s 
+[job 6/8     51s] ok  s1/qwen3.8-27b/fs/32768/r2 a0 read=1.691s 
+[job 6/8     51s] ok  s1/qwen3.8-27b/gpu/32768/r3 a0 read=0.074s 
+[job 6/8     51s] ok  s1/qwen3.8-27b/cpu/32768/r3 a0 read=0.117s 
+[job 6/8     53s] ok  s1/qwen3.8-27b/fs/32768/r3 a0 read=1.743s 
+[job 6/8     53s] ok  s1/qwen3.8-27b/gpu/32768/r4 a0 read=0.074s 
+[job 6/8     53s] ok  s1/qwen3.8-27b/cpu/32768/r4 a0 read=0.117s 
+[job 6/8     55s] ok  s1/qwen3.8-27b/fs/32768/r4 a0 read=1.773s 
+[job 7/8     68s] ok  s1/qwen3.8-27b/gpu/65536/r0 a0 read=0.105s 
+[job 7/8     69s] ok  s1/qwen3.8-27b/cpu/65536/r0 a0 read=0.185s 
+[job 7/8     72s] ok  s1/qwen3.8-27b/fs/65536/r0 a0 read=3.387s 
+[job 7/8     84s] ok  s1/qwen3.8-27b/recompute/65536/r0 a0 read=11.728s 
+[job 7/8     84s] ok  s1/qwen3.8-27b/gpu/65536/r1 a0 read=0.102s 
+[job 7/8     84s] ok  s1/qwen3.8-27b/cpu/65536/r1 a0 read=0.183s 
+[job 7/8     88s] ok  s1/qwen3.8-27b/fs/65536/r1 a0 read=3.485s 
+[job 7/8     88s] ok  s1/qwen3.8-27b/gpu/65536/r2 a0 read=0.096s 
+[job 7/8     88s] ok  s1/qwen3.8-27b/cpu/65536/r2 a0 read=0.180s 
+[job 7/8     91s] ok  s1/qwen3.8-27b/fs/65536/r2 a0 read=3.344s 
+[job 7/8     92s] ok  s1/qwen3.8-27b/gpu/65536/r3 a0 read=0.101s 
+[job 7/8     92s] ok  s1/qwen3.8-27b/cpu/65536/r3 a0 read=0.180s 
+[job 7/8     95s] ok  s1/qwen3.8-27b/fs/65536/r3 a0 read=3.319s 
+[job 7/8     95s] ok  s1/qwen3.8-27b/gpu/65536/r4 a0 read=0.100s 
+[job 7/8     95s] ok  s1/qwen3.8-27b/cpu/65536/r4 a0 read=0.182s 
+[job 7/8     99s] ok  s1/qwen3.8-27b/fs/65536/r4 a0 read=3.289s 
+[job 8/8    129s] ok  s1/qwen3.8-27b/gpu/131072/r0 a0 read=0.159s 
+[job 8/8    130s] ok  s1/qwen3.8-27b/cpu/131072/r0 a0 read=0.312s 
+[job 8/8    136s] ok  s1/qwen3.8-27b/fs/131072/r0 a0 read=6.585s 
+[job 8/8    166s] ok  s1/qwen3.8-27b/recompute/131072/r0 a0 read=29.041s 
+[job 8/8    166s] ok  s1/qwen3.8-27b/gpu/131072/r1 a0 read=0.159s 
+[job 8/8    166s] ok  s1/qwen3.8-27b/cpu/131072/r1 a0 read=0.318s 
+[job 8/8    173s] ok  s1/qwen3.8-27b/fs/131072/r1 a0 read=7.207s 
+[job 8/8    173s] ok  s1/qwen3.8-27b/gpu/131072/r2 a0 read=0.154s 
+[job 8/8    174s] ok  s1/qwen3.8-27b/cpu/131072/r2 a0 read=0.312s 
+[job 8/8    180s] ok  s1/qwen3.8-27b/fs/131072/r2 a0 read=6.385s 
+[job 8/8    180s] ok  s1/qwen3.8-27b/gpu/131072/r3 a0 read=0.155s 
+[job 8/8    181s] ok  s1/qwen3.8-27b/cpu/131072/r3 a0 read=0.315s 
+[job 8/8    187s] ok  s1/qwen3.8-27b/fs/131072/r3 a0 read=6.434s 
+[job 8/8    187s] ok  s1/qwen3.8-27b/gpu/131072/r4 a0 read=0.152s 
+[job 8/8    188s] ok  s1/qwen3.8-27b/cpu/131072/r4 a0 read=0.314s 
+[job 8/8    194s] ok  s1/qwen3.8-27b/fs/131072/r4 a0 read=6.472s 
+{"valid": 128, "invalid": 0, "skipped": 0}
+== s1/qwen3.8-27b/fs: stop vLLM
+== s1/qwen3.8-27b/obj: start vLLM (40 of 40 points to run, in 8 jobs (one prefill each))
+    await run_server_worker(listen_address, sock, args, **uvicorn_kwargs)
+  File "/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/launchers/api_server/entry.py", line 190, in run_server_worker
+    async with build_async_engine_client(
+  File "/usr/lib/python3.12/contextlib.py", line 210, in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/launchers/api_server/entry.py", line 60, in build_async_engine_client
+    async with build_async_engine_client_from_engine_args(
+  File "/usr/lib/python3.12/contextlib.py", line 210, in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/launchers/api_server/entry.py", line 94, in build_async_engine_client_from_engine_args
+    async_llm = AsyncLLM.from_vllm_config(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/async_llm.py", line 265, in from_vllm_config
+    return cls(
+           ^^^^
+  File "/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/async_llm.py", line 194, in __init__
+    self.engine_core = EngineCoreClient.make_async_mp_client(
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/vllm/tracing/otel.py", line 175, in sync_wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/core_client.py", line 183, in make_async_mp_client
+    return AsyncMPClient(
+           ^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/vllm/tracing/otel.py", line 175, in sync_wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/core_client.py", line 1195, in __init__
+    super().__init__(
+  File "/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/core_client.py", line 729, in __init__
+    with launch_core_engines(
+  File "/usr/lib/python3.12/contextlib.py", line 144, in __exit__
+    next(self.gen)
+  File "/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/utils.py", line 1393, in launch_core_engines
+    wait_for_engine_startup(
+  File "/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/utils.py", line 1477, in wait_for_engine_startup
+    raise RuntimeError(
+RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+!! vLLM exited on self (10.88.0.69)
+SWEEP_EXIT=1
+--- resume 22:39:47
+self: 10.88.0.69  peer: none  stage: s1  models: qwen3.8-27b qwen3-vl-32b  deployments: fs obj  backup: s3://kvtb-cache/results/s1.jsonl
+== s1/qwen3.8-27b/fs: already done
+== s1/qwen3.8-27b/obj: start vLLM (40 of 40 points to run, in 8 jobs (one prefill each))
+    await run_server_worker(listen_address, sock, args, **uvicorn_kwargs)
+  File "/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/launchers/api_server/entry.py", line 190, in run_server_worker
+    async with build_async_engine_client(
+  File "/usr/lib/python3.12/contextlib.py", line 210, in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/launchers/api_server/entry.py", line 60, in build_async_engine_client
+    async with build_async_engine_client_from_engine_args(
+  File "/usr/lib/python3.12/contextlib.py", line 210, in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/launchers/api_server/entry.py", line 94, in build_async_engine_client_from_engine_args
+    async_llm = AsyncLLM.from_vllm_config(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/async_llm.py", line 265, in from_vllm_config
+    return cls(
+           ^^^^
+  File "/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/async_llm.py", line 194, in __init__
+    self.engine_core = EngineCoreClient.make_async_mp_client(
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/vllm/tracing/otel.py", line 175, in sync_wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/core_client.py", line 183, in make_async_mp_client
+    return AsyncMPClient(
+           ^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/vllm/tracing/otel.py", line 175, in sync_wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/core_client.py", line 1195, in __init__
+    super().__init__(
+  File "/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/core_client.py", line 729, in __init__
+    with launch_core_engines(
+  File "/usr/lib/python3.12/contextlib.py", line 144, in __exit__
+    next(self.gen)
+  File "/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/utils.py", line 1393, in launch_core_engines
+    wait_for_engine_startup(
+  File "/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/utils.py", line 1477, in wait_for_engine_startup
+    raise RuntimeError(
+RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+!! vLLM exited on self (10.88.0.69)
+SWEEP_EXIT=1
+--- resume2 22:45:45
+self: 10.88.0.69  peer: none  stage: s1  models: qwen3.8-27b qwen3-vl-32b  deployments: fs obj  backup: s3://kvtb-cache/results/s1.jsonl
+== s1/qwen3.8-27b/fs: already done
+== s1/qwen3.8-27b/obj: start vLLM (40 of 40 points to run, in 8 jobs (one prefill each))
+== s1/qwen3.8-27b/obj: measure
+40 points in 8 jobs to run, 0 already done, block size 448
+[job 1/8      2s] ok  s1/qwen3.8-27b/obj/1024/r0 a0 read=0.110s 
+[job 1/8      2s] ok  s1/qwen3.8-27b/obj/1024/r1 a0 read=0.106s 
+[job 1/8      2s] ok  s1/qwen3.8-27b/obj/1024/r2 a0 read=0.118s 
+[job 1/8      2s] ok  s1/qwen3.8-27b/obj/1024/r3 a0 read=0.106s 
+[job 1/8      2s] ok  s1/qwen3.8-27b/obj/1024/r4 a0 read=0.119s 
+[job 2/8      4s] ok  s1/qwen3.8-27b/obj/2048/r0 a0 read=0.421s 
+[job 2/8      4s] ok  s1/qwen3.8-27b/obj/2048/r1 a0 read=0.117s 
+[job 2/8      5s] ok  s1/qwen3.8-27b/obj/2048/r2 a0 read=0.118s 
+[job 2/8      5s] ok  s1/qwen3.8-27b/obj/2048/r3 a0 read=0.122s 
+[job 2/8      5s] ok  s1/qwen3.8-27b/obj/2048/r4 a0 read=0.104s 
+[job 3/8      7s] ok  s1/qwen3.8-27b/obj/4096/r0 a0 read=0.132s 
+[job 3/8      7s] ok  s1/qwen3.8-27b/obj/4096/r1 a0 read=0.128s 
+[job 3/8      7s] ok  s1/qwen3.8-27b/obj/4096/r2 a0 read=0.122s 
+[job 3/8      7s] ok  s1/qwen3.8-27b/obj/4096/r3 a0 read=0.136s 
+[job 3/8      8s] ok  s1/qwen3.8-27b/obj/4096/r4 a0 read=0.128s 
+[job 4/8     10s] ok  s1/qwen3.8-27b/obj/8192/r0 a0 read=0.173s 
+[job 4/8     10s] ok  s1/qwen3.8-27b/obj/8192/r1 a0 read=0.162s 
+[job 4/8     11s] ok  s1/qwen3.8-27b/obj/8192/r2 a0 read=0.182s 
+[job 4/8     11s] ok  s1/qwen3.8-27b/obj/8192/r3 a0 read=0.163s 
+[job 4/8     11s] ok  s1/qwen3.8-27b/obj/8192/r4 a0 read=0.163s 
+[job 5/8     15s] ok  s1/qwen3.8-27b/obj/16384/r0 a0 read=0.247s 
+[job 5/8     15s] ok  s1/qwen3.8-27b/obj/16384/r1 a0 read=0.233s 
+[job 5/8     16s] ok  s1/qwen3.8-27b/obj/16384/r2 a0 read=0.235s 
+[job 5/8     16s] ok  s1/qwen3.8-27b/obj/16384/r3 a0 read=0.241s 
+[job 5/8     16s] ok  s1/qwen3.8-27b/obj/16384/r4 a0 read=0.235s 
+[job 6/8     23s] ok  s1/qwen3.8-27b/obj/32768/r0 a0 read=0.415s 
+[job 6/8     24s] ok  s1/qwen3.8-27b/obj/32768/r1 a0 read=0.386s 
+[job 6/8     24s] ok  s1/qwen3.8-27b/obj/32768/r2 a0 read=0.382s 
+[job 6/8     24s] ok  s1/qwen3.8-27b/obj/32768/r3 a0 read=0.395s 
+[job 6/8     25s] ok  s1/qwen3.8-27b/obj/32768/r4 a0 read=0.395s 
+[job 7/8     39s] ok  s1/qwen3.8-27b/obj/65536/r0 a0 read=0.692s 
+[job 7/8     39s] ok  s1/qwen3.8-27b/obj/65536/r1 a0 read=0.702s 
+[job 7/8     40s] ok  s1/qwen3.8-27b/obj/65536/r2 a0 read=0.693s 
+[job 7/8     41s] ok  s1/qwen3.8-27b/obj/65536/r3 a0 read=0.702s 
+[job 7/8     42s] ok  s1/qwen3.8-27b/obj/65536/r4 a0 read=0.700s 
+[job 8/8     73s] ok  s1/qwen3.8-27b/obj/131072/r0 a0 read=1.270s 
+[job 8/8     75s] ok  s1/qwen3.8-27b/obj/131072/r1 a0 read=1.290s 
+[job 8/8     76s] ok  s1/qwen3.8-27b/obj/131072/r2 a0 read=1.262s 
+[job 8/8     77s] ok  s1/qwen3.8-27b/obj/131072/r3 a0 read=1.267s 
+[job 8/8     79s] ok  s1/qwen3.8-27b/obj/131072/r4 a0 read=1.275s 
+{"valid": 40, "invalid": 0, "skipped": 0}
+== s1/qwen3.8-27b/obj: stop vLLM
+cleaned fs and obj tiers for qwen3.8-27b
+== s1/qwen3-vl-32b/fs: start vLLM (112 of 112 points to run, in 7 jobs (one prefill each))
+== s1/qwen3-vl-32b/fs: measure
+112 points in 7 jobs to run, 0 already done, block size 64
+[job 1/7      2s] ok  s1/qwen3-vl-32b/gpu/1024/r0 a0 read=0.061s 
+[job 1/7      2s] ok  s1/qwen3-vl-32b/cpu/1024/r0 a0 read=0.066s 
+[job 1/7      2s] ok  s1/qwen3-vl-32b/fs/1024/r0 a0 read=0.334s 
+[job 1/7      2s] ok  s1/qwen3-vl-32b/recompute/1024/r0 a0 read=0.206s 
+[job 1/7      2s] ok  s1/qwen3-vl-32b/gpu/1024/r1 a0 read=0.057s 
+[job 1/7      2s] ok  s1/qwen3-vl-32b/cpu/1024/r1 a0 read=0.066s 
+[job 1/7      3s] ok  s1/qwen3-vl-32b/fs/1024/r1 a0 read=0.339s 
+[job 1/7      3s] ok  s1/qwen3-vl-32b/gpu/1024/r2 a0 read=0.059s 
+[job 1/7      3s] ok  s1/qwen3-vl-32b/cpu/1024/r2 a0 read=0.068s 
+[job 1/7      3s] ok  s1/qwen3-vl-32b/fs/1024/r2 a0 read=0.332s 
+[job 1/7      3s] ok  s1/qwen3-vl-32b/gpu/1024/r3 a0 read=0.058s 
+[job 1/7      4s] ok  s1/qwen3-vl-32b/cpu/1024/r3 a0 read=0.066s 
+[job 1/7      4s] ok  s1/qwen3-vl-32b/fs/1024/r3 a0 read=0.319s 
+[job 1/7      4s] ok  s1/qwen3-vl-32b/gpu/1024/r4 a0 read=0.056s 
+[job 1/7      4s] ok  s1/qwen3-vl-32b/cpu/1024/r4 a0 read=0.065s 
+[job 1/7      4s] ok  s1/qwen3-vl-32b/fs/1024/r4 a0 read=0.313s 
+[job 2/7      7s] ok  s1/qwen3-vl-32b/gpu/2048/r0 a0 read=0.060s 
+[job 2/7      7s] ok  s1/qwen3-vl-32b/cpu/2048/r0 a0 read=0.073s 
+[job 2/7      7s] ok  s1/qwen3-vl-32b/fs/2048/r0 a0 read=0.555s 
+[job 2/7      8s] ok  s1/qwen3-vl-32b/recompute/2048/r0 a0 read=0.393s 
+[job 2/7      8s] ok  s1/qwen3-vl-32b/gpu/2048/r1 a0 read=0.059s 
+[job 2/7      8s] ok  s1/qwen3-vl-32b/cpu/2048/r1 a0 read=0.073s 
+[job 2/7      8s] ok  s1/qwen3-vl-32b/fs/2048/r1 a0 read=0.544s 
+[job 2/7      8s] ok  s1/qwen3-vl-32b/gpu/2048/r2 a0 read=0.059s 
+[job 2/7      9s] ok  s1/qwen3-vl-32b/cpu/2048/r2 a0 read=0.073s 
+[job 2/7      9s] ok  s1/qwen3-vl-32b/fs/2048/r2 a0 read=0.525s 
+[job 2/7      9s] ok  s1/qwen3-vl-32b/gpu/2048/r3 a0 read=0.059s 
+[job 2/7      9s] ok  s1/qwen3-vl-32b/cpu/2048/r3 a0 read=0.074s 
+[job 2/7     10s] ok  s1/qwen3-vl-32b/fs/2048/r3 a0 read=0.573s 
+[job 2/7     10s] ok  s1/qwen3-vl-32b/gpu/2048/r4 a0 read=0.058s 
+[job 2/7     10s] ok  s1/qwen3-vl-32b/cpu/2048/r4 a0 read=0.073s 
+[job 2/7     11s] ok  s1/qwen3-vl-32b/fs/2048/r4 a0 read=0.543s 
+[job 3/7     14s] ok  s1/qwen3-vl-32b/gpu/4096/r0 a0 read=0.063s 
+[job 3/7     14s] ok  s1/qwen3-vl-32b/cpu/4096/r0 a0 read=0.085s 
+[job 3/7     15s] ok  s1/qwen3-vl-32b/fs/4096/r0 a0 read=1.069s 
+[job 3/7     16s] ok  s1/qwen3-vl-32b/recompute/4096/r0 a0 read=0.780s 
+[job 3/7     16s] ok  s1/qwen3-vl-32b/gpu/4096/r1 a0 read=0.061s 
+[job 3/7     16s] ok  s1/qwen3-vl-32b/cpu/4096/r1 a0 read=0.085s 
+[job 3/7     17s] ok  s1/qwen3-vl-32b/fs/4096/r1 a0 read=1.027s 
+[job 3/7     17s] ok  s1/qwen3-vl-32b/gpu/4096/r2 a0 read=0.063s 
+[job 3/7     17s] ok  s1/qwen3-vl-32b/cpu/4096/r2 a0 read=0.085s 
+[job 3/7     18s] ok  s1/qwen3-vl-32b/fs/4096/r2 a0 read=1.047s 
+[job 3/7     18s] ok  s1/qwen3-vl-32b/gpu/4096/r3 a0 read=0.062s 
+[job 3/7     19s] ok  s1/qwen3-vl-32b/cpu/4096/r3 a0 read=0.084s 
+[job 3/7     20s] ok  s1/qwen3-vl-32b/fs/4096/r3 a0 read=1.039s 
+[job 3/7     20s] ok  s1/qwen3-vl-32b/gpu/4096/r4 a0 read=0.061s 
+[job 3/7     20s] ok  s1/qwen3-vl-32b/cpu/4096/r4 a0 read=0.084s 
+[job 3/7     21s] ok  s1/qwen3-vl-32b/fs/4096/r4 a0 read=1.010s 
+[job 4/7     26s] ok  s1/qwen3-vl-32b/gpu/8192/r0 a0 read=0.068s 
+[job 4/7     26s] ok  s1/qwen3-vl-32b/cpu/8192/r0 a0 read=0.110s 
+[job 4/7     28s] ok  s1/qwen3-vl-32b/fs/8192/r0 a0 read=1.971s 
+[job 4/7     30s] ok  s1/qwen3-vl-32b/recompute/8192/r0 a0 read=1.653s 
+[job 4/7     30s] ok  s1/qwen3-vl-32b/gpu/8192/r1 a0 read=0.065s 
+[job 4/7     30s] ok  s1/qwen3-vl-32b/cpu/8192/r1 a0 read=0.110s 
+[job 4/7     32s] ok  s1/qwen3-vl-32b/fs/8192/r1 a0 read=2.027s 
+[job 4/7     32s] ok  s1/qwen3-vl-32b/gpu/8192/r2 a0 read=0.068s 
+[job 4/7     32s] ok  s1/qwen3-vl-32b/cpu/8192/r2 a0 read=0.110s 
+[job 4/7     35s] ok  s1/qwen3-vl-32b/fs/8192/r2 a0 read=2.301s 
+[job 4/7     35s] ok  s1/qwen3-vl-32b/gpu/8192/r3 a0 read=0.065s 
+[job 4/7     35s] ok  s1/qwen3-vl-32b/cpu/8192/r3 a0 read=0.108s 
+[job 4/7     37s] ok  s1/qwen3-vl-32b/fs/8192/r3 a0 read=2.104s 
+[job 4/7     37s] ok  s1/qwen3-vl-32b/gpu/8192/r4 a0 read=0.065s 
+[job 4/7     37s] ok  s1/qwen3-vl-32b/cpu/8192/r4 a0 read=0.108s 
+[job 4/7     39s] ok  s1/qwen3-vl-32b/fs/8192/r4 a0 read=2.019s 
+[job 5/7     47s] ok  s1/qwen3-vl-32b/gpu/16384/r0 a0 read=0.077s 
+[job 5/7     47s] ok  s1/qwen3-vl-32b/cpu/16384/r0 a0 read=0.161s 
+[job 5/7     52s] ok  s1/qwen3-vl-32b/fs/16384/r0 a0 read=4.070s 
+[job 5/7     55s] ok  s1/qwen3-vl-32b/recompute/16384/r0 a0 read=3.705s 
+[job 5/7     55s] ok  s1/qwen3-vl-32b/gpu/16384/r1 a0 read=0.073s 
+[job 5/7     56s] ok  s1/qwen3-vl-32b/cpu/16384/r1 a0 read=0.157s 
+[job 5/7     60s] ok  s1/qwen3-vl-32b/fs/16384/r1 a0 read=4.072s 
+[job 5/7     60s] ok  s1/qwen3-vl-32b/gpu/16384/r2 a0 read=0.073s 
+[job 5/7     60s] ok  s1/qwen3-vl-32b/cpu/16384/r2 a0 read=0.155s 
+[job 5/7     64s] ok  s1/qwen3-vl-32b/fs/16384/r2 a0 read=3.983s 
+[job 5/7     64s] ok  s1/qwen3-vl-32b/gpu/16384/r3 a0 read=0.073s 
+[job 5/7     64s] ok  s1/qwen3-vl-32b/cpu/16384/r3 a0 read=0.154s 
+[job 5/7     68s] ok  s1/qwen3-vl-32b/fs/16384/r3 a0 read=3.880s 
+[job 5/7     68s] ok  s1/qwen3-vl-32b/gpu/16384/r4 a0 read=0.072s 
+[job 5/7     68s] ok  s1/qwen3-vl-32b/cpu/16384/r4 a0 read=0.156s 
+[job 5/7     73s] ok  s1/qwen3-vl-32b/fs/16384/r4 a0 read=4.272s 
+[job 6/7     87s] ok  s1/qwen3-vl-32b/gpu/32768/r0 a0 read=0.095s 
+[job 6/7     88s] ok  s1/qwen3-vl-32b/cpu/32768/r0 a0 read=0.252s 
+[job 6/7     96s] ok  s1/qwen3-vl-32b/fs/32768/r0 a0 read=8.446s 
+[job 6/7    105s] ok  s1/qwen3-vl-32b/recompute/32768/r0 a0 read=9.156s 
+[job 6/7    105s] ok  s1/qwen3-vl-32b/gpu/32768/r1 a0 read=0.087s 
+[job 6/7    106s] ok  s1/qwen3-vl-32b/cpu/32768/r1 a0 read=0.246s 
+[job 6/7    114s] ok  s1/qwen3-vl-32b/fs/32768/r1 a0 read=8.707s 
+[job 6/7    115s] ok  s1/qwen3-vl-32b/gpu/32768/r2 a0 read=0.087s 
+[job 6/7    115s] ok  s1/qwen3-vl-32b/cpu/32768/r2 a0 read=0.248s 
+[job 6/7    123s] ok  s1/qwen3-vl-32b/fs/32768/r2 a0 read=8.234s 
+[job 6/7    123s] ok  s1/qwen3-vl-32b/gpu/32768/r3 a0 read=0.090s 
+[job 6/7    124s] ok  s1/qwen3-vl-32b/cpu/32768/r3 a0 read=0.243s 
+[job 6/7    132s] ok  s1/qwen3-vl-32b/fs/32768/r3 a0 read=7.984s 
+[job 6/7    132s] ok  s1/qwen3-vl-32b/gpu/32768/r4 a0 read=0.087s 
+[job 6/7    132s] ok  s1/qwen3-vl-32b/cpu/32768/r4 a0 read=0.251s 
+[job 6/7    140s] ok  s1/qwen3-vl-32b/fs/32768/r4 a0 read=8.109s 
+[job 7/7    172s] ok  s1/qwen3-vl-32b/gpu/65536/r0 a0 read=0.089s 
+[job 7/7    172s] ok  s1/qwen3-vl-32b/cpu/65536/r0 a0 read=0.399s 
+[job 7/7    188s] ok  s1/qwen3-vl-32b/fs/65536/r0 a0 read=16.462s 
+[job 7/7    214s] ok  s1/qwen3-vl-32b/recompute/65536/r0 a0 read=25.516s 
+[job 7/7    214s] ok  s1/qwen3-vl-32b/gpu/65536/r1 a0 read=0.086s 
+[job 7/7    215s] ok  s1/qwen3-vl-32b/cpu/65536/r1 a0 read=0.402s 
+[job 7/7    230s] ok  s1/qwen3-vl-32b/fs/65536/r1 a0 read=15.812s 
+[job 7/7    230s] ok  s1/qwen3-vl-32b/gpu/65536/r2 a0 read=0.085s 
+[job 7/7    231s] ok  s1/qwen3-vl-32b/cpu/65536/r2 a0 read=0.397s 
+[job 7/7    247s] ok  s1/qwen3-vl-32b/fs/65536/r2 a0 read=16.164s 
+[job 7/7    247s] ok  s1/qwen3-vl-32b/gpu/65536/r3 a0 read=0.085s 
+[job 7/7    248s] ok  s1/qwen3-vl-32b/cpu/65536/r3 a0 read=0.403s 
+[job 7/7    263s] ok  s1/qwen3-vl-32b/fs/65536/r3 a0 read=15.810s 
+[job 7/7    264s] ok  s1/qwen3-vl-32b/gpu/65536/r4 a0 read=0.085s 
+[job 7/7    264s] ok  s1/qwen3-vl-32b/cpu/65536/r4 a0 read=0.398s 
+[job 7/7    280s] ok  s1/qwen3-vl-32b/fs/65536/r4 a0 read=15.988s 
+{"valid": 112, "invalid": 0, "skipped": 0}
+== s1/qwen3-vl-32b/fs: stop vLLM
+== s1/qwen3-vl-32b/obj: start vLLM (35 of 35 points to run, in 7 jobs (one prefill each))
+== s1/qwen3-vl-32b/obj: measure
+35 points in 7 jobs to run, 0 already done, block size 64
+[job 1/7      2s] ok  s1/qwen3-vl-32b/obj/1024/r0 a0 read=0.117s 
+[job 1/7      2s] ok  s1/qwen3-vl-32b/obj/1024/r1 a0 read=0.110s 
+[job 1/7      3s] ok  s1/qwen3-vl-32b/obj/1024/r2 a0 read=0.109s 
+[job 1/7      3s] ok  s1/qwen3-vl-32b/obj/1024/r3 a0 read=0.112s 
+[job 1/7      3s] ok  s1/qwen3-vl-32b/obj/1024/r4 a0 read=0.117s 
+[job 2/7      5s] ok  s1/qwen3-vl-32b/obj/2048/r0 a0 read=0.160s 
+[job 2/7      5s] ok  s1/qwen3-vl-32b/obj/2048/r1 a0 read=0.154s 
+[job 2/7      5s] ok  s1/qwen3-vl-32b/obj/2048/r2 a0 read=0.162s 
+[job 2/7      5s] ok  s1/qwen3-vl-32b/obj/2048/r3 a0 read=0.151s 
+[job 2/7      6s] ok  s1/qwen3-vl-32b/obj/2048/r4 a0 read=0.155s 
+[job 3/7      8s] ok  s1/qwen3-vl-32b/obj/4096/r0 a0 read=0.227s 
+[job 3/7      8s] ok  s1/qwen3-vl-32b/obj/4096/r1 a0 read=0.223s 
+[job 3/7      8s] ok  s1/qwen3-vl-32b/obj/4096/r2 a0 read=0.230s 
+[job 3/7      9s] ok  s1/qwen3-vl-32b/obj/4096/r3 a0 read=0.230s 
+[job 3/7      9s] ok  s1/qwen3-vl-32b/obj/4096/r4 a0 read=0.217s 
+[job 4/7     13s] ok  s1/qwen3-vl-32b/obj/8192/r0 a0 read=0.372s 
+[job 4/7     13s] ok  s1/qwen3-vl-32b/obj/8192/r1 a0 read=0.361s 
+[job 4/7     13s] ok  s1/qwen3-vl-32b/obj/8192/r2 a0 read=0.357s 
+[job 4/7     14s] ok  s1/qwen3-vl-32b/obj/8192/r3 a0 read=0.361s 
+[job 4/7     14s] ok  s1/qwen3-vl-32b/obj/8192/r4 a0 read=0.356s 
+[job 5/7     21s] ok  s1/qwen3-vl-32b/obj/16384/r0 a0 read=0.698s 
+[job 5/7     21s] ok  s1/qwen3-vl-32b/obj/16384/r1 a0 read=0.640s 
+[job 5/7     22s] ok  s1/qwen3-vl-32b/obj/16384/r2 a0 read=0.749s 
+[job 5/7     23s] ok  s1/qwen3-vl-32b/obj/16384/r3 a0 read=0.725s 
+[job 5/7     24s] ok  s1/qwen3-vl-32b/obj/16384/r4 a0 read=0.730s 
+[job 6/7     36s] ok  s1/qwen3-vl-32b/obj/32768/r0 a0 read=1.169s 
+[job 6/7     37s] ok  s1/qwen3-vl-32b/obj/32768/r1 a0 read=1.165s 
+[job 6/7     39s] ok  s1/qwen3-vl-32b/obj/32768/r2 a0 read=1.171s 
+[job 6/7     40s] ok  s1/qwen3-vl-32b/obj/32768/r3 a0 read=1.182s 
+[job 6/7     41s] ok  s1/qwen3-vl-32b/obj/32768/r4 a0 read=1.159s 
+[job 7/7     71s] ok  s1/qwen3-vl-32b/obj/65536/r0 a0 read=2.325s 
+[job 7/7     74s] ok  s1/qwen3-vl-32b/obj/65536/r1 a0 read=2.386s 
+[job 7/7     76s] ok  s1/qwen3-vl-32b/obj/65536/r2 a0 read=2.280s 
+[job 7/7     78s] ok  s1/qwen3-vl-32b/obj/65536/r3 a0 read=2.278s 
+[job 7/7     81s] ok  s1/qwen3-vl-32b/obj/65536/r4 a0 read=2.321s 
+{"valid": 35, "invalid": 0, "skipped": 0}
+== s1/qwen3-vl-32b/obj: stop vLLM
+cleaned fs and obj tiers for qwen3-vl-32b
+SWEEP_EXIT=0

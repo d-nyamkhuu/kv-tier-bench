@@ -1,0 +1,87 @@
+[
+{
+"item": "gpu_usd_per_hour",
+"value": 1.8,
+"note": "RTX PRO 6000, on demand, Nebius; the cost model's price"
+},
+{
+"item": "spot_usd_per_hour_s1",
+"value": 1.38,
+"note": "eu-south1 spot price the s1 run paid"
+},
+{
+"item": "spot_usd_per_hour_s2",
+"value": 1.19,
+"note": "us-central1 spot price the s2 run paid"
+},
+{
+"item": "disk_usd_per_gib_month",
+"value": 0.053,
+"note": "non-replicated network SSD"
+},
+{
+"item": "shared_fs_usd_per_gib_month",
+"value": 0.08,
+"note": "shared filesystem"
+},
+{
+"item": "obj_usd_per_gib_month",
+"value": 0.11,
+"note": "Object Storage, Enhanced"
+},
+{
+"item": "obj_std_usd_per_gib_month",
+"value": 0.0147,
+"note": "Object Storage, Standard"
+},
+{
+"item": "residency_hours",
+"value": 1,
+"note": "hours each prefix is stored per read, in the cost model"
+},
+{
+"item": "fio_disk_read_gib_s",
+"value": 1.944,
+"note": "fio on the s2 disk, 16-way random reads, results/fio-kv-disk-us-central1.json"
+},
+{
+"item": "fio_disk_read_qd1_gib_s",
+"value": 1.692,
+"note": "fio on the s2 disk, single-stream reads, results/fio-kv-disk-us-central1.json"
+},
+{
+"item": "fio_shared_fs_read_gib_s",
+"value": 8.167,
+"note": "fio on the s2 shared fs, 16-way random reads, results/fio-fs-1tib-us-central1.json"
+},
+{
+"item": "fio_shared_fs_read_qd1_gib_s",
+"value": 1.767,
+"note": "fio on the s2 shared fs, single-stream reads, results/fio-fs-1tib-us-central1.json"
+},
+{
+"item": "s1_points_valid",
+"value": 390,
+"note": "s1, one request at a time"
+},
+{
+"item": "s2_points_valid",
+"value": 1032,
+"note": "s2, batches of 1-16 requests"
+},
+{
+"item": "s3_points_valid",
+"value": 315,
+"note": "s3, store and p2p, batches of 1-16"
+},
+{
+"item": "spot_usd_per_hour_s3",
+"value": 1.38,
+"note": "eu-south1 spot price the s3 run paid"
+},
+{
+"item": "ram_usd_per_gib_month",
+"value": 6.02,
+"note": "CPU VM RAM, s3's price for p2p/store"
+}
+]

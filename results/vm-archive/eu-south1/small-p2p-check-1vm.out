@@ -1,0 +1,15 @@
+{"tokens": 8192, "gib": 0.88, "recompute_s": 0.075, "p2p_ttft_s": 0.104, "promotion_s": 0.055, "gib_s": 15.82, "p2p_tokens": 8192.0, "timings": null}
+{"tokens": 8192, "gib": 0.88, "recompute_s": 0.093, "p2p_ttft_s": 0.087, "promotion_s": 0.039, "gib_s": 22.61, "p2p_tokens": 8192.0, "timings": null}
+{"tokens": 8192, "gib": 0.88, "recompute_s": 0.076, "p2p_ttft_s": 0.082, "promotion_s": 0.037, "gib_s": 23.91, "p2p_tokens": 8192.0, "timings": null}
+{"tokens": 16384, "gib": 1.75, "recompute_s": 0.193, "p2p_ttft_s": 0.15, "promotion_s": 0.07, "gib_s": 24.82, "p2p_tokens": 16384.0, "timings": null}
+{"tokens": 16384, "gib": 1.75, "recompute_s": 0.193, "p2p_ttft_s": 0.152, "promotion_s": 0.076, "gib_s": 23.03, "p2p_tokens": 16384.0, "timings": null}
+{"tokens": 16384, "gib": 1.75, "recompute_s": 0.19, "p2p_ttft_s": 0.151, "promotion_s": 0.081, "gib_s": 21.71, "p2p_tokens": 16384.0, "timings": null}
+{"tokens": 32768, "gib": 3.5, "recompute_s": 0.565, "p2p_ttft_s": 0.269, "promotion_s": 0.132, "gib_s": 26.54, "p2p_tokens": 32768.0, "timings": null}
+{"tokens": 32768, "gib": 3.5, "recompute_s": 0.568, "p2p_ttft_s": 0.254, "promotion_s": 0.124, "gib_s": 28.32, "p2p_tokens": 32768.0, "timings": null}
+{"tokens": 32768, "gib": 3.5, "recompute_s": 0.565, "p2p_ttft_s": 0.27, "promotion_s": 0.131, "gib_s": 26.68, "p2p_tokens": 32768.0, "timings": {"vllm:kv_offload_size_sum": 3758096384.0, "vllm:kv_offload_cpu_allocation_size_sum": 512.0, "vllm:kv_offload_tiering_lookup_sync_delay_seconds_sum{}": 0.0004, "vllm:kv_offload_tiering_lookup_async_delay_seconds_sum{}": 4.5558, "vllm:kv_offload_tiering_promotion_latency_seconds_sum{}": 0.1312, "vllm:kv_offload_load_size_sum": 3758096384.0, "vllm:kv_offload_lookup_sync_delay_seconds_sum": 0.0518, "vllm:kv_offload_lookup_async_delay_seconds_sum": 0.1447, "vllm:request_prompt_tokens_sum": 32768.0, "vllm:request_generation_tokens_sum": 1.0, "vllm:iteration_tokens_total_sum": 1.0, "vllm:request_max_num_generation_tokens_sum": 1.0, "vllm:request_params_n_sum": 1.0, "vllm:request_params_max_tokens_sum": 1.0, "vllm:time_to_first_token_seconds_sum": 0.2363, "vllm:e2e_request_latency_seconds_sum": 0.2363, "vllm:request_queue_time_seconds_sum": 0.2233, "vllm:request_inference_time_seconds_sum": 0.0071, "vllm:request_prefill_time_seconds_sum": 0.0071, "vllm:request_render_duration_seconds_sum": 0.0002}}
+{"greedy": 0, "match": true, "p2p_tokens": 3584.0, "ref": " The history of the printing press begin"}
+{"greedy": 1, "match": true, "p2p_tokens": 3264.0, "ref": " Explain how a heat pump works, step by "}
+{"greedy": 2, "match": true, "p2p_tokens": 2560.0, "ref": " List the planets of the solar system an"}
+SUMMARY tokens=8192 median_gib_s=22.61
+SUMMARY tokens=16384 median_gib_s=23.03
+SUMMARY tokens=32768 median_gib_s=26.68

@@ -53,8 +53,14 @@ class FakeAgent:
 
     def make_prepped_xfer(self, op, local, li, remote, ri, *a, **kw):
         assert local["owner"] == self.name and remote["owner"] in self.remotes, "stripe crossed agents"
-        return {"op": op, "local": [int(x) for x in li], "remote": [int(x) for x in ri], "to": remote["owner"],
-                "polls": 0, "released": False}
+        return {
+            "op": op,
+            "local": [int(x) for x in li],
+            "remote": [int(x) for x in ri],
+            "to": remote["owner"],
+            "polls": 0,
+            "released": False,
+        }
 
     def transfer(self, h, notif=b""):
         return "PROC"

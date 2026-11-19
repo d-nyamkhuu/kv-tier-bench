@@ -9,17 +9,37 @@ models:
     extra_args:
       - --mamba-ssm-cache-dtype=bfloat16          # user decision; HF default is float32
       - --no-disable-hybrid-kv-cache-manager      # the offloading connector must not turn HMA off
+      - &text_only --limit-mm-per-prompt={"image":0,"video":0}   # text-only prompts on a vision-language model
   qwen3-vl-32b:
     hf_id: Qwen/Qwen3-VL-32B-Instruct  # standard: 64 full-attention layers
     config: configs/models/qwen3-vl-32b-instruct.config.json
     params: 33360000000              # approx., from the HF model page
-    extra_args: []
+    extra_args:
+      - *text_only
+  # s2 (concurrent load): two ~9B models of the same two kinds, small enough that many long prefixes fit at once
+  qwen3.5-9b:
+    hf_id: Qwen/Qwen3.5-9B           # hybrid, same layout as qwen3.8-27b: 8 full-attention + 24 Gated DeltaNet layers
+    config: configs/models/qwen3.5-9b.config.json
+    params: 9653104368               # HF safetensors total (incl. vision tower), 2026-11-19
+    extra_args:
+      - --mamba-ssm-cache-dtype=bfloat16
+      - --no-disable-hybrid-kv-cache-manager
+      - *text_only
+  qwen3-8b:
+    hf_id: Qwen/Qwen3-8B             # standard: 36 full-attention layers, text-only
+    config: configs/models/qwen3-8b.config.json
+    params: 8190735360               # HF safetensors total, 2026-11-19
+    extra_args:
+      # trained to 32K (40,960 positions). YaRN as Qwen documents it, but factor 5 rather than 4, so that a 128K
+      # prompt plus its token still fits (factor 4 gives exactly 131,072 positions). rope_theta has to be repeated
+      # inside rope_scaling, or this vLLM's transformers drops it (TypeError at startup; seen on Qwen3-0.6B).
+      # UNVERIFIED on this model: check the startup log on day 1 of s2.
+      - --hf-overrides={"rope_scaling":{"rope_type":"yarn","rope_theta":1000000,"factor":5.0,"original_max_position_embeddings":32768},"max_position_embeddings":163840}
 
 common_args:
   - --enable-prefix-caching
   - --dtype=bfloat16
   - --kv-cache-dtype=auto
-  - --limit-mm-per-prompt={"image":0,"video":0}   # text-only
   - --max-num-seqs=32
 
 tiers: [recompute, gpu, cpu, fs, obj, p2p]
@@ -29,10 +49,12 @@ tiers: [recompute, gpu, cpu, fs, obj, p2p]
 prefix_tokens: [1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
 reps: 5
 recompute_reps: 1        # recompute is a full second prefill; each job's cold write (`write_s`) is the second sample
+# A stage may set its own models, prefix_tokens, reps, recompute_reps and concurrency (default: one request at a time).
 
 stages:
-  s1:
+  s1: &rtx_pair
     description: 2 x RTX PRO 6000 (1 GPU each, gpu-rtx6000-a), Nebius eu-south1, TCP between VMs
+    models: [qwen3.8-27b, qwen3-vl-32b]
     gpu: rtx-pro-6000               # key into configs/prices.yaml
     disk_price: fs_network_ssd_nrd  # key into configs/prices.yaml
     tp: 1
@@ -71,6 +93,93 @@ stages:
     s3_region: eu-south1
     disk_mount: /mnt/kv
 
-s3_bucket: kvtb-cache   # Enhanced Throughput class
+  s2: &s2
+    <<: *rtx_pair                   # the same VM shape and settings as s1, except:
+    description: >-
+      Concurrent load on 2 x RTX PRO 6000 (1 GPU each, gpu-rtx6000), Nebius us-central1, TCP between VMs: batches of
+      1-16 requests, each with its own prefix, read from a tier at once
+    # us-central1, where spot was cheapest ($1.19 vs $1.38, 2026-11-19); on demand is $1.80 in both. Its RTX PRO 6000
+    # platform is gpu-rtx6000, not s1's gpu-rtx6000-a (same GPU, 24 vCPU, 218 GB preset), so its p2p link may
+    # differ from s1's. The buckets (obj_buckets) are in us-central1 too: Object Storage is fastest in-region.
+    s3_endpoint: storage.us-central1.nebius.cloud
+    s3_region: us-central1
+    models: [qwen3.5-9b, qwen3-8b]
+    # p2p first: VM B is only needed for it, so it can be stopped before the rest (sweep.sh runs p2p for every model
+    # before anything else). Both Object Storage classes: obj (Enhanced Throughput) and obj-std (Standard).
+    tiers: [recompute, gpu, cpu, fs, fs-shared, obj, obj-std, p2p]
+    # fs is the 1767 GiB network SSD disk at disk_mount, as in s1. fs-shared is vLLM's fs tier on a 1 TiB Nebius
+    # shared filesystem (network_ssd), mounted on VM A over virtiofs. fio (8 MiB direct I/O, 2026-11-19) favoured
+    # the filesystem (4.97 vs 1.48 GiB/s writes, 8.17 vs 1.94 16-way reads), but vLLM's fs tier (10 MiB files,
+    # 16 threads) loaded 16K+ prefixes 1.5-3x slower from it than from the disk, so s2 measures both.
+    shared_fs_mount: /mnt/fs
+    shared_fs_price: fs_shared_network_ssd   # key into configs/prices.yaml
+    prefix_tokens: [4096, 16384, 32768, 65536, 131072]
+    # every request in a batch has its own prefix, and they are all read at once. A batch must fit in GPU KV
+    # memory and in the CPU tier as a whole (grid.fits), so 16 x 128K is left out of both models.
+    concurrency: [1, 2, 4, 8, 16]
+    reps: 3
+    # the recompute baseline under load is the recompute batch (prefixes are written one at a time), so it gets
+    # full reps
+    recompute_reps: 3
+    max_prefix_tokens: {}
+    max_model_len:
+      default: 140000
+
+  s3:
+    <<: *s2                         # s2's VMs, grid and settings, except:
+    description: >-
+      A CPU-only KV store: vLLM on an RTX PRO 6000 VM loads prefixes from MooncakeStoreConnector, whose pool is a
+      CPU-only VM's memory, against p2p from a second GPU VM (native NIXL/UCX, and Mooncake with the pool in the
+      writer's RAM). Batches of 1-16 requests, as in s2. Nebius eu-south1, 2026-11-19.
+    models: [qwen3-8b, qwen3.5-9b]
+    # No KV disk, shared filesystem or bucket. recompute, gpu and cpu would run on `base`, the CPU tier alone on VM A
+    # (tierconfig.BASE_DEPLOYMENT); the s3 run skipped it to save GPU time, and `kvtb cost` takes them from
+    # results/s2.jsonl instead: the same models, grid and GPU, but us-central1's gpu-rtx6000 platform. Checked against
+    # eu-south1's gpu-rtx6000-a through s3's p2p write phase (a prefill): 1-7% above s2's recompute (docs/report.md).
+    baseline_from: s2
+    # Run order: DEPLOYS=store with STORE set (VM A and the CPU VM), then DEPLOYS="p2p store-p2p" with PEER set (a
+    # second GPU VM that exists only for them). store-p2p is Mooncake as p2p: VM A's vLLM holds the pool (embedded
+    # mode, holder_pool_gib of its RAM) and runs the master, and VM B's vLLM reads from it over Mooncake's TCP. Same
+    # holder as p2p, same transport as the store. store-p2p ran on Qwen3-8B only.
+    tiers: [recompute, gpu, cpu, p2p, store, store-p2p]
+    # p2p and the store both hold a prefix in some VM's RAM. In s3 that RAM is priced (configs/prices.yaml); `kvtb
+    # cost` also prints the "included" case as *_included columns.
+    ram_price: ram_cpu_vm
+    ram_priced_tiers: [p2p, store, store-p2p]
+    store:
+      # cpu-d3. 16vcpu-64gb ($0.53/h) had a 48 GiB pool: the master evicts 5% at a time from 90% full, and objects
+      # lose their lease after 10 s, so a 36 GiB batch (8B, 2 x 128K) lost blocks to eviction and some reads failed
+      # mid-transfer (results/s3-store-16vcpu.jsonl). 64vcpu-256gb ($2.11/h) holds a whole model's sweep.
+      vm_preset: 64vcpu-256gb
+      pool_gib: 200                 # mooncake_client --global_segment_size on the store VM
+      lease_ttl_ms: 60000           # mooncake_master --default_kv_lease_ttl (default 10 s): longer than any read
+      holder_pool_gib: 96           # store-p2p: the pool in VM A's vLLM process (218 GiB VM)
+      protocol: tcp                 # no InfiniBand on these VMs
+      metadata_server: P2PHANDSHAKE # the docs' standalone-store example; no separate metadata server
+      local_buffer_size: 4294967296 # vLLM's private transfer buffer (4 GiB); not a cache: every reset read loaded load_get bytes
+      tenant_id: default            # Mooncake's default; requester and pool must match
+      # Mooncake's TCP transport defaults to 1 I/O thread and 4 connection lanes per peer, and vLLM to 1 load
+      # thread: ~1.3 GiB/s for one 16K prefix, 1.1 GiB/s for 8 at once (results/s3-store-defaults.jsonl).
+      # transfer_engine_bench A<-C, 9 MiB blocks (vLLM's 64-token blocks of Qwen3-8B), 2026-11-19, GB/s:
+      #   io 1, lanes 4: 2.0-2.4    io 8, lanes 8: 7.7-8.3    io 8, lanes 16: 9.5-12.0
+      #   io 16, lanes 16: 7.8-9.4  lanes 24 or 32: 4.0-4.8 (any io)
+      # That is into host memory. vLLM loads straight into GPU memory (no registered segment over TCP), where the
+      # 64 KiB default slice caps it at 2.5 GB/s (io 8, lanes 16); slices of 1 / 4 / 9 MiB: 6.4 / 7.8 / 8.2 GB/s.
+      # io 8 + lanes 16 alone loaded one 16K prefix in 0.86 s (results/s3-store-io8-lanes16.jsonl).
+      # Set on both ends: vLLM's requester (launch.py) and mooncake_master/client (store-up.sh).
+      env:
+        MC_NUM_TCP_IO_THREADS: 8
+        MC_TCP_LANES_PER_PEER: 16
+        MC_TCP_SLICE_SIZE: 4194304
+        # 4 requests loading 64K prefixes at once queue ~12K slices on the lanes to one peer; the default limit
+        # rejected them ("TCP lane queue-full rejection count: 8192", then TRANSFER_FAIL and HTTP 500)
+        MC_TCP_MAX_QUEUED_TRANSFERS_PER_PEER: 262144
+        MC_TCP_MAX_PENDING_ADMISSIONS_PER_PEER: 262144
+      load_recv_threads: 4          # VLLM_MOONCAKE_LOAD_RECV_THREADS: requests of a batch load in parallel
+
+s3_bucket: kvtb-cache   # Enhanced Throughput class: the obj tier, and the results backup
+obj_buckets:            # one bucket per Object Storage class; a bucket's default class applies to every new object
+  obj: kvtb-cache           # Enhanced Throughput
+  obj-std: kvtb-cache-std   # Standard (create it with --default-storage-class standard; it is also Nebius's default)
 validity_prompts: 5     # per (model, tier); natural text, greedy output compared with recompute
 max_attempts: 3         # a point is done when valid, or after this many invalid attempts (each with a fresh prompt)

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from kv_tier_bench.cli import check_endpoints
-from kv_tier_bench.grid import load_experiment
+from kv_tier_bench.grid import expand, load_experiment, stage_models
 from kv_tier_bench.launch import CONTAINER, VLLM_IMAGE, docker_run, max_model_len
 from kv_tier_bench.models import load_shape
 from kv_tier_bench.tierconfig import DEPLOYMENT_FOR_TIER, kv_transfer_config
@@ -42,7 +42,7 @@ def test_container_settings_carried_over_from_the_kubernetes_base():
     env = dict(e.split("=", 1) for e in _opt(cmd, "-e"))
     assert env["PYTHONHASHSEED"] == "0" and env["VLLM_SERVER_DEV_MODE"] == "1" and env["HF_HUB_OFFLINE"] == "1"
     assert env["VLLM_P2P_SIDE_CHANNEL_HOST"] == IP == env["VLLM_NIXL_SIDE_CHANNEL_HOST"]
-    assert env["VLLM_CACHE_ROOT"] == "/models/vllm-cache" and env["HF_HOME"] == "/models"
+    assert env["VLLM_CACHE_ROOT"] == f"/models/cache/{IP}/vllm" and env["HF_HOME"] == "/models"
     assert env["UCX_NET_DEVICES"] == "eth0"
     assert VLLM_IMAGE == "docker.io/vllm/vllm-openai:v0.34.0"
     assert _opt(cmd, "--entrypoint") == ["vllm"] and _vllm(cmd)[0] == "serve"  # not the image's default
@@ -95,13 +95,37 @@ def test_one_max_length_sequence_fits_in_gpu_kv_memory():
     for stage_name, st in EXP["stages"].items():
         gpus = st["gpus_per_instance"]
         usable = st["gpu_mem_gib"] * GIB * st["gpu_memory_utilization"] * gpus
-        for model, m in EXP["models"].items():
+        for model in stage_models(EXP, stage_name):
+            m = EXP["models"][model]
             shape = load_shape(model, ROOT / m["config"])
             free = usable - m["params"] * 2 - 3 * GIB * gpus
             need = shape.prefix_bytes(max_model_len(st, model), tp=st["tp"])
             assert need < free, (stage_name, model, need / GIB, free / GIB)
-            cap = st.get("max_prefix_tokens", {}).get(model, max(EXP["prefix_tokens"]))
-            assert cap < max_model_len(st, model), (stage_name, model)  # the largest point must fit
+
+
+def test_every_prompt_and_its_token_fit_the_context():
+    """A read sends the prefix plus one token and asks for one more; past max_model_len vLLM answers 400."""
+    for stage_name, st in EXP["stages"].items():
+        for p in expand(EXP, stage_name):
+            assert p.target_tokens + 2 <= max_model_len(st, p.model), p.id
+
+
+def test_mm_limit_only_on_vision_language_models():
+    for model in ("qwen3.8-27b", "qwen3-vl-32b", "qwen3.5-9b"):
+        assert any(a.startswith("--limit-mm-per-prompt=") for a in _vllm(_cmd(model))), model
+    assert not any("limit-mm" in a for a in _vllm(_cmd("qwen3-8b")))  # text-only
+
+
+def test_qwen3_8b_yarn_covers_its_context():
+    args = _vllm(docker_run(EXP, "s2", "qwen3-8b", "fs", IP))
+    over = json.loads(next(a for a in args if a.startswith("--hf-overrides=")).split("=", 1)[1])
+    rope = over["rope_scaling"]
+    assert rope["rope_type"] == "yarn"
+    assert rope["factor"] * rope["original_max_position_embeddings"] == over["max_position_embeddings"]
+    assert over["max_position_embeddings"] >= max_model_len(EXP["stages"]["s2"], "qwen3-8b")
+    config = json.loads((ROOT / EXP["models"]["qwen3-8b"]["config"]).read_text())
+    assert rope["rope_theta"] == config["rope_theta"]  # repeated, or this transformers drops it
+    assert not any("hf-overrides" in a for a in _vllm(docker_run(EXP, "s2", "qwen3.5-9b", "fs", IP)))
 
 
 def test_max_model_len_and_utilization_reach_the_args():

@@ -1,0 +1,70 @@
+Unable to find image 'python:3.12-slim' locally
+Unable to find image 'python:3.12-slim' locally
+3.12-slim: Pulling from library/python
+37fb86c2a767: Pulling fs layer
+68bced9e0afa: Pulling fs layer
+2dc99d2d0a39: Pulling fs layer
+05e0eee5572e: Pulling fs layer
+37fb86c2a767: Waiting
+68bced9e0afa: Waiting
+2dc99d2d0a39: Waiting
+05e0eee5572e: Waiting
+3.12-slim: Pulling from library/python
+37fb86c2a767: Pulling fs layer
+68bced9e0afa: Pulling fs layer
+2dc99d2d0a39: Pulling fs layer
+05e0eee5572e: Pulling fs layer
+05e0eee5572e: Waiting
+68bced9e0afa: Verifying Checksum
+68bced9e0afa: Download complete
+2dc99d2d0a39: Verifying Checksum
+2dc99d2d0a39: Download complete
+37fb86c2a767: Verifying Checksum
+37fb86c2a767: Download complete
+05e0eee5572e: Download complete
+37fb86c2a767: Pull complete
+68bced9e0afa: Pull complete
+2dc99d2d0a39: Pull complete
+05e0eee5572e: Pull complete
+Digest: sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+Status: Downloaded newer image for python:3.12-slim
+37fb86c2a767: Verifying Checksum
+37fb86c2a767: Download complete
+68bced9e0afa: Verifying Checksum
+68bced9e0afa: Download complete
+2dc99d2d0a39: Verifying Checksum
+2dc99d2d0a39: Download complete
+05e0eee5572e: Download complete
+37fb86c2a767: Pull complete
+68bced9e0afa: Pull complete
+2dc99d2d0a39: Pull complete
+05e0eee5572e: Pull complete
+Digest: sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+Status: Downloaded newer image for python:3.12-slim
+WARNING: huggingface-hub 2.4.0 does not provide the extra 'hf-transfer'
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+
+[notice] A new release of pip is available: 25.0.1 -> 26.3
+[notice] To update, run: pip install --upgrade pip
+/usr/local/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+[90mHint: The `hf-cli` skill is not installed. Run `hf skills add -g` to teach your AI agents how to use the `hf` CLI.[0m
+Fetching 32 files:   0%|          | 0/32 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Fetching 32 files:   3%|▎         | 1/32 [00:00<00:04,  6.88it/s]Fetching 32 files:  25%|██▌       | 8/32 [00:00<00:00, 32.15it/s]Fetching 32 files:  25%|██▌       | 8/32 [00:20<00:00, 32.15it/s]WARNING: huggingface-hub 2.4.0 does not provide the extra 'hf-transfer'
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+
+[notice] A new release of pip is available: 25.0.1 -> 26.3
+[notice] To update, run: pip install --upgrade pip
+/usr/local/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+[90mHint: The `hf-cli` skill is not installed. Run `hf skills add -g` to teach your AI agents how to use the `hf` CLI.[0m
+Fetching 32 files:   0%|          | 0/32 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Fetching 32 files:   3%|▎         | 1/32 [00:00<00:04,  7.48it/s]Fetching 32 files:  25%|██▌       | 8/32 [00:00<00:00, 38.10it/s]Fetching 32 files:  25%|██▌       | 8/32 [00:20<00:00, 38.10it/s]Fetching 32 files:  28%|██▊       | 9/32 [01:28<05:16, 13.77s/it]Fetching 32 files:  31%|███▏      | 10/32 [01:50<05:37, 15.32s/it]Fetching 32 files:  28%|██▊       | 9/32 [01:53<06:46, 17.69s/it]Fetching 32 files:  31%|███▏      | 10/32 [01:55<05:27, 14.89s/it]Fetching 32 files:  31%|███▏      | 10/32 [02:10<05:27, 14.89s/it]Fetching 32 files:  34%|███▍      | 11/32 [02:27<06:25, 18.34s/it]Fetching 32 files:  38%|███▊      | 12/32 [02:59<07:10, 21.55s/it]Fetching 32 files:  41%|████      | 13/32 [03:11<06:06, 19.31s/it]Fetching 32 files:  44%|████▍     | 14/32 [03:22<05:04, 16.94s/it]Fetching 32 files:  47%|████▋     | 15/32 [03:42<05:03, 17.83s/it]Fetching 32 files:  50%|█████     | 16/32 [03:44<03:35, 13.49s/it]Fetching 32 files:  53%|█████▎    | 17/32 [04:00<03:22, 13.49s/it]Fetching 32 files:  56%|█████▋    | 18/32 [04:30<04:07, 17.66s/it]Fetching 32 files:  59%|█████▉    | 19/32 [05:10<05:00, 23.10s/it]Fetching 32 files:  62%|██████▎   | 20/32 [05:10<03:26, 17.24s/it]Fetching 32 files:  69%|██████▉   | 22/32 [05:15<01:48, 10.90s/it]Fetching 32 files:  72%|███████▏  | 23/32 [05:15<01:15,  8.40s/it]Fetching 32 files:  75%|███████▌  | 24/32 [05:15<00:50,  6.35s/it]Fetching 32 files:  78%|███████▊  | 25/32 [05:15<00:33,  4.73s/it]Fetching 32 files:  81%|████████▏ | 26/32 [05:44<01:08, 11.39s/it]Fetching 32 files:  84%|████████▍ | 27/32 [06:00<01:02, 12.50s/it]Fetching 32 files:  88%|████████▊ | 28/32 [06:10<00:47, 11.83s/it]Fetching 32 files:  91%|█████████ | 29/32 [06:16<00:30, 10.16s/it]Fetching 32 files:  94%|█████████▍| 30/32 [06:38<00:27, 13.70s/it]Fetching 32 files:  97%|█████████▋| 31/32 [06:52<00:13, 13.86s/it]Fetching 32 files: 100%|██████████| 32/32 [06:55<00:00, 10.51s/it]Fetching 32 files: 100%|██████████| 32/32 [06:55<00:00, 12.98s/it]
+[32m✓ Downloaded[0m
+  path: /models/hub/models--Qwen--Qwen3.8-27B/snapshots/37561816e66b5b9153b1b64c10968c18c1e6f4a0
+/usr/local/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Fetching 26 files:   0%|          | 0/26 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Fetching 26 files:   4%|▍         | 1/26 [00:00<00:03,  6.82it/s]Fetching 26 files:  23%|██▎       | 6/26 [00:00<00:00, 27.20it/s]Fetching 26 files:  23%|██▎       | 6/26 [00:20<00:00, 27.20it/s]Fetching 26 files:  27%|██▋       | 7/26 [03:39<13:53, 43.89s/it]Fetching 26 files:  31%|███       | 8/26 [04:06<12:02, 40.15s/it]Fetching 26 files:  35%|███▍      | 9/26 [04:59<12:18, 43.42s/it]Fetching 26 files:  38%|███▊      | 10/26 [05:07<09:09, 34.34s/it]Fetching 26 files:  42%|████▏     | 11/26 [05:20<08:35, 34.34s/it]Fetching 26 files:  46%|████▌     | 12/26 [05:20<05:15, 22.52s/it]Fetching 26 files:  50%|█████     | 13/26 [05:23<03:52, 17.89s/it]Fetching 26 files:  58%|█████▊    | 15/26 [05:23<01:59, 10.82s/it]Fetching 26 files:  62%|██████▏   | 16/26 [05:23<01:24,  8.46s/it]Fetching 26 files:  65%|██████▌   | 17/26 [05:23<00:58,  6.46s/it]Fetching 26 files:  69%|██████▉   | 18/26 [05:23<00:38,  4.84s/it]Fetching 26 files:  73%|███████▎  | 19/26 [05:24<00:25,  3.58s/it]Fetching 26 files:  77%|███████▋  | 20/26 [05:47<00:54,  9.15s/it]Fetching 26 files:  81%|████████  | 21/26 [07:12<02:32, 30.45s/it]Fetching 26 files:  85%|████████▍ | 22/26 [07:39<01:58, 29.58s/it]Fetching 26 files:  88%|████████▊ | 23/26 [07:57<01:18, 26.12s/it]Fetching 26 files:  92%|█████████▏| 24/26 [08:00<00:38, 19.38s/it]Fetching 26 files:  96%|█████████▌| 25/26 [08:03<00:14, 14.47s/it]Fetching 26 files: 100%|██████████| 26/26 [08:06<00:00, 11.16s/it]Fetching 26 files: 100%|██████████| 26/26 [08:06<00:00, 18.72s/it]
+[32m✓ Downloaded[0m
+  path: /models/hub/models--Qwen--Qwen3-VL-32B-Instruct/snapshots/0cfaf48183f594c314753d30a4c4974bc75f3ccb

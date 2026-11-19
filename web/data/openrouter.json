@@ -1,0 +1,1806 @@
+{
+ "fetched": "2026-11-19",
+ "source": "https://openrouter.ai/api/v1/models/<id>/endpoints",
+ "models": {
+  "qwen3.8-27b": {
+   "openrouter_id": "qwen/qwen3.8-27b",
+   "url": "https://openrouter.ai/qwen/qwen3.8-27b/providers",
+   "providers": [
+    {
+     "provider": "Darkbloom",
+     "quantization": "fp4",
+     "input": 0.035,
+     "cached": 0.0175,
+     "output": 1.5
+    },
+    {
+     "provider": "Chutes",
+     "quantization": "fp8",
+     "input": 0.039,
+     "cached": 0.0039,
+     "output": 1.25
+    },
+    {
+     "provider": "Near AI",
+     "quantization": "fp8",
+     "input": 0.04,
+     "cached": 0.018,
+     "output": 1.35
+    },
+    {
+     "provider": "Ionstream",
+     "quantization": "fp8",
+     "input": 0.04,
+     "cached": 0.02,
+     "output": 1.95
+    },
+    {
+     "provider": "Modal",
+     "quantization": "unknown",
+     "input": 0.04,
+     "cached": 0.02,
+     "output": 2.3
+    },
+    {
+     "provider": "DekaLLM",
+     "quantization": "unknown",
+     "input": 0.04,
+     "cached": 0.02,
+     "output": 2.5
+    },
+    {
+     "provider": "Wafer",
+     "quantization": "fp8",
+     "input": 0.06,
+     "cached": 0.059,
+     "output": 2.2
+    },
+    {
+     "provider": "Mancer 2",
+     "quantization": "fp8",
+     "input": 0.125,
+     "cached": 0.03,
+     "output": 1.5
+    },
+    {
+     "provider": "Tenstorrent",
+     "quantization": "fp8",
+     "input": 0.15,
+     "cached": 0.05,
+     "output": 1.6
+    },
+    {
+     "provider": "DeepInfra",
+     "quantization": "fp8",
+     "input": 0.15,
+     "cached": 0.0375,
+     "output": 1.875
+    },
+    {
+     "provider": "Reka",
+     "quantization": "fp8",
+     "input": 0.15,
+     "cached": 0.05,
+     "output": 2.5
+    },
+    {
+     "provider": "StreamLake",
+     "quantization": "unknown",
+     "input": 0.175,
+     "cached": 0.035,
+     "output": 1.05
+    },
+    {
+     "provider": "ModelRun",
+     "quantization": "fp4",
+     "input": 0.2,
+     "cached": 0.09,
+     "output": 2.5
+    },
+    {
+     "provider": "AkashML",
+     "quantization": "fp8",
+     "input": 0.225,
+     "cached": 0.05,
+     "output": 1.98
+    },
+    {
+     "provider": "Parasail",
+     "quantization": "fp8",
+     "input": 0.24,
+     "cached": 0.05,
+     "output": 2.2
+    },
+    {
+     "provider": "CoreWeave",
+     "quantization": "fp8",
+     "input": 0.4,
+     "cached": 0.15,
+     "output": 3.0
+    },
+    {
+     "provider": "Novita",
+     "quantization": "unknown",
+     "input": 0.42,
+     "cached": 0.085,
+     "output": 3.0
+    },
+    {
+     "provider": "SiliconFlow",
+     "quantization": "fp8",
+     "input": 0.425,
+     "cached": 0.085,
+     "output": 2.55
+    },
+    {
+     "provider": "Alibaba",
+     "quantization": "unknown",
+     "input": 0.425,
+     "cached": 0.085,
+     "output": 2.55
+    },
+    {
+     "provider": "Nebius",
+     "quantization": "fp4",
+     "input": 0.45,
+     "cached": 0.1,
+     "output": 3.0
+    },
+    {
+     "provider": "GMICloud",
+     "quantization": "fp8",
+     "input": 0.45,
+     "cached": 0.25,
+     "output": 3.2
+    },
+    {
+     "provider": "PrimeIntellect",
+     "quantization": "fp8",
+     "input": 0.45,
+     "cached": 0.05,
+     "output": 3.2
+    },
+    {
+     "provider": "Cloudflare",
+     "quantization": "unknown",
+     "input": 0.45,
+     "cached": 0.05,
+     "output": 3.2
+    },
+    {
+     "provider": "Venice",
+     "quantization": "fp8",
+     "input": 0.45,
+     "cached": null,
+     "output": 3.2
+    },
+    {
+     "provider": "Cerebras",
+     "quantization": "fp16",
+     "input": 0.99,
+     "cached": 0.99,
+     "output": 1.49
+    }
+   ],
+   "speed": {
+    "p50_tok_s": 28.0,
+    "p50_latency_s": 4.81,
+    "as_of": "2026-11-18",
+    "url": "https://openrouter.ai/compare/qwen/qwen3.8-27b/qwen/qwen3.8-2.4t-a95b"
+   }
+  },
+  "gpt-oss-120b": {
+   "openrouter_id": "openai/gpt-oss-120b",
+   "url": "https://openrouter.ai/openai/gpt-oss-120b/providers",
+   "providers": [
+    {
+     "provider": "Near AI",
+     "quantization": "fp4",
+     "input": 0.03,
+     "cached": 0.015,
+     "output": 0.15
+    },
+    {
+     "provider": "Venice",
+     "quantization": "int4",
+     "input": 0.03,
+     "cached": 0.03,
+     "output": 0.15
+    },
+    {
+     "provider": "CoreWeave",
+     "quantization": "fp4",
+     "input": 0.03,
+     "cached": 0.03,
+     "output": 0.17
+    },
+    {
+     "provider": "DekaLLM",
+     "quantization": "bf16",
+     "input": 0.03,
+     "cached": 0.03,
+     "output": 0.18
+    },
+    {
+     "provider": "AkashML",
+     "quantization": "fp4",
+     "input": 0.03,
+     "cached": 0.03,
+     "output": 0.187
+    },
+    {
+     "provider": "DeepInfra",
+     "quantization": "bf16",
+     "input": 0.037,
+     "cached": 0.0185,
+     "output": 0.17
+    },
+    {
+     "provider": "Crusoe",
+     "quantization": "bf16",
+     "input": 0.05,
+     "cached": 0.05,
+     "output": 0.25
+    },
+    {
+     "provider": "Sail Research",
+     "quantization": "fp4",
+     "input": 0.06,
+     "cached": 0.03,
+     "output": 0.4
+    },
+    {
+     "provider": "DigitalOcean",
+     "quantization": "unknown",
+     "input": 0.06,
+     "cached": 0.012,
+     "output": 0.42
+    },
+    {
+     "provider": "Google",
+     "quantization": "unknown",
+     "input": 0.09,
+     "cached": null,
+     "output": 0.36
+    },
+    {
+     "provider": "Mancer 2",
+     "quantization": "fp8",
+     "input": 0.095,
+     "cached": 0.095,
+     "output": 0.375
+    },
+    {
+     "provider": "BaseTen",
+     "quantization": "fp4",
+     "input": 0.1,
+     "cached": 0.1,
+     "output": 0.5
+    },
+    {
+     "provider": "BaseTen",
+     "quantization": "fp4",
+     "input": 0.1,
+     "cached": 0.1,
+     "output": 0.5
+    },
+    {
+     "provider": "Parasail",
+     "quantization": "fp4",
+     "input": 0.1,
+     "cached": 0.055,
+     "output": 0.75
+    },
+    {
+     "provider": "SambaNova",
+     "quantization": "unknown",
+     "input": 0.14,
+     "cached": null,
+     "output": 0.95
+    },
+    {
+     "provider": "Amazon Bedrock",
+     "quantization": "unknown",
+     "input": 0.15,
+     "cached": null,
+     "output": 0.6
+    },
+    {
+     "provider": "Nebius",
+     "quantization": "fp4",
+     "input": 0.15,
+     "cached": 0.1,
+     "output": 0.6
+    },
+    {
+     "provider": "Amazon Bedrock",
+     "quantization": "unknown",
+     "input": 0.15,
+     "cached": null,
+     "output": 0.6
+    },
+    {
+     "provider": "SiliconFlow",
+     "quantization": "fp8",
+     "input": 0.15,
+     "cached": 0.075,
+     "output": 0.6
+    },
+    {
+     "provider": "Together",
+     "quantization": "unknown",
+     "input": 0.15,
+     "cached": null,
+     "output": 0.6
+    },
+    {
+     "provider": "Groq",
+     "quantization": "unknown",
+     "input": 0.15,
+     "cached": 0.075,
+     "output": 0.6
+    },
+    {
+     "provider": "Parasail",
+     "quantization": "fp4",
+     "input": 0.15,
+     "cached": null,
+     "output": 0.75
+    },
+    {
+     "provider": "PrimeIntellect",
+     "quantization": "fp4",
+     "input": 0.35,
+     "cached": 0.315,
+     "output": 0.75
+    },
+    {
+     "provider": "Cerebras",
+     "quantization": "fp16",
+     "input": 0.35,
+     "cached": 0.35,
+     "output": 0.75
+    }
+   ],
+   "speed": {
+    "p50_tok_s": 65.0,
+    "p50_latency_s": 0.62,
+    "as_of": "2026-11-18",
+    "url": "https://openrouter.ai/compare/openai/gpt-oss-120b/google/gemma-4-31b-it"
+   }
+  },
+  "gemma-4-31b": {
+   "openrouter_id": "google/gemma-4-31b-it",
+   "url": "https://openrouter.ai/google/gemma-4-31b-it/providers",
+   "providers": [
+    {
+     "provider": "KT",
+     "quantization": "unknown",
+     "input": 0.1,
+     "cached": 0.1,
+     "output": 0.34
+    },
+    {
+     "provider": "CoreWeave",
+     "quantization": "fp4",
+     "input": 0.1,
+     "cached": 0.1,
+     "output": 0.34
+    },
+    {
+     "provider": "Venice",
+     "quantization": "fp4",
+     "input": 0.12,
+     "cached": 0.09,
+     "output": 0.36
+    },
+    {
+     "provider": "Chutes",
+     "quantization": "fp4",
+     "input": 0.12,
+     "cached": 0.012,
+     "output": 0.37
+    },
+    {
+     "provider": "NextBit",
+     "quantization": "fp4",
+     "input": 0.125,
+     "cached": 0.075,
+     "output": 0.34
+    },
+    {
+     "provider": "DeepInfra",
+     "quantization": "fp4",
+     "input": 0.135,
+     "cached": 0.075,
+     "output": 0.51
+    },
+    {
+     "provider": "Crusoe",
+     "quantization": "bf16",
+     "input": 0.14,
+     "cached": 0.14,
+     "output": 0.4
+    },
+    {
+     "provider": "Friendli",
+     "quantization": "unknown",
+     "input": 0.14,
+     "cached": null,
+     "output": 0.4
+    },
+    {
+     "provider": "Novita",
+     "quantization": "bf16",
+     "input": 0.14,
+     "cached": null,
+     "output": 0.4
+    },
+    {
+     "provider": "Parasail",
+     "quantization": "fp8",
+     "input": 0.15,
+     "cached": 0.06,
+     "output": 0.4
+    },
+    {
+     "provider": "DeepInfra",
+     "quantization": "fp8",
+     "input": 0.16,
+     "cached": null,
+     "output": 0.32
+    },
+    {
+     "provider": "PrimeIntellect",
+     "quantization": "fp8",
+     "input": 0.2,
+     "cached": 0.1,
+     "output": 0.335
+    },
+    {
+     "provider": "DeepInfra",
+     "quantization": "fp8",
+     "input": 0.2,
+     "cached": null,
+     "output": 0.4
+    },
+    {
+     "provider": "DeepInfra",
+     "quantization": "fp8",
+     "input": 0.3,
+     "cached": null,
+     "output": 0.6
+    },
+    {
+     "provider": "Modal",
+     "quantization": "unknown",
+     "input": 0.34,
+     "cached": 0.1,
+     "output": 0.1
+    },
+    {
+     "provider": "SambaNova",
+     "quantization": "unknown",
+     "input": 0.38,
+     "cached": null,
+     "output": 1.15
+    },
+    {
+     "provider": "ModelRun",
+     "quantization": "fp4",
+     "input": 0.75,
+     "cached": 0.2,
+     "output": 1.0
+    },
+    {
+     "provider": "SiliconFlow",
+     "quantization": "fp8",
+     "input": 0.75,
+     "cached": 0.25,
+     "output": 1.0
+    }
+   ],
+   "speed": {
+    "p50_tok_s": 148.0,
+    "p50_latency_s": 0.74,
+    "as_of": "2026-11-18",
+    "url": "https://openrouter.ai/compare/openai/gpt-oss-120b/google/gemma-4-31b-it"
+   }
+  },
+  "deepseek-v4.1-flash": {
+   "openrouter_id": "deepseek/deepseek-v4.1-flash",
+   "url": "https://openrouter.ai/deepseek/deepseek-v4.1-flash/providers",
+   "providers": [
+    {
+     "provider": "Wafer",
+     "quantization": "mxfp4",
+     "input": 0.051,
+     "cached": 0.018,
+     "output": 0.567
+    },
+    {
+     "provider": "OpenInference",
+     "quantization": "fp4",
+     "input": 0.09,
+     "cached": 0.005,
+     "output": 1.2
+    },
+    {
+     "provider": "Cloudflare",
+     "quantization": "unknown",
+     "input": 0.1,
+     "cached": 0.03,
+     "output": 0.9
+    },
+    {
+     "provider": "InferenceNet",
+     "quantization": "fp8",
+     "input": 0.103,
+     "cached": 0.008,
+     "output": 0.6
+    },
+    {
+     "provider": "InferenceNet",
+     "quantization": "fp8",
+     "input": 0.103,
+     "cached": 0.008,
+     "output": 0.6
+    },
+    {
+     "provider": "DeepInfra",
+     "quantization": "fp8",
+     "input": 0.112,
+     "cached": 0.00336,
+     "output": 0.336
+    },
+    {
+     "provider": "River",
+     "quantization": "unknown",
+     "input": 0.12,
+     "cached": 0.0024,
+     "output": 0.48
+    },
+    {
+     "provider": "Novita",
+     "quantization": "fp8",
+     "input": 0.12,
+     "cached": 0.0024,
+     "output": 0.48
+    },
+    {
+     "provider": "Relace",
+     "quantization": "fp4",
+     "input": 0.12,
+     "cached": 0.003,
+     "output": 0.5
+    },
+    {
+     "provider": "Reka",
+     "quantization": "unknown",
+     "input": 0.12,
+     "cached": 0.008,
+     "output": 0.64
+    },
+    {
+     "provider": "CoreWeave",
+     "quantization": "fp8",
+     "input": 0.13,
+     "cached": 0.002,
+     "output": 0.65
+    },
+    {
+     "provider": "AtlasCloud",
+     "quantization": "fp8",
+     "input": 0.135,
+     "cached": 0.0135,
+     "output": 0.54
+    },
+    {
+     "provider": "DeepInfra",
+     "quantization": "fp8",
+     "input": 0.14,
+     "cached": 0.0042,
+     "output": 0.42
+    },
+    {
+     "provider": "StreamLake",
+     "quantization": "fp8",
+     "input": 0.147,
+     "cached": 0.00294,
+     "output": 0.588
+    },
+    {
+     "provider": "Alibaba",
+     "quantization": "unknown",
+     "input": 0.18,
+     "cached": 0.0036,
+     "output": 0.72
+    },
+    {
+     "provider": "GMICloud",
+     "quantization": "fp8",
+     "input": 0.18,
+     "cached": 0.0036,
+     "output": 0.72
+    },
+    {
+     "provider": "Wafer",
+     "quantization": "mxfp4",
+     "input": 0.19,
+     "cached": 0.012,
+     "output": 0.65
+    },
+    {
+     "provider": "Cohere",
+     "quantization": "fp8",
+     "input": 0.195,
+     "cached": 0.003,
+     "output": 0.66
+    },
+    {
+     "provider": "Ionstream",
+     "quantization": "unknown",
+     "input": 0.2,
+     "cached": 0.02,
+     "output": 0.7
+    },
+    {
+     "provider": "DeepInfra",
+     "quantization": "fp8",
+     "input": 0.21,
+     "cached": 0.0063,
+     "output": 0.63
+    },
+    {
+     "provider": "Fireworks",
+     "quantization": "unknown",
+     "input": 0.21,
+     "cached": 0.0042,
+     "output": 0.84
+    },
+    {
+     "provider": "Mancer 2",
+     "quantization": "fp8",
+     "input": 0.2125,
+     "cached": 0.05,
+     "output": 0.75
+    },
+    {
+     "provider": "DigitalOcean",
+     "quantization": "unknown",
+     "input": 0.225,
+     "cached": 0.006,
+     "output": 0.9
+    },
+    {
+     "provider": "Makora",
+     "quantization": "fp8",
+     "input": 0.26,
+     "cached": 0.0058,
+     "output": 1.17
+    },
+    {
+     "provider": "Crusoe",
+     "quantization": "fp8",
+     "input": 0.29,
+     "cached": 0.007,
+     "output": 1.2
+    },
+    {
+     "provider": "Nebius",
+     "quantization": "fp8",
+     "input": 0.3,
+     "cached": 0.01,
+     "output": 1.2
+    },
+    {
+     "provider": "Google",
+     "quantization": "unknown",
+     "input": 0.3,
+     "cached": 0.03,
+     "output": 1.2
+    },
+    {
+     "provider": "Baidu",
+     "quantization": "fp8",
+     "input": 0.3,
+     "cached": 0.006,
+     "output": 1.2
+    },
+    {
+     "provider": "BaseTen",
+     "quantization": "unknown",
+     "input": 0.3,
+     "cached": 0.007,
+     "output": 1.2
+    },
+    {
+     "provider": "Together",
+     "quantization": "unknown",
+     "input": 0.3,
+     "cached": 0.006,
+     "output": 1.2
+    },
+    {
+     "provider": "SiliconFlow",
+     "quantization": "fp8",
+     "input": 0.3,
+     "cached": 0.006,
+     "output": 1.2
+    },
+    {
+     "provider": "Modal",
+     "quantization": "unknown",
+     "input": 0.3,
+     "cached": 0.03,
+     "output": 1.2
+    },
+    {
+     "provider": "BaseTen",
+     "quantization": "unknown",
+     "input": 0.3,
+     "cached": 0.007,
+     "output": 1.2
+    },
+    {
+     "provider": "Parasail",
+     "quantization": "fp8",
+     "input": 0.3,
+     "cached": 0.006,
+     "output": 1.2
+    },
+    {
+     "provider": "Fireworks",
+     "quantization": "unknown",
+     "input": 0.3,
+     "cached": 0.006,
+     "output": 1.2
+    },
+    {
+     "provider": "Venice",
+     "quantization": "fp8",
+     "input": 0.3,
+     "cached": 0.0075,
+     "output": 1.2
+    },
+    {
+     "provider": "Parasail",
+     "quantization": "fp8",
+     "input": 0.45,
+     "cached": 0.009,
+     "output": 1.8
+    },
+    {
+     "provider": "Fireworks",
+     "quantization": "unknown",
+     "input": 0.45,
+     "cached": 0.009,
+     "output": 1.8
+    },
+    {
+     "provider": "Venice",
+     "quantization": "fp8",
+     "input": 3.0,
+     "cached": 0.06,
+     "output": 12.0
+    }
+   ],
+   "speed": {
+    "p50_tok_s": 154.0,
+    "p50_latency_s": 0.23,
+    "as_of": "2026-11-18",
+    "url": "https://openrouter.ai/compare/deepseek/deepseek-v4.1-flash/moonshotai/kimi-k3"
+   }
+  },
+  "glm-5.3-flash": {
+   "openrouter_id": "z-ai/glm-5.3-flash",
+   "url": "https://openrouter.ai/z-ai/glm-5.3-flash/providers",
+   "providers": [
+    {
+     "provider": "Relace",
+     "quantization": "fp4",
+     "input": 0.0399,
+     "cached": 0.03,
+     "output": 0.0784
+    },
+    {
+     "provider": "Wafer",
+     "quantization": "nvfp4",
+     "input": 0.042,
+     "cached": 0.041,
+     "output": 0.184
+    },
+    {
+     "provider": "OpenInference",
+     "quantization": "fp4",
+     "input": 0.06,
+     "cached": 0.03,
+     "output": 0.6
+    },
+    {
+     "provider": "Darkbloom",
+     "quantization": "fp4",
+     "input": 0.065,
+     "cached": 0.012,
+     "output": 0.18
+    },
+    {
+     "provider": "Wafer",
+     "quantization": "nvfp4",
+     "input": 0.065,
+     "cached": 0.064,
+     "output": 0.24
+    },
+    {
+     "provider": "Particle AI",
+     "quantization": "nvfp4",
+     "input": 0.065,
+     "cached": 0.02,
+     "output": 0.25
+    },
+    {
+     "provider": "Tenstorrent",
+     "quantization": "fp8",
+     "input": 0.075,
+     "cached": 0.015,
+     "output": 0.25
+    },
+    {
+     "provider": "GMICloud",
+     "quantization": "fp8",
+     "input": 0.075,
+     "cached": 0.015,
+     "output": 0.25
+    },
+    {
+     "provider": "Near AI",
+     "quantization": "fp8",
+     "input": 0.08,
+     "cached": 0.012,
+     "output": 0.5
+    },
+    {
+     "provider": "Novita",
+     "quantization": "fp8",
+     "input": 0.084,
+     "cached": 0.0168,
+     "output": 0.28
+    },
+    {
+     "provider": "Morph",
+     "quantization": "fp8",
+     "input": 0.085,
+     "cached": 0.042,
+     "output": 0.245
+    },
+    {
+     "provider": "StreamLake",
+     "quantization": "fp8",
+     "input": 0.0885,
+     "cached": 0.0177,
+     "output": 0.295
+    },
+    {
+     "provider": "SiliconFlow",
+     "quantization": "fp8",
+     "input": 0.1,
+     "cached": 0.03,
+     "output": 0.4
+    },
+    {
+     "provider": "DekaLLM",
+     "quantization": "unknown",
+     "input": 0.1,
+     "cached": 0.03,
+     "output": 0.5
+    },
+    {
+     "provider": "InferenceNet",
+     "quantization": "fp4",
+     "input": 0.108,
+     "cached": 0.035,
+     "output": 0.35
+    },
+    {
+     "provider": "InferenceNet",
+     "quantization": "fp4",
+     "input": 0.108,
+     "cached": 0.035,
+     "output": 0.35
+    },
+    {
+     "provider": "DigitalOcean",
+     "quantization": "unknown",
+     "input": 0.1125,
+     "cached": 0.03,
+     "output": 0.375
+    },
+    {
+     "provider": "Reka",
+     "quantization": "unknown",
+     "input": 0.12,
+     "cached": 0.03,
+     "output": 0.3
+    },
+    {
+     "provider": "CoreWeave",
+     "quantization": "nvfp4",
+     "input": 0.12,
+     "cached": 0.02,
+     "output": 0.38
+    },
+    {
+     "provider": "River",
+     "quantization": "unknown",
+     "input": 0.12,
+     "cached": 0.024,
+     "output": 0.4
+    },
+    {
+     "provider": "Particle AI",
+     "quantization": "nvfp4",
+     "input": 0.13,
+     "cached": 0.04,
+     "output": 0.5
+    },
+    {
+     "provider": "Makora",
+     "quantization": "fp4",
+     "input": 0.14,
+     "cached": 0.03,
+     "output": 0.24
+    },
+    {
+     "provider": "Baidu",
+     "quantization": "fp8",
+     "input": 0.15,
+     "cached": 0.03,
+     "output": 0.5
+    },
+    {
+     "provider": "Mistral",
+     "quantization": "unknown",
+     "input": 0.15,
+     "cached": 0.03,
+     "output": 0.5
+    },
+    {
+     "provider": "KT",
+     "quantization": "unknown",
+     "input": 0.15,
+     "cached": 0.03,
+     "output": 0.5
+    },
+    {
+     "provider": "Cohere",
+     "quantization": "nvfp4",
+     "input": 0.15,
+     "cached": 0.03,
+     "output": 0.5
+    },
+    {
+     "provider": "Nebius",
+     "quantization": "fp4",
+     "input": 0.15,
+     "cached": 0.03,
+     "output": 0.5
+    },
+    {
+     "provider": "Modal",
+     "quantization": "fp4",
+     "input": 0.15,
+     "cached": 0.03,
+     "output": 0.5
+    },
+    {
+     "provider": "Crusoe",
+     "quantization": "fp4",
+     "input": 0.15,
+     "cached": 0.03,
+     "output": 0.5
+    },
+    {
+     "provider": "Fireworks",
+     "quantization": "unknown",
+     "input": 0.15,
+     "cached": 0.03,
+     "output": 0.5
+    },
+    {
+     "provider": "Friendli",
+     "quantization": "unknown",
+     "input": 0.15,
+     "cached": 0.03,
+     "output": 0.5
+    },
+    {
+     "provider": "Together",
+     "quantization": "unknown",
+     "input": 0.15,
+     "cached": 0.03,
+     "output": 0.5
+    },
+    {
+     "provider": "Parasail",
+     "quantization": "fp8",
+     "input": 0.15,
+     "cached": 0.03,
+     "output": 0.5
+    },
+    {
+     "provider": "BaseTen",
+     "quantization": "fp8",
+     "input": 0.15,
+     "cached": 0.03,
+     "output": 0.5
+    },
+    {
+     "provider": "Venice",
+     "quantization": "unknown",
+     "input": 0.15,
+     "cached": 0.03,
+     "output": 0.5
+    },
+    {
+     "provider": "DeepInfra",
+     "quantization": "fp4",
+     "input": 0.15,
+     "cached": 0.03,
+     "output": 0.5
+    },
+    {
+     "provider": "Z.AI",
+     "quantization": "fp8",
+     "input": 0.15,
+     "cached": 0.03,
+     "output": 0.5
+    },
+    {
+     "provider": "Inceptron",
+     "quantization": "fp8",
+     "input": 0.16,
+     "cached": 0.04,
+     "output": 0.49
+    },
+    {
+     "provider": "Sail Research",
+     "quantization": "fp4",
+     "input": 0.175,
+     "cached": 0.0225,
+     "output": 0.625
+    },
+    {
+     "provider": "Sail Research",
+     "quantization": "fp4",
+     "input": 0.175,
+     "cached": 0.0225,
+     "output": 0.625
+    },
+    {
+     "provider": "Parasail",
+     "quantization": "fp4",
+     "input": 0.1875,
+     "cached": 0.0375,
+     "output": 0.625
+    },
+    {
+     "provider": "Fireworks",
+     "quantization": "unknown",
+     "input": 0.225,
+     "cached": 0.045,
+     "output": 0.75
+    }
+   ],
+   "speed": {
+    "p50_tok_s": 83.0,
+    "p50_latency_s": 0.94,
+    "as_of": "2026-11-18",
+    "url": "https://openrouter.ai/compare/z-ai/glm-5.3/z-ai/glm-5.3-flash"
+   }
+  },
+  "minimax-m3": {
+   "openrouter_id": "minimax/minimax-m3",
+   "url": "https://openrouter.ai/minimax/minimax-m3/providers",
+   "providers": [
+    {
+     "provider": "DeepInfra",
+     "quantization": "fp8",
+     "input": 0.224,
+     "cached": 0.0448,
+     "output": 0.88
+    },
+    {
+     "provider": "CoreWeave",
+     "quantization": "fp4",
+     "input": 0.23,
+     "cached": 0.05,
+     "output": 0.96
+    },
+    {
+     "provider": "GMICloud",
+     "quantization": "fp8",
+     "input": 0.24,
+     "cached": 0.048,
+     "output": 0.96
+    },
+    {
+     "provider": "DeepInfra",
+     "quantization": "fp8",
+     "input": 0.28,
+     "cached": 0.056,
+     "output": 1.1
+    },
+    {
+     "provider": "Venice",
+     "quantization": "fp8",
+     "input": 0.3,
+     "cached": 0.06,
+     "output": 1.2
+    },
+    {
+     "provider": "Parasail",
+     "quantization": "fp8",
+     "input": 0.3,
+     "cached": 0.06,
+     "output": 1.2
+    },
+    {
+     "provider": "Minimax",
+     "quantization": "unknown",
+     "input": 0.3,
+     "cached": 0.06,
+     "output": 1.2
+    },
+    {
+     "provider": "Parasail",
+     "quantization": "fp8",
+     "input": 0.45,
+     "cached": 0.09,
+     "output": 1.8
+    }
+   ],
+   "speed": {
+    "p50_tok_s": null,
+    "p50_latency_s": null,
+    "as_of": "2026-11-18",
+    "url": "https://openrouter.ai/compare/minimax/minimax-m3/mistralai/mistral-large-4-0"
+   }
+  },
+  "glm-5.3": {
+   "openrouter_id": "z-ai/glm-5.3",
+   "url": "https://openrouter.ai/z-ai/glm-5.3/providers",
+   "providers": [
+    {
+     "provider": "Wafer",
+     "quantization": "fp4",
+     "input": 0.0699,
+     "cached": 0.0689,
+     "output": 1.4
+    },
+    {
+     "provider": "Relace",
+     "quantization": "fp4",
+     "input": 0.0703,
+     "cached": 0.0703,
+     "output": 4.3843
+    },
+    {
+     "provider": "InferenceNet",
+     "quantization": "fp4",
+     "input": 0.084,
+     "cached": 0.079,
+     "output": 3.6
+    },
+    {
+     "provider": "InferenceNet",
+     "quantization": "fp4",
+     "input": 0.084,
+     "cached": 0.079,
+     "output": 3.6
+    },
+    {
+     "provider": "Wafer",
+     "quantization": "fp4",
+     "input": 0.179,
+     "cached": 0.178,
+     "output": 1.4
+    },
+    {
+     "provider": "AkashML",
+     "quantization": "fp4",
+     "input": 0.19,
+     "cached": 0.19,
+     "output": 4.4
+    },
+    {
+     "provider": "Featherless",
+     "quantization": "unknown",
+     "input": 0.42,
+     "cached": 0.078,
+     "output": 1.32
+    },
+    {
+     "provider": "DeepInfra",
+     "quantization": "fp4",
+     "input": 0.45,
+     "cached": 0.1,
+     "output": 2.0
+    },
+    {
+     "provider": "Cohere",
+     "quantization": "nvfp4",
+     "input": 0.5,
+     "cached": 0.1,
+     "output": 3.5
+    },
+    {
+     "provider": "Decart",
+     "quantization": "fp4",
+     "input": 0.56,
+     "cached": 0.1,
+     "output": 1.81
+    },
+    {
+     "provider": "DeepInfra",
+     "quantization": "fp4",
+     "input": 0.5625,
+     "cached": 0.125,
+     "output": 2.5
+    },
+    {
+     "provider": "Tenstorrent",
+     "quantization": "fp8",
+     "input": 0.6,
+     "cached": 0.1,
+     "output": 2.5
+    },
+    {
+     "provider": "Novita",
+     "quantization": "fp8",
+     "input": 0.63,
+     "cached": 0.117,
+     "output": 1.98
+    },
+    {
+     "provider": "SiliconFlow",
+     "quantization": "fp8",
+     "input": 0.7,
+     "cached": 0.13,
+     "output": 1.9
+    },
+    {
+     "provider": "GMICloud",
+     "quantization": "fp8",
+     "input": 0.7,
+     "cached": 0.13,
+     "output": 2.2
+    },
+    {
+     "provider": "Cloudflare",
+     "quantization": "unknown",
+     "input": 0.7,
+     "cached": 0.13,
+     "output": 2.2
+    },
+    {
+     "provider": "CoreWeave",
+     "quantization": "nvfp4",
+     "input": 0.75,
+     "cached": 0.19,
+     "output": 3.0
+    },
+    {
+     "provider": "Sail Research",
+     "quantization": "fp8",
+     "input": 0.75,
+     "cached": 0.12,
+     "output": 3.0
+    },
+    {
+     "provider": "DigitalOcean",
+     "quantization": "unknown",
+     "input": 0.91,
+     "cached": 0.169,
+     "output": 2.86
+    },
+    {
+     "provider": "Fireworks",
+     "quantization": "unknown",
+     "input": 0.98,
+     "cached": 0.182,
+     "output": 3.08
+    },
+    {
+     "provider": "Morph",
+     "quantization": "fp8",
+     "input": 1.007,
+     "cached": 0.204,
+     "output": 4.698
+    },
+    {
+     "provider": "Inceptron",
+     "quantization": "fp4",
+     "input": 1.05,
+     "cached": 0.1469,
+     "output": 4.08
+    },
+    {
+     "provider": "Sail Research",
+     "quantization": "fp8",
+     "input": 1.05,
+     "cached": 0.168,
+     "output": 4.2
+    },
+    {
+     "provider": "Alibaba",
+     "quantization": "unknown",
+     "input": 1.19,
+     "cached": 0.238,
+     "output": 3.74
+    },
+    {
+     "provider": "Friendli",
+     "quantization": "unknown",
+     "input": 1.26,
+     "cached": 0.234,
+     "output": 3.96
+    },
+    {
+     "provider": "Nebius",
+     "quantization": "fp4",
+     "input": 1.4,
+     "cached": 0.26,
+     "output": 4.4
+    },
+    {
+     "provider": "Doubleword",
+     "quantization": "unknown",
+     "input": 1.4,
+     "cached": 0.28,
+     "output": 4.4
+    },
+    {
+     "provider": "SambaNova",
+     "quantization": "unknown",
+     "input": 1.4,
+     "cached": 0.07,
+     "output": 4.4
+    },
+    {
+     "provider": "Mistral",
+     "quantization": "nvfp4",
+     "input": 1.4,
+     "cached": 0.14,
+     "output": 4.4
+    },
+    {
+     "provider": "Baidu",
+     "quantization": "fp8",
+     "input": 1.4,
+     "cached": 0.26,
+     "output": 4.4
+    },
+    {
+     "provider": "BaseTen",
+     "quantization": "fp4",
+     "input": 1.4,
+     "cached": 0.14,
+     "output": 4.4
+    },
+    {
+     "provider": "Crusoe",
+     "quantization": "fp4",
+     "input": 1.4,
+     "cached": 0.26,
+     "output": 4.4
+    },
+    {
+     "provider": "Venice",
+     "quantization": "unknown",
+     "input": 1.4,
+     "cached": 0.26,
+     "output": 4.4
+    },
+    {
+     "provider": "Together",
+     "quantization": "unknown",
+     "input": 1.4,
+     "cached": 0.26,
+     "output": 4.4
+    },
+    {
+     "provider": "Parasail",
+     "quantization": "fp4",
+     "input": 1.4,
+     "cached": 0.26,
+     "output": 4.4
+    },
+    {
+     "provider": "Modal",
+     "quantization": "unknown",
+     "input": 1.4,
+     "cached": 0.26,
+     "output": 4.4
+    },
+    {
+     "provider": "BaseTen",
+     "quantization": "fp4",
+     "input": 1.4,
+     "cached": 0.14,
+     "output": 4.4
+    },
+    {
+     "provider": "Fireworks",
+     "quantization": "unknown",
+     "input": 1.4,
+     "cached": 0.26,
+     "output": 4.4
+    },
+    {
+     "provider": "AtlasCloud",
+     "quantization": "fp8",
+     "input": 1.4,
+     "cached": 0.26,
+     "output": 4.4
+    },
+    {
+     "provider": "Z.AI",
+     "quantization": "fp8",
+     "input": 1.4,
+     "cached": 0.26,
+     "output": 4.4
+    },
+    {
+     "provider": "Makora",
+     "quantization": "fp4",
+     "input": 1.5,
+     "cached": 0.26,
+     "output": 4.4
+    },
+    {
+     "provider": "Mistral",
+     "quantization": "nvfp4",
+     "input": 1.54,
+     "cached": 0.154,
+     "output": 4.84
+    },
+    {
+     "provider": "Amazon Bedrock",
+     "quantization": "unknown",
+     "input": 1.68,
+     "cached": 0.312,
+     "output": 5.28
+    },
+    {
+     "provider": "Alibaba",
+     "quantization": "unknown",
+     "input": 1.68,
+     "cached": 0.336,
+     "output": 5.28
+    },
+    {
+     "provider": "Parasail",
+     "quantization": "fp4",
+     "input": 2.1,
+     "cached": 0.26,
+     "output": 6.6
+    },
+    {
+     "provider": "ModelRun",
+     "quantization": "fp4",
+     "input": 2.1,
+     "cached": 0.4,
+     "output": 6.6
+    },
+    {
+     "provider": "Fireworks",
+     "quantization": "unknown",
+     "input": 2.1,
+     "cached": 0.39,
+     "output": 6.6
+    },
+    {
+     "provider": "BaseTen",
+     "quantization": "fp8",
+     "input": 2.1,
+     "cached": 0.21,
+     "output": 6.6
+    },
+    {
+     "provider": "BaseTen",
+     "quantization": "fp8",
+     "input": 2.1,
+     "cached": 0.21,
+     "output": 6.6
+    }
+   ],
+   "speed": {
+    "p50_tok_s": 75.0,
+    "p50_latency_s": 0.26,
+    "as_of": "2026-11-18",
+    "url": "https://openrouter.ai/compare/z-ai/glm-5.3/z-ai/glm-5.3-flash"
+   }
+  },
+  "mistral-large-4": {
+   "openrouter_id": "mistralai/mistral-large-4-0",
+   "url": "https://openrouter.ai/mistralai/mistral-large-4-0/providers",
+   "providers": [
+    {
+     "provider": "Mistral",
+     "quantization": "unknown",
+     "input": 0.7,
+     "cached": 0.07,
+     "output": 2.1
+    },
+    {
+     "provider": "Mistral",
+     "quantization": "unknown",
+     "input": 0.77,
+     "cached": 0.077,
+     "output": 2.31
+    }
+   ],
+   "speed": {
+    "p50_tok_s": 54.0,
+    "p50_latency_s": 1.79,
+    "as_of": "2026-11-18",
+    "url": "https://openrouter.ai/compare/minimax/minimax-m3/mistralai/mistral-large-4-0"
+   }
+  },
+  "kimi-k3": {
+   "openrouter_id": "moonshotai/kimi-k3",
+   "url": "https://openrouter.ai/moonshotai/kimi-k3/providers",
+   "providers": [
+    {
+     "provider": "Wafer",
+     "quantization": "mxfp4",
+     "input": 0.153,
+     "cached": 0.152,
+     "output": 16.0
+    },
+    {
+     "provider": "Relace",
+     "quantization": "fp4",
+     "input": 0.1824,
+     "cached": 0.18,
+     "output": 11.0055
+    },
+    {
+     "provider": "Wafer",
+     "quantization": "mxfp4",
+     "input": 0.192,
+     "cached": 0.182,
+     "output": 16.0
+    },
+    {
+     "provider": "InferenceNet",
+     "quantization": "fp4",
+     "input": 0.234,
+     "cached": 0.204,
+     "output": 15.0
+    },
+    {
+     "provider": "InferenceNet",
+     "quantization": "fp4",
+     "input": 0.234,
+     "cached": 0.204,
+     "output": 15.0
+    },
+    {
+     "provider": "Wafer",
+     "quantization": "mxfp4",
+     "input": 0.276,
+     "cached": 0.13,
+     "output": 9.6
+    },
+    {
+     "provider": "Sail Research",
+     "quantization": "fp4",
+     "input": 0.345,
+     "cached": 0.1725,
+     "output": 16.58
+    },
+    {
+     "provider": "KT",
+     "quantization": "unknown",
+     "input": 0.45,
+     "cached": 0.3,
+     "output": 15.0
+    },
+    {
+     "provider": "InferenceNet",
+     "quantization": "fp4",
+     "input": 0.45,
+     "cached": 0.33,
+     "output": 18.0
+    },
+    {
+     "provider": "InferenceNet",
+     "quantization": "fp4",
+     "input": 0.45,
+     "cached": 0.33,
+     "output": 18.0
+    },
+    {
+     "provider": "Makora",
+     "quantization": "fp4",
+     "input": 1.0,
+     "cached": 0.5,
+     "output": 18.0
+    },
+    {
+     "provider": "Chutes",
+     "quantization": "mxfp4",
+     "input": 1.85,
+     "cached": 0.185,
+     "output": 9.5
+    },
+    {
+     "provider": "Io Net",
+     "quantization": "fp4",
+     "input": 1.9,
+     "cached": 0.19,
+     "output": 14.0
+    },
+    {
+     "provider": "DigitalOcean",
+     "quantization": "unknown",
+     "input": 2.55,
+     "cached": 0.255,
+     "output": 12.95
+    },
+    {
+     "provider": "DeepInfra",
+     "quantization": "mxfp4",
+     "input": 2.85,
+     "cached": 0.285,
+     "output": 14.25
+    },
+    {
+     "provider": "Nebius",
+     "quantization": "fp4",
+     "input": 3.0,
+     "cached": 0.3,
+     "output": 15.0
+    },
+    {
+     "provider": "River",
+     "quantization": "unknown",
+     "input": 3.0,
+     "cached": 0.3,
+     "output": 15.0
+    },
+    {
+     "provider": "Amazon Bedrock",
+     "quantization": "unknown",
+     "input": 3.0,
+     "cached": 0.3,
+     "output": 15.0
+    },
+    {
+     "provider": "Alibaba",
+     "quantization": "unknown",
+     "input": 3.0,
+     "cached": 0.3,
+     "output": 15.0
+    },
+    {
+     "provider": "Parasail",
+     "quantization": "fp4",
+     "input": 3.0,
+     "cached": 0.3,
+     "output": 15.0
+    },
+    {
+     "provider": "Modal",
+     "quantization": "mxfp4",
+     "input": 3.0,
+     "cached": 0.3,
+     "output": 15.0
+    },
+    {
+     "provider": "Together",
+     "quantization": "unknown",
+     "input": 3.0,
+     "cached": 0.3,
+     "output": 15.0
+    },
+    {
+     "provider": "Fireworks",
+     "quantization": "unknown",
+     "input": 3.0,
+     "cached": 0.3,
+     "output": 15.0
+    },
+    {
+     "provider": "BaseTen",
+     "quantization": "fp8",
+     "input": 3.0,
+     "cached": 0.3,
+     "output": 15.0
+    },
+    {
+     "provider": "Moonshot AI",
+     "quantization": "unknown",
+     "input": 3.0,
+     "cached": 0.3,
+     "output": 15.0
+    },
+    {
+     "provider": "Amazon Bedrock",
+     "quantization": "unknown",
+     "input": 3.3,
+     "cached": 0.33,
+     "output": 16.5
+    },
+    {
+     "provider": "Parasail",
+     "quantization": "fp4",
+     "input": 4.5,
+     "cached": 0.45,
+     "output": 22.5
+    },
+    {
+     "provider": "Fireworks",
+     "quantization": "unknown",
+     "input": 4.5,
+     "cached": 0.45,
+     "output": 22.5
+    },
+    {
+     "provider": "Fireworks",
+     "quantization": "unknown",
+     "input": 4.5,
+     "cached": 0.45,
+     "output": 22.5
+    }
+   ],
+   "speed": {
+    "p50_tok_s": 101.0,
+    "p50_latency_s": 1.27,
+    "as_of": "2026-11-18",
+    "url": "https://openrouter.ai/compare/deepseek/deepseek-v4.1-flash/moonshotai/kimi-k3"
+   }
+  },
+  "qwen3.8-2.4t-a95b": {
+   "openrouter_id": "qwen/qwen3.8-2.4t-a95b",
+   "url": "https://openrouter.ai/qwen/qwen3.8-2.4t-a95b/providers",
+   "providers": [
+    {
+     "provider": "Novita",
+     "quantization": "unknown",
+     "input": 2.0,
+     "cached": 0.25,
+     "output": 6.0
+    },
+    {
+     "provider": "Alibaba",
+     "quantization": "unknown",
+     "input": 2.0,
+     "cached": 0.25,
+     "output": 6.0
+    },
+    {
+     "provider": "SiliconFlow",
+     "quantization": "fp8",
+     "input": 2.0,
+     "cached": 0.25,
+     "output": 6.0
+    },
+    {
+     "provider": "Venice",
+     "quantization": "unknown",
+     "input": 2.0,
+     "cached": 0.25,
+     "output": 6.0
+    }
+   ],
+   "speed": {
+    "p50_tok_s": 53.0,
+    "p50_latency_s": 1.78,
+    "as_of": "2026-11-18",
+    "url": "https://openrouter.ai/compare/qwen/qwen3.8-27b/qwen/qwen3.8-2.4t-a95b"
+   }
+  }
+ }
+}

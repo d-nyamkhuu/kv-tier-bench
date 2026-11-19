@@ -17,6 +17,14 @@ M_TIER_STORES_DROPPED = "vllm:kv_offload_tiering_backpressure_stores_dropped"
 # no read time (its READ_TIME series never appears, v0.34.0 docs), so its load time comes from here.
 M_TIER_PROMOTION_LATENCY = "vllm:kv_offload_tiering_promotion_latency_seconds"
 
+# MooncakeStoreConnector (s3's store deployment), vllm/distributed/kv_transfer/kv_connector/v1/mooncake/store/metrics.
+# Labels `operation` (save_exists, save_put, load_get, lookup_exists) and `status`. The store deployment has no
+# tiering counters: its writes settle on save_put bytes, and its reads' bytes and time are load_get's.
+M_STORE_BYTES = "vllm:mooncake_store_operation_bytes_total"
+M_STORE_FAILED_KEYS = "vllm:mooncake_store_operation_failed_keys_total"
+M_STORE_TIME = "vllm:mooncake_store_operation_time_seconds"
+STORE_OK = "ok"  # the `status` label of a successful operation (seen on v0.34.0, 2026-11-19)
+
 # Cached prompt tokens by source; this is what proves where a hit came from.
 M_CACHED_BY_SOURCE = "vllm:prompt_tokens_cached_by_source"
 M_TTFT = "vllm:time_to_first_token_seconds"
@@ -32,7 +40,12 @@ SOURCE_LABEL = {
     "cpu": "host",
     "fs": "disk",
     "obj": "disk",  # fs and obj share a label; that is why each run deploys one secondary tier only
+    "obj-std": "disk",
+    "fs-shared": "disk",
     "p2p": "p2p",
+    # UNVERIFIED: a hit through a connector other than the OffloadingConnector. s1/s2 rows carry this key with 0.
+    "store": "external_unspecified",
+    "store-p2p": "external_unspecified",
 }
 
 # `kv_load_tiers` matchers ({"medium", "locality"}), from the offloading scheduler @ v0.34.0.
@@ -42,12 +55,16 @@ LOAD_TIERS = {
     "cpu": [],
     "fs": [{"medium": "STORAGE"}],
     "obj": [{"medium": "STORAGE"}],
+    "obj-std": [{"medium": "STORAGE"}],
+    "fs-shared": [{"medium": "STORAGE"}],
     "p2p": None,  # None = do not send kv_load_tiers; p2p is driven by remote_kv_source
+    "store": None,  # an OffloadingConnector parameter; MooncakeStoreConnector loads whatever it finds
+    "store-p2p": None,
 }
 
 # Index part of the per-tier counters' `tier` label, "<index>:<type>" (vLLM docs, "Info Metric Labels"): 0 is the
 # CPU tier, 1 the deployment's one secondary tier. The driver finds the full label in each scrape by this index,
 # so the type part never has to be known. UNVERIFIED: the format; labels without it fall back to the sum.
-TIER_INDEX = {"cpu": 0, "fs": 1, "obj": 1, "p2p": 1}
+TIER_INDEX = {"cpu": 0, "fs": 1, "fs-shared": 1, "obj": 1, "obj-std": 1, "p2p": 1}
 
 P2P_PORT = 7777  # llm-d p2p guide's port; vLLM's default is 5710
