@@ -21,9 +21,9 @@ test("the model against published results and s1: calibrated rows agree, the che
   assert.ok(Math.abs(by("Prefill TTFT, H100 SXM, TP4").gap) < 0.25);
   assert.ok(Math.abs(by("CPU → GPU KV load rate").gap) < 0.05); // py-kvcache's published rate vs s1's
   for (const tp of [2, 4]) assert.ok(Math.abs(by(`Decode time per token, H100 SXM, TP${tp}`).gap) < 0.15); // all-reduce cost per layer, from H200/B200
-  // s1's tiers from published figures: the disk and S3 within a factor 2; s1's TCP peer was software-capped, far slower
-  for (const w of ["Prefix of 32,768 tokens from Nebius network SSD", "Prefix of 32,768 tokens from Nebius Object Storage"]) assert.ok(Math.abs(by(w).gap) < 0.5, `${w} ${by(w).gap}`);
-  assert.ok(by("Prefix of 32,768 tokens from a peer VM").gap < -0.5);
+  // s1's tiers from published figures, within a factor 2. The TCP peer joined them with the NIXL tuning (32 agents,
+  // the 2026-11-19 re-run); before it, the peer was software-capped and far slower than its NIC.
+  for (const w of ["Prefix of 32,768 tokens from Nebius network SSD", "Prefix of 32,768 tokens from Nebius Object Storage", "Prefix of 32,768 tokens from a peer VM"]) assert.ok(Math.abs(by(w).gap) < 0.5, `${w} ${by(w).gap}`);
 });
 
 test("decode checks beyond one dense instance: their known gaps (none of these rows sets a parameter)", () => {

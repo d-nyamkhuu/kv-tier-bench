@@ -38,7 +38,7 @@ test("the s1 fit of every tier s1 measured reproduces its medians within 20%, ha
   for (const m of Object.values(S1.models)) {
     for (const tier of ["fs", "obj", "p2p"]) {
       const f = fitTier(m, tier);
-      assert.ok(f.bw_gib_s > 0.5 && f.bw_gib_s < 20, `${tier} BW ${f.bw_gib_s}`);
+      assert.ok(f.bw_gib_s > 0.5 && f.bw_gib_s < 46.6, `${tier} BW ${f.bw_gib_s}`); // below the 400 Gbit/s NIC (p2p: 23-27)
       assert.ok(f.maxAbsRel < 0.2, `${tier} max residual ${f.maxAbsRel}`);
       const sorted = f.residuals.map((r) => Math.abs(r.rel)).sort((a, b) => a - b);
       assert.ok(sorted[Math.floor(sorted.length / 2)] < 0.1, `${tier} median residual`);
