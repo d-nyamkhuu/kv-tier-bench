@@ -753,7 +753,9 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
       const parts = tok.cachedInput ? Object.fromEntries(Object.entries({
         loads: busy ? (prefillUsd * busyLoads) / busy : 0, overhead: busy ? (prefillUsd * (busyCached - busyLoads)) / busy : 0, storage: storageUsd, fixed: fixedUsd,
       }).map(([k, v]) => [k, (v / scaleUp / tok.cachedInput) * 1e6])) : null;
-      return { usd, tokens: tok, input: per1M("input"), cachedInput: per1M("cachedInput"), output: per1M("output"), cachedParts: parts };
+      // the prefill-GPU part of the cached-input price; the rest is cache tiers, which do not scale with GPU load
+      const cachedPrefill = tok.cachedInput ? ((prefillUsd * (1 - split)) / scaleUp / tok.cachedInput) * 1e6 : null;
+      return { usd, tokens: tok, input: per1M("input"), cachedInput: per1M("cachedInput"), cachedPrefill, output: per1M("output"), cachedParts: parts };
     })(),
     firstGpuEvictionS: durationS != null && firstGpuEvictionS >= durationS ? null : firstGpuEvictionS,
     firstDiskEvictionS: durationS != null && firstDiskEvictionS >= durationS ? null : firstDiskEvictionS,

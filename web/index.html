@@ -48,6 +48,8 @@
         <select id="pattern"><option value="steady">Steady (random arrivals)</option><option value="bursty">Bursty (2× for 2 min of every 6)</option></select>
         <label class="select-field" for="routing">Request routing</label>
         <select id="routing"><option value="round-robin">Round-robin across nodes</option><option value="sticky">Keep each chat on one instance</option><option value="random">Random instance per request</option></select>
+        <label class="select-field" for="hours">Measured period</label>
+        <select id="hours"><option value="1">1 hour</option><option value="2">2 hours</option><option value="3">3 hours</option></select>
       </section>
       <section><h2>Cache tiers</h2><div id="cache-controls"></div>
         <label class="select-field" for="disk">Local disk per node</label>
@@ -63,6 +65,10 @@
           <option value="obj-aws-s3-express">S3 Express</option>
           <option value="">Off</option>
         </select>
+      </section>
+      <section><h2>Pricing</h2>
+        <label class="select-field" for="price-at">Price tokens at</label>
+        <select id="price-at"><option value="0.6">60% prefill busy (like a provider)</option><option value="0.4">40% prefill busy</option><option value="0.8">80% prefill busy</option><option value="actual">This replay's load</option></select>
       </section>
       <details class="extra"><summary>More workload and cache settings</summary>
         <label class="select-field" for="start">Measure from</label>
@@ -82,13 +88,20 @@
     <article aria-label="Simulation results" id="results" aria-busy="true">
       <div id="progress" class="progress indeterminate" role="progressbar" aria-label="Simulation progress" aria-valuemin="0" aria-valuemax="100"><span></span></div>
       <div class="metrics">
-        <section><h2>60-minute average TTFT</h2><strong id="ttft">—</strong><p id="ttft-change" class="run-change"></p><p id="ttft-detail">Time to first token</p></section>
-        <section><h2>Hourly serving cost</h2><strong id="cost">—</strong><p id="cost-change" class="run-change"></p><p id="cost-detail">GPUs and cache tiers</p></section>
+        <section><h2>Average time to first token</h2><strong id="ttft">—</strong><p id="ttft-change" class="run-change"></p>
+          <dl id="ttft-stats" class="stats"></dl><p id="ttft-detail" class="metric-note">60 minutes of traffic</p>
+          <p id="trend-note" class="warn-note" hidden></p></section>
+        <section><h2>Hourly prefill cost</h2><strong id="cost">—</strong><p id="cost-change" class="run-change"></p>
+          <dl id="cost-stats" class="stats"></dl><p id="cost-detail" class="metric-note">Prefill GPUs and cache tiers</p></section>
       </div>
+      <section class="price-compare" aria-labelledby="price-heading">
+        <h2 id="price-heading">Price per 1M input tokens: this setup against OpenRouter</h2>
+        <div id="openrouter-input-prices" aria-live="polite">Waiting for the replay…</div>
+      </section>
       <p id="status" role="status" class="busy">Simulating…</p>
       <section class="sources" aria-labelledby="sources-heading"><h2 id="sources-heading">Where prompt tokens came from</h2>
         <div id="bar" aria-hidden="true"></div><ul id="legend" aria-label="Share of prompt tokens by source"></ul>
-        <p id="run-facts" class="chart-note"></p>
+        <ul id="run-facts" class="facts" aria-label="Run summary"></ul>
         <p id="cpu-note" class="chart-note" hidden></p>
       </section>
       <section class="timeline" aria-labelledby="timeline-heading">
@@ -126,9 +139,6 @@
           <thead><tr><th scope="col">Cache option</th><th scope="col">60-minute average TTFT</th><th scope="col">USD / GB-month</th></tr></thead>
           <tbody></tbody>
         </table>
-      </section>
-      <section class="market-pricing"><h2>Price per 1M tokens</h2>
-        <div id="openrouter-input-prices" aria-live="polite">Waiting for the replay…</div>
       </section>
     </article>
   </div>

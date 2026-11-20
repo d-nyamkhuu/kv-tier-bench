@@ -99,7 +99,8 @@ function replayLayout(config, fit, budgetFraction, onProgress) {
       ? perHour(prefill + decode) : null,
     prefillCostPerHour: perHour(prefill), decodeCostPerHour: perHour(decode),
     // USD per 1M input, cached-input and output tokens (sim.js price sheet); null when a GPU has no listed price
-    tokenPrices: result.priced ? { input: result.price.input, cachedInput: result.price.cachedInput, output: result.price.output } : null,
+    tokenPrices: result.priced ? { input: result.price.input, cachedInput: result.price.cachedInput, cachedPrefill: result.price.cachedPrefill,
+      output: result.price.output } : null,
     prefillGpus: result.prefillGpus, decodeGpus: result.decodeGpus, requests: result.requests,
     minutes: minutes.map(m => {
       // An idle minute retains resident bytes and has no latency observation.

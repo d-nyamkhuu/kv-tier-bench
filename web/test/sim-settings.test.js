@@ -6,7 +6,7 @@ import { GPUS, MODELS, SOFTWARE, VARIANTS } from "../presets.js";
 import { minutesCsv, replay } from "../replay.js";
 import { synthetic } from "../sim.js";
 import {
-  applySettings, cpuSizingNote, decodeSettings, DEFAULT_SETTINGS, encodeSettings,
+  applySettings, cpuSizingNote, decodeSettings, modelDefaults, pricesAt, risingTtft, DEFAULT_SETTINGS, encodeSettings,
   fitCluster, SCENARIOS, scenarioFor, usdPerHour,
 } from "../sim-settings.js";
 
@@ -70,7 +70,7 @@ test("a model that does not fit grows the cluster to the smallest layout that ho
   const grown = fitCluster(c, big);
   assert.ok(grown && !grown.error && grown.nodes > 1, JSON.stringify(grown));
   assert.equal(fitCluster(c, { ...big, ...grown }), null, "the grown cluster holds the model");
-  assert.match(fitCluster(c, { ...big, gpu: "l40s" }).error, /does not fit/);
+  assert.match(fitCluster(c, { ...big, gpu: "l40s", precision: "released" }).error, /does not fit/); // 4.9 TB in BF16
 });
 
 test("hourly costs never use exponent notation", () => {
@@ -155,14 +155,13 @@ test("a warmed-up replay bins the measured hour from its start and reports servi
   assert.ok(r.utilization > 0 && r.utilization < 1);
 });
 
-test("the CPU note appears when CPU memory is below twice the GPU cache and the GPU cache evicts", () => {
+test("the CPU note appears when CPU memory is no larger than the GPU cache and the GPU cache evicts", () => {
   // Kimi K3 FP8 on 2 x 8 H200: one TP8 PP2 instance with 619 GiB of KV, about 310 GiB per node
   const kimi = { ...DEFAULT_SETTINGS, model: "kimi-k3", precision: "fp8", gpu: "h200", cpu: 128, disk: "" };
   const result = { firstEviction: -60, gpuGiB: 619.1, instances: 1, share: { cpu: 0 } };
-  assert.equal(cpuSizingNote(kimi, result), "CPU memory is smaller than the GPU cache (310 GiB per node), so it served only 0.0% of tokens. Try 619 GiB or more.");
-  assert.match(cpuSizingNote({ ...kimi, cpu: 384 }, { ...result, share: { cpu: 0.048 } }), /^CPU memory is under twice .* 4\.8% of tokens/);
-  assert.doesNotMatch(cpuSizingNote(kimi, { ...result, gpuGiB: 3000 }), /Try/); // twice is past the slider
-  assert.equal(cpuSizingNote({ ...kimi, cpu: 640 }, result), null); // at least twice the GPU cache
+  assert.equal(cpuSizingNote(kimi, result), "CPU memory is no larger than the GPU cache (310 GiB per node), so it served only 0.0% of tokens. Try 464 GiB or more.");
+  assert.doesNotMatch(cpuSizingNote(kimi, { ...result, gpuGiB: 3000 }), /Try/); // past the slider
+  assert.equal(cpuSizingNote({ ...kimi, cpu: 384 }, result), null); // larger than the GPU cache serves hits
   assert.equal(cpuSizingNote({ ...kimi, cpu: 0 }, result), null);
   assert.equal(cpuSizingNote(kimi, { ...result, firstEviction: null }), null); // the GPU never filled
 });
@@ -174,4 +173,45 @@ test("a replay reports progress by simulated minute, rising and below 1", () => 
   assert.ok(seen.length >= 60, `${seen.length} progress reports`);
   assert.ok(seen.every((f, i) => f > 0 && f < 1 && (i === 0 || f >= seen[i - 1])));
   assert.ok(seen.at(-1) > 0.95);
+});
+
+test("a saturated inter-node link is flagged as rising TTFT, and RDMA with FP8 keeps the default flat", () => {
+  const run = settings => { const c = config(); return replay(c, applySettings(c, settings)); };
+  // MiniMax-M3 as released (TP8) over TCP 400: decode KV transfers of 15-turn chats outgrow the link
+  const tcp = risingTtft(run({ ...DEFAULT_SETTINGS, precision: "released", interconnect: "p2p-tcp-400", cpu: 1536, diskSize: 2048 }));
+  assert.ok(tcp && tcp.to > 2 * tcp.from, JSON.stringify(tcp));
+  assert.equal(tcp.cause, "transfer");
+  assert.equal(risingTtft(run(DEFAULT_SETTINGS)), null);
+});
+
+test("the measured period sets the replay length", () => {
+  const c = config();
+  applySettings(c, { ...DEFAULT_SETTINGS, hours: 3 });
+  assert.equal(c.workload.durationMin, 180 + 20);
+});
+
+test("prices scale the prefill-GPU part to the chosen busy share and keep cache tiers", () => {
+  const prices = { input: 2, cachedInput: 0.5, cachedPrefill: 0.4 };
+  const at60 = pricesAt(prices, 0.15, "0.6");
+  assert.ok(Math.abs(at60.input - 0.5) < 1e-12);
+  assert.ok(Math.abs(at60.cachedInput - (0.1 + 0.1)) < 1e-12, "0.4 x 0.25 of prefill plus 0.1 of cache tiers");
+  assert.deepEqual(pricesAt(prices, 0.15, "actual"), { input: 2, cachedInput: 0.5, target: null, utilization: 0.15 });
+  assert.equal(pricesAt(null, 0.15, "0.6"), null);
+});
+
+test("each model's serving defaults: FP8 when released in BF16, RDMA between nodes", () => {
+  const c = config();
+  assert.deepEqual(modelDefaults(c.models["minimax-m3"]), { precision: "fp8", interconnect: "p2p-ib-ndr" });
+  assert.equal(modelDefaults(c.models["deepseek-v4.1-flash"]).precision, "released");
+  for (const s of SCENARIOS) assert.equal(s.settings.interconnect, "p2p-ib-ndr", s.id);
+});
+
+test("every scenario value is a stop on its slider, so the page shows the scenario exactly", () => {
+  const src = readFileSync(new URL("../simulator.js", import.meta.url), "utf8");
+  const stops = name => JSON.parse(src.match(new RegExp(`const ${name} = (\\[[^\\]]*\\])`))[1].replace("CPU_SLIDER_MAX_GIB", "2048"));
+  const cpu = stops("cpuSizes"), disk = stops("diskSizes");
+  for (const s of SCENARIOS) {
+    assert.ok(cpu.includes(s.settings.cpu), `${s.id} CPU ${s.settings.cpu}`);
+    assert.ok(disk.includes(s.settings.diskSize), `${s.id} SSD ${s.settings.diskSize}`);
+  }
 });

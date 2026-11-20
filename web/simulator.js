@@ -5,7 +5,7 @@ import { loadOpenRouterPrices, showTokenPrices } from "./openrouter.js";
 import { tierStyles, timeline } from "./replay-chart.js";
 import { minutesCsv } from "./replay.js";
 import {
-  applySettings, CPU_SLIDER_MAX_GIB, cpuSizingNote, decodeSettings, DEFAULT_SETTINGS, encodeSettings, fitCluster, SCENARIOS, scenarioFor, usdPerHour,
+  applySettings, CPU_SLIDER_MAX_GIB, cpuSizingNote, decodeSettings, modelDefaults, pricesAt, risingTtft, DEFAULT_SETTINGS, encodeSettings, fitCluster, SCENARIOS, scenarioFor, usdPerHour,
 } from "./sim-settings.js";
 import { $, el, gibf, pctf, secs } from "./ui.js";
 
@@ -55,7 +55,7 @@ function slider(group, key, label, { min, max, step, stops, units }) {
 
 const cpuSizes = [0, 8, 16, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, CPU_SLIDER_MAX_GIB];
 // Powers of two give small working sets room on the slider. The final stop uses the drive preset.
-const diskSizes = [0.25, 0.5, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, null];
+const diskSizes = [0.25, 0.5, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 768, 1024, 1536, 2048, null];
 slider("workload-controls", "rate", "Target request rate", { min: 10, max: 600, step: 10, units: " req/min" });
 slider("workload-controls", "turns", "Average turns per chat", { stops: [1, 1.5, 2, 3, 4, 5, 6, 8, 10, 15, 20], units: v => v === 1 ? "1 · no follow-ups" : v + " turns" });
 slider("workload-controls", "pause", "Think time after reply", { min: 1, max: 30, step: 1, units: " min" });
@@ -74,7 +74,7 @@ slider("memory-controls", "gpu-budget", "GPU KV budget", { min: 1, max: 100, ste
 const FIELDS = {
   model: ["model"], precision: ["precision"], gpu: ["gpu"], nodes: ["nodes", "count"], gpusPerNode: ["gpus-per-node", "count"],
   interconnect: ["interconnect"], rate: ["rate", "slider"], turns: ["turns", "slider"], pause: ["pause", "slider"],
-  pattern: ["pattern"], routing: ["routing"], cpu: ["cpu", "slider"], disk: ["disk"], diskSize: ["disk-size", "slider"],
+  pattern: ["pattern"], routing: ["routing"], hours: ["hours", "count"], priceAt: ["price-at"], cpu: ["cpu", "slider"], disk: ["disk"], diskSize: ["disk-size", "slider"],
   lookup: ["lookup-policy"], backing: ["backing"], start: ["start"], spread: ["spread"], prompts: ["prompts", "slider"], batch: ["batch", "slider"],
   admission: ["cache-admission"], prefix: ["prefix", "slider"], input: ["input", "slider"],
   output: ["output", "slider"], gpuBudget: ["gpu-budget", "slider"],
@@ -127,6 +127,12 @@ function showFit(text) {
 function refit(id) {
   if (id === "nodes" || id === "gpus-per-node") { ownCluster = null; showFit(); return; }
   if (!["model", "gpu", "precision"].includes(id)) return;
+  // A new model starts from its serving defaults: FP8 when released in BF16, RDMA between nodes.
+  if (id === "model") {
+    const defaults = modelDefaults(config.models[$("model").value]);
+    $("precision").value = defaults.precision;
+    $("interconnect").value = defaults.interconnect;
+  }
   const settings = readSettings();
   if (ownCluster && !fitCluster(config, { ...settings, ...ownCluster })) {
     setCluster(ownCluster);
@@ -274,6 +280,14 @@ function schedule() {
 }
 
 controls.addEventListener("input", event => {
+  if (event.target.id === "price-at") {
+    const settings = readSettings();
+    if (lastResult) showPrices(pricesAt(lastResult.tokenPrices, lastResult.utilization, settings.priceAt));
+    const hash = encodeSettings(settings);
+    history.replaceState(null, "", hash ? "#" + hash : location.pathname + location.search);
+    showScenario(settings);
+    return;
+  }
   if (!editing) { baseline = shown; editing = true; }
   if (config) refit(event.target.id);
   showScenario(readSettings());
@@ -298,32 +312,44 @@ function changeText(delta, same, amount) {
   return (delta < 0 ? "−" : "+") + amount + " vs before your last change";
 }
 
+// The page prices the input side only: prefill GPUs and cache tiers. Decode GPUs are simulated (they set reply timing)
+// but their cost belongs to output tokens, so it is left out. A GPU without a listed price counts as zero.
+const prefillGpuCost = result => result.gpuCostPerHour == null ? null : result.prefillCostPerHour;
+const hourlyCost = result => (prefillGpuCost(result) ?? 0) + result.costPerHour;
+
+// A row of labelled figures under a headline metric.
+function stats(id, pairs) {
+  $(id).replaceChildren(...pairs.map(([label, value]) => el("div", {}, el("dt", { text: label }), el("dd", { text: value }))));
+}
+
 function render(result) {
   const settings = readSettings();
   $("results").classList.remove("failed");
   if (baseline) {
-    const latency = result.mean - baseline.mean, cost = result.costPerHour - baseline.costPerHour;
+    const latency = result.mean - baseline.mean, cost = hourlyCost(result) - baseline.hourly;
     $("ttft-change").textContent = changeText(latency, 0.0005, secs(Math.abs(latency)));
     $("cost-change").textContent = changeText(cost, 0.0005, usdPerHour(Math.abs(cost)) + "/h");
   } else $("ttft-change").textContent = $("cost-change").textContent = "";
-  shown = { mean: result.mean, costPerHour: result.costPerHour };
+  shown = { mean: result.mean, hourly: hourlyCost(result) };
   lastResult = result;
   $("download-csv").disabled = false;
   $("ttft").textContent = secs(result.mean);
   const { p50, p90, p99 } = result.ttft;
-  $("ttft-detail").textContent = `p50 ${secs(p50)} · p90 ${secs(p90)} · p99 ${secs(p99)}` +
-    (result.warmupMin ? ` · after a ${result.warmupMin}-minute warm-up` : " · from empty caches");
-  const gpus = result.gpuCostPerHour, cache = result.costPerHour;
-  const hourly = (gpus ?? 0) + cache;
-  $("cost").textContent = usdPerHour(hourly) + " / h";
-  const decodeGpus = Math.round(result.decodeGpus);
-  const price = result.tokenPrices, usd = x => x == null ? "–" : usdPerHour(x);
-  $("cost-detail").textContent = (gpus == null
-    ? `${$("gpu").selectedOptions[0].text} has no listed price, so GPUs are left out · `
-    : `GPUs ${usdPerHour(gpus)}/h (${result.prefillGpus} prefill + ${decodeGpus} decode) · `)
-    + `cache tiers ${usdPerHour(cache)}/h`
-    + (price ? ` · per 1M tokens: ${usd(price.input)} input, ${usd(price.cachedInput)} cached, ${usd(price.output)} output` : "");
-  showPrices(price);
+  stats("ttft-stats", [["p50", secs(p50)], ["p90", secs(p90)], ["p99", secs(p99)]]);
+  const period = result.minutes.length % 60 === 0 && result.minutes.length > 60 ? `${result.minutes.length / 60} hours` : `${result.minutes.length} minutes`;
+  $("ttft-detail").textContent = result.warmupMin ? `Measured over ${period} after a ${result.warmupMin}-minute warm-up` : `Measured over ${period} from empty caches`;
+  $("timeline-heading").textContent = result.minutes.length === 60 ? "TTFT over the hour" : `TTFT over ${period}`;
+  const trend = risingTtft(result);
+  const causes = { transfer: "KV transfers to the decode GPUs are queueing on the inter-node link", load: "cache loads are queueing on the network and disks", wait: "prefill is saturated and requests queue" };
+  $("trend-note").hidden = !trend;
+  $("trend-note").textContent = trend ? `Still rising at the end (${secs(trend.from)} → ${secs(trend.to)}): ${causes[trend.cause]}.` : "";
+  const gpus = prefillGpuCost(result), cache = result.costPerHour;
+  $("cost").textContent = usdPerHour(hourlyCost(result)) + " / h";
+  stats("cost-stats", [["Prefill GPUs", gpus == null ? "unpriced" : usdPerHour(gpus) + "/h"], ["Cache tiers", usdPerHour(cache) + "/h"]]);
+  $("cost-detail").textContent = gpus == null
+    ? `${$("gpu").selectedOptions[0].text} has no listed price, so GPUs are left out`
+    : `${result.prefillGpus} prefill GPUs at on-demand prices; decode GPUs are not included`;
+  showPrices(pricesAt(result.tokenPrices, result.utilization, settings.priceAt));
   const { tp, pp } = result.layout;
   const sim = config.sim;
   $("cluster-summary").textContent = `${config.models[sim.model].name} · ${PRECISION_LABELS[sim.precision]} · ${sim.nodes} nodes × ${sim.gpusPerNode} ${$("gpu").selectedOptions[0].text}`;
@@ -341,15 +367,16 @@ function render(result) {
     text: share >= 0.12 ? pctf(share, 1) : "",
   })));
   $("legend").replaceChildren(...entries.map(([name, share, color]) =>
-    el("li", {}, el("i", { class: "swatch", style: "background:" + color }), name + " · " + (share > 0 && share < 0.001 ? "<0.1%" : pctf(share, 1)))));
+    el("li", {}, el("i", { class: "swatch", style: "background:" + color }), el("span", { text: name }),
+      el("b", { text: share > 0 && share < 0.001 ? "<0.1%" : pctf(share, 1) }))));
   // One short line of facts; the design docs carry the explanations.
   const requests = result.minutes.reduce((sum, m) => sum + m.count, 0);
   const realized = Math.round(requests / result.minutes.length);
   const filled = result.firstEviction == null ? "GPU cache never full"
     : result.firstEviction < 0 ? "GPU cache full during warm-up" : `GPU cache full from minute ${Math.floor(result.firstEviction / 60) + 1}`;
-  $("run-facts").textContent = [filled, `prefill busy ${pctf(result.utilization, 0)}`,
+  $("run-facts").replaceChildren(...[filled, `Prefill busy ${pctf(result.utilization, 0)}`,
     `${realized.toLocaleString("en-US")} of ${settings.rate} req/min served`,
-    ...(sim.shared ? [`S3 requests ${usdPerHour(result.requestCostPerHour)}/h`] : [])].join(" · ");
+    ...(sim.shared ? [`S3 requests ${usdPerHour(result.requestCostPerHour)}/h`] : [])].map(text => el("li", { text })));
   const cpuNote = cpuSizingNote(settings, result);
   $("cpu-note").hidden = !cpuNote;
   $("cpu-note").textContent = cpuNote ?? "";
@@ -369,8 +396,9 @@ function failed(message) {
   $("cost").textContent = "—";
   plot(null);
   $("cpu-note").hidden = true;
+  $("trend-note").hidden = true;
   showPrices(null);
-  for (const id of ["bar", "legend", "run-facts", "cost-detail", "ttft-change", "cost-change", "cluster-summary"]) $(id).replaceChildren();
+  for (const id of ["bar", "legend", "run-facts", "ttft-stats", "cost-stats", "cost-detail", "ttft-detail", "ttft-change", "cost-change", "cluster-summary"]) $(id).replaceChildren();
   $("layout").textContent = message;
   showProgress(null);
   $("status").className = "error";
