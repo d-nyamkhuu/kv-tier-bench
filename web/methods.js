@@ -77,38 +77,51 @@ function runMarket() {
   marketWorker.postMessage({ kind: "market", id: marketId, config: JSON.parse(JSON.stringify(ctx.cfg())), models, speeds });
 }
 
+// the provider rows whose details are open, kept across redraws (one per finished model during a run)
+const marketOpen = new Set();
+
 function drawMarket() {
   const data = ctx.market, c = ctx.cfg();
   const ratio = (sim, or) => (sim > 0 && or > 0 ? sim / or : null);
-  const ratioCell = (x) => el("td", { text: x == null ? "–" : `${fmt(x, 2)}×`, class: x != null && (x > 2 || x < 0.5) ? "bad" : null });
-  const head = ["model", "reference deployment", "decode tok/s per request: simulator (batch) / OpenRouter p50", "simulator in / cached / out", "OpenRouter median in / cached / out", "output range", "simulator ÷ median, input", "simulator ÷ median, output"];
-  const speedCell = (r, or) => {
-    const p50 = or.speed?.p50_tok_s;
-    if (!r || r.error || !r.tpot) return el("td", { text: p50 ? `– / ${fmt(p50, 3)}` : "–" });
-    const sim = `${fmt(1 / r.tpot, 3)} (${fmt(r.decodeBatch, 2)})`;
-    const short = r.belowSpeed > 0.005;
-    return el("td", { class: short ? "bad" : null, text: `${sim} / ${p50 ? fmt(p50, 3) : "none"}`,
-      title: short ? `${pctf(r.belowSpeed, 0)} of requests fall below ${fmt(p50, 3)} tok/s even at batch 1 (no speculative decoding modeled)` : null },
-    short ? el("div", { class: "note", text: "below target at batch 1" }) : null);
-  };
-  const rows = Object.entries(data.models).filter(([id]) => c.models[id]).map(([id, or]) => {
+  const ratioCell = (label, x) => el("td", { "data-label": label, text: x == null ? "–" : `${fmt(x, 2)}×`, class: x != null && (x > 2 || x < 0.5) ? "bad" : null });
+  const head = ["Model", "Simulator, $ per 1M in / cached / out", "Providers' median, $ per 1M in / cached / out", "Simulator ÷ median, input", "Simulator ÷ median, output"];
+  const focusId = document.activeElement?.closest?.("#market-table") ? document.activeElement.id : null;
+  const rows = Object.entries(data.models).filter(([id]) => c.models[id]).flatMap(([id, or]) => {
     const st = providerStats(or.providers);
     const r = marketRows.find((x) => x.model === id);
+    const ok = r && !r.error;
     const trio = (a, b, d) => [a, b, d].map((x) => usd(x)).join(" / ");
-    const setup = !r ? "–" : r.error ? r.error : `${r.instances} × ${r.tp * r.pp} ${r.gpuName}${r.pp > 1 ? ` (${r.pp} nodes each)` : ""}, ${fmt(r.requestsPerMin, 3)} req/min, ${fmt(r.decodeGpus, 2)} decode GPUs` +
+    const setup = !r ? "not run yet" : r.error ? r.error : `${r.instances} × ${r.tp * r.pp} ${r.gpuName}${r.pp > 1 ? ` (${r.pp} nodes each)` : ""}, ${fmt(r.requestsPerMin, 3)} req/min, ${fmt(r.decodeGpus, 2)} decode GPUs` +
       `${r.decodeEp ? `, experts over ${r.decodeEp}` : ""}${r.specSpeedup != null ? (r.specSpeedup <= 1.0005 ? ", drafter off (slower at this batch)" : `, drafter ${fmt(r.specSpeedup, 2)}×`) : ""}${r.specUnavailable ? `; no ${r.specUnavailable.split(",")[0]} drafter` : ""}`;
-    return el("tr", {},
-      el("td", {}, el("a", { href: or.url, target: "_blank", rel: "noopener", text: c.models[id].name ?? id })),
-      el("td", { text: setup }),
-      speedCell(r, or),
-      el("td", { text: r && !r.error ? trio(r.price.input, r.price.cachedInput, r.price.output) : "–" }),
-      el("td", { text: `${trio(st.input?.median, st.cached?.median, st.output?.median)} (${st.n} endpoints)` }),
-      el("td", { text: st.output ? `${usd(st.output.min)}–${usd(st.output.max)}` : "–" }),
-      ratioCell(r && !r.error ? ratio(r.price.input, st.input?.median) : null),
-      r && !r.error && r.belowSpeed > 0.005 ? el("td", { text: "–", title: "decode runs one request at a time and still misses the speed: the output price is an artifact of batch 1" })
-        : ratioCell(r && !r.error ? ratio(r.price.output, st.output?.median) : null));
+    const p50 = or.speed?.p50_tok_s;
+    const short = ok && r.belowSpeed > 0.005;
+    const speed = ok && r.tpot ? `${fmt(1 / r.tpot, 3)} tok/s at a batch of ${fmt(r.decodeBatch, 2)}; OpenRouter p50 ${p50 ? `${fmt(p50, 3)} tok/s` : "none"}` : p50 ? `OpenRouter p50 ${fmt(p50, 3)} tok/s` : "–";
+    const open = marketOpen.has(id);
+    const detailId = `mk-d-${id}`;
+    const toggle = el("button", { type: "button", class: "row-toggle", id: `mk-t-${id}`, "aria-expanded": String(open), "aria-controls": detailId, text: "Details",
+      onclick: () => { if (marketOpen.has(id)) marketOpen.delete(id); else marketOpen.add(id); drawMarket(); } });
+    const main = el("tr", { class: open ? "has-detail" : null },
+      el("td", { class: "span" }, el("div", { class: "model-cell" },
+        el("a", { href: or.url, target: "_blank", rel: "noopener", text: c.models[id].name ?? id }),
+        short ? el("span", { class: "badge bad", text: "below target speed", title: `${pctf(r.belowSpeed, 0)} of requests fall below ${fmt(p50, 3)} tok/s even at batch 1 (no speculative decoding modeled)` }) : null,
+        toggle)),
+      el("td", { "data-label": "Simulator, in / cached / out", text: ok ? trio(r.price.input, r.price.cachedInput, r.price.output) : "–" }),
+      el("td", { "data-label": "Providers' median, in / cached / out", text: trio(st.input?.median, st.cached?.median, st.output?.median) }),
+      ratioCell("÷ median, input", ok ? ratio(r.price.input, st.input?.median) : null),
+      short ? el("td", { "data-label": "÷ median, output", text: "–" }, el("div", { class: "note", text: "decode misses the speed even at batch 1" }))
+        : ratioCell("÷ median, output", ok ? ratio(r.price.output, st.output?.median) : null));
+    if (!open) return [main];
+    const facts = [
+      ["Reference deployment", setup],
+      ["Decode speed per request", speed],
+      ["Providers' output range", st.output ? `${usd(st.output.min)}–${usd(st.output.max)} per 1M over ${st.n} endpoints` : `${st.n} endpoints`],
+      short ? ["Below target", `${pctf(r.belowSpeed, 0)} of requests stay below ${fmt(p50, 3)} tok/s even one at a time, so the output price is what batch 1 costs`] : null,
+    ].filter(Boolean);
+    return [main, el("tr", { class: "detail", id: detailId }, el("td", { colspan: head.length, class: "span" },
+      el("dl", { class: "facts" }, facts.flatMap(([k, v]) => [el("dt", { text: k }), el("dd", { text: v })]))))];
   });
   $("market-table").replaceChildren(el("thead", {}, el("tr", {}, head.map((t) => el("th", { text: t })))), el("tbody", {}, rows));
+  if (focusId) $(focusId)?.focus({ preventScroll: true });
   $("market-note").textContent = "Prices are not costs: they carry margins and promotions, and many providers serve FP4 or FP8 quantizations " +
     "(listed per endpoint in data/openrouter.json); set Serving precision above to compare like with like. Cached-input prices are a pricing choice " +
     "(often a tenth of the input price). The simulator pays Nebius on-demand GPU prices; large providers pay less, and use speculative decoding (several tokens per step), which is not modeled: it is how the fastest endpoints reach their speed at a larger batch.";
@@ -123,12 +136,12 @@ function renderChecks() {
   const body = (group, title) => [
     el("tr", { class: "group" }, el("th", { colspan: 5, text: title })),
     ...rows.filter((r) => r.group === group).map((r) => el("tr", {},
-      el("td", {}, el("div", { text: r.what }), r.calibrated ? el("span", { class: "badge calibrated", text: "calibrated" }) : el("span", { class: "badge check", text: "check" }),
+      el("td", { class: "span" }, el("div", { text: r.what }), r.calibrated ? el("span", { class: "badge calibrated", text: "calibrated" }) : el("span", { class: "badge check", text: "check" }),
         el("div", { class: "note", text: r.note })),
-      el("td", { text: cell(r, r.published) }),
-      el("td", { text: cell(r, r.predicted) }),
-      el("td", { class: !r.calibrated && Math.abs(r.gap) > 0.2 ? "bad" : null, text: gap(r) }),
-      el("td", { class: "src" }, el("a", { href: r.source.url, target: "_blank", rel: "noopener", text: r.source.label })))),
+      el("td", { "data-label": "Measured", text: cell(r, r.published) }),
+      el("td", { "data-label": "This model", text: cell(r, r.predicted) }),
+      el("td", { "data-label": "Gap", class: !r.calibrated && Math.abs(r.gap) > 0.2 ? "bad" : null, text: gap(r) }),
+      el("td", { class: "src span" }, el("a", { href: r.source.url, target: "_blank", rel: "noopener", text: r.source.label })))),
   ];
   $("checks-table").replaceChildren(
     el("thead", {}, el("tr", {}, ["What", "Measured", "This model", "Gap", "Source"].map((t) => el("th", { text: t })))),

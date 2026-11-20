@@ -135,7 +135,13 @@ s1 measures the cost of one hit from each tier, not how often a tier hits. [web/
 shared storage) and a load (requests per minute, follow-up share, tokens in and out). It replays the workload
 through simulated LRU tiers on that cluster, with FIFO prefill queues and disaggregated batched decode. The result
 is the mean TTFT, the $ per 1,000 requests from provisioned GPUs plus storage, and the $ per 1M input, cached input
-and output tokens. Each tier row shows how many tokens (and, for models with a fixed state, how many prompts) it holds.
+and output tokens. At a fixed cluster and load every GPU is paid for anyway, so a faster tier cuts TTFT but barely the
+bill; the page also prices a request with the load set so the prefill GPUs are busy 60% of the time, which is where a
+tier's headroom turns into cost. The page leads with a tier lab: pick local disk, peer nodes or shared storage, start
+from a real product, and drag its latency, bandwidth, size and price. A sensitivity chart sweeps one of those against
+TTFT and the 60%-busy cost, with the tier switched off as a reference (a slow tier can lose to recomputing, since vLLM
+always loads a cached prefix), and an across-models chart runs every model with and without your tiers at the same
+traffic. Each tier shows how many tokens (and, for models with a fixed state, how many prompts) it holds.
 Besides s1's two models, the page has ten current open-weight models (Qwen3.8-2.4T-A95B, Kimi K3, DeepSeek V4.1
 Flash, GLM-5.3 and GLM-5.3-Flash, Qwen3.8-Flash-Next, MiniMax-M3, Mistral Large 4, gpt-oss-120b, Gemma 4 31B). Their KV per token, fixed
 state and FLOPs are derived from each config.json by one function covering MoE, MLA, sliding-window, sparse and linear
@@ -146,8 +152,8 @@ instances loaded until the prefill GPUs are busy 60% of the time. Decode there h
 OpenRouter (recorded by hand in `openrouter.py`, since the API's throughput fields are empty) by running the largest
 batch that keeps it; an MoE step reads only the experts its batch picked. Decode can add speculative decoding (MTP, EAGLE-3, DFlash, DSpark or
 custom numbers) and expert parallelism over more GPUs than one node, with all-to-all traffic at DeepEP's measured rates;
-both are checked against published runs (Kimi K2.5 on B200 and GB200, DeepSeek-V3 in production, EAGLE-3 and DFlash). A trade-off map plots every tier
-combination with its Pareto frontier, and a diagram shows the cluster. The workload can be synthetic conversations,
+both are checked against published runs (Kimi K2.5 on B200 and GB200, DeepSeek-V3 in production, EAGLE-3 and DFlash). A third chart plots every tier
+combination with its Pareto frontier, its cost at 60% busy or at your load, and a diagram shows the cluster. The workload can be synthetic conversations,
 a [Mooncake](https://github.com/kvcache-ai/Mooncake) trace, or an uploaded trace. Every input is a published figure
 with its source: NVIDIA datasheets, InferenceX vLLM runs, drive and cloud-storage documents (AWS S3, Nebius), and
 KV-transfer papers. The rest are marked as assumptions. vLLM's own overheads are published nowhere, so they are fitted

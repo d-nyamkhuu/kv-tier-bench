@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>KV Cache Calculator</title>
 <meta name="description" content="Pick GPUs, nodes and KV-cache tiers for an LLM chat workload and see the mean time to first token and the cost per request, from published hardware and storage figures.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="./style.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"
         integrity="sha384-bs/nf9FbdNouRbMiFcrcZfLXYPKiPaGVGplVbv7dLGECccEXDW+S3zjqSKR5ZEaD"
@@ -28,85 +31,152 @@
 
 <main>
   <p class="status error" id="load-error" hidden></p>
-  <div class="layout">
-    <div class="config">
-      <section class="panel" aria-labelledby="h-model">
-        <h2 id="h-model">Model</h2>
-        <div class="row-fields">
-          <label class="field wide"><span>Model</span><select id="ctl-model"></select></label>
-          <div class="field"><span>Serving precision</span><div class="seg" id="ctl-precision" role="radiogroup" aria-label="Serving precision"></div></div>
+
+  <section class="estimate" id="estimate" aria-live="polite" aria-labelledby="h-est">
+    <div class="est-row">
+      <div class="est-id"><h2 id="h-est">Live estimate</h2><p class="est-setup" id="est-setup">…</p></div>
+      <div class="big"><span class="big-num" id="est-ttft">–</span><span class="big-label">mean TTFT at your load</span><span class="big-sub" id="est-ttft-sub"></span></div>
+      <div class="big"><span class="big-num" id="est-usd">–</span><span class="big-label">per 1,000 requests at your load</span><span class="big-sub" id="est-usd-sub"></span></div>
+      <div class="big" title="Every GPU is paid for the whole time, so a faster tier shows up as headroom: the same GPUs serve more requests. This is the cost per 1,000 requests with the load raised (or lowered) until the prefill GPUs are busy 60% of the time.">
+        <span class="big-num" id="est-cap">–</span><span class="big-label">per 1,000 requests at 60% busy</span><span class="big-sub" id="est-cap-sub"></span></div>
+      <div class="delta" id="est-delta"></div>
+    </div>
+    <div class="alerts" id="est-alerts"></div>
+  </section>
+
+  <div class="lab-grid">
+    <div class="lab-main">
+      <section class="panel" id="lab" aria-labelledby="h-lab">
+        <div class="sec-head">
+          <h2 id="h-lab">Tier lab</h2>
+          <p class="hint">A follow-up message reuses its conversation's KV cache from the fastest tier that holds it; every tier keeps a copy and drops the least recently used. Pick a tier, start from a real product, then drag its latency, bandwidth, size and price.</p>
         </div>
-        <p class="hint" id="model-hint"></p>
+        <div class="fixed-tiers" id="fixed-tiers"></div>
+        <div class="lab-tabs" id="lab-tabs" role="tablist" aria-label="Tier to tune"></div>
+        <div class="lab-body" id="lab-body" role="tabpanel"></div>
       </section>
 
-      <section class="panel" aria-labelledby="h-gpu">
-        <h2 id="h-gpu">GPU</h2>
-        <div class="gpu-grid" id="ctl-gpu" role="radiogroup" aria-label="Prefill GPU"></div>
-        <p class="hint" id="gpu-hint"></p>
-      </section>
-
-      <section class="panel" aria-labelledby="h-cluster">
-        <h2 id="h-cluster">Cluster</h2>
-        <div class="steppers">
-          <div class="stepper" id="ctl-nodes"></div>
-          <div class="stepper" id="ctl-gpn"></div>
-          <div class="field"><span>Tensor parallel</span><div class="seg" id="ctl-tp" role="radiogroup" aria-label="Tensor parallel size"></div></div>
-          <div class="stepper" id="ctl-pp"></div>
-        </div>
-        <div class="row-fields" id="ctl-stage-link" hidden></div>
-        <p class="hint" id="cluster-hint"></p>
-      </section>
-
-      <section class="panel" aria-labelledby="h-tiers">
-        <h2 id="h-tiers">Cache tiers</h2>
-        <p class="hint">A follow-up message reuses its conversation's KV cache from the fastest tier that still holds it. Every tier keeps a copy (write-through) and drops the least recently used.</p>
-        <div class="tiers" id="tiers"></div>
-      </section>
-
-      <section class="panel" aria-labelledby="h-load" id="ctl-load">
-        <h2 id="h-load">Load</h2>
-        <div id="trace-note" class="hint" hidden></div>
-        <div class="sliders" id="sliders"></div>
-        <details class="more" id="serving">
-          <summary>Load &amp; serving settings</summary>
-          <div class="more-body">
-            <h3>Workload source</h3>
-            <div class="seg wide" id="ctl-source" role="radiogroup" aria-label="Workload source"></div>
-            <div id="source-body"></div>
-            <h3>Synthetic conversations</h3>
-            <div class="grid" id="workload-fields"></div>
-            <h3>Serving</h3>
-            <div class="grid" id="serving-fields"></div>
-            <p class="status" id="workload-status"></p>
+      <section class="panel" id="charts" aria-labelledby="h-charts">
+        <div class="sec-head">
+          <h2 id="h-charts">Trade-offs</h2>
+          <div class="tabs" role="tablist" aria-label="Chart">
+            <button type="button" role="tab" id="tab-sens" aria-selected="true" aria-controls="pane-sens">Sensitivity</button>
+            <button type="button" role="tab" id="tab-models" aria-selected="false" aria-controls="pane-models" tabindex="-1">Across models</button>
+            <button type="button" role="tab" id="tab-map" aria-selected="false" aria-controls="pane-map" tabindex="-1">Tier mixes</button>
           </div>
-        </details>
+        </div>
+
+        <div role="tabpanel" id="pane-sens" aria-labelledby="tab-sens">
+          <div class="pane-head">
+            <label class="field inline"><span>Sweep</span><select id="sens-prop"></select></label>
+            <p class="hint" id="sens-what"></p>
+          </div>
+          <div class="chart-box sens"><canvas id="sens-chart" aria-label="Mean TTFT and cost per 1,000 requests as one tier property changes"></canvas></div>
+          <p class="status" id="sens-status"></p>
+          <p class="hint" id="sens-note"></p>
+        </div>
+
+        <div role="tabpanel" id="pane-models" aria-labelledby="tab-models" hidden>
+          <div class="pane-head">
+            <button type="button" class="primary" id="models-run">Run across models</button>
+            <span class="status" id="models-status" aria-live="polite"></span>
+          </div>
+          <p class="hint" id="models-hint"></p>
+          <div class="models-charts">
+            <div><h3 class="chart-h">Mean TTFT, same traffic</h3><div class="chart-box models"><canvas id="models-ttft" aria-label="Mean TTFT per model, with your tiers and with GPU and CPU memory only"></canvas></div></div>
+            <div><h3 class="chart-h">$ per 1,000 requests at 60% busy</h3><div class="chart-box models"><canvas id="models-cost" aria-label="Cost per 1,000 requests per model, with your tiers and with GPU and CPU memory only"></canvas></div></div>
+          </div>
+          <details class="disclose" id="models-more">
+            <summary>Numbers and deployments</summary>
+            <div class="table-wrap"><table id="models-table" class="stack models"></table></div>
+          </details>
+        </div>
+
+        <div role="tabpanel" id="pane-map" aria-labelledby="tab-map" hidden>
+          <p class="hint">Every combination of local disk, peer network and shared storage from the candidates (Methods &amp; data), on your GPUs. TTFT at your load; cost with the load set so the prefill GPUs are 60% busy (what a tier's headroom is worth), or at your load (the bill, where every GPU is paid for anyway). Down and left is better; the line joins the setups nothing beats on both.</p>
+          <div class="map-controls">
+            <div class="chips" id="map-chips" role="group" aria-label="Series to show"></div>
+            <div class="field inline"><span>Cost</span><div class="seg" id="map-metric" role="radiogroup" aria-label="Cost the map plots"></div></div>
+          </div>
+          <div class="map-wrap" id="map-wrap">
+            <div class="chart-box map"><canvas id="map-chart" aria-label="Mean TTFT against cost per 1,000 requests for each setup"></canvas></div>
+            <div class="drawer" id="map-drawer" hidden></div>
+          </div>
+          <p class="status" id="map-status"></p>
+          <p class="hint" id="map-tip">Click a point to see that setup and switch to it.</p>
+          <p class="hint" id="map-excluded"></p>
+        </div>
       </section>
     </div>
 
-    <aside class="estimate" id="estimate" aria-live="polite" aria-labelledby="h-est">
-      <div class="est-head">
-        <h2 id="h-est">Live estimate</h2>
-        <p class="est-setup" id="est-setup">…</p>
-      </div>
-      <div class="est-body">
-        <div class="big"><span class="big-num" id="est-ttft">–</span><span class="big-label">mean time to first token</span><span class="big-sub" id="est-ttft-sub"></span></div>
-        <div class="big"><span class="big-num" id="est-usd">–</span><span class="big-label">per 1,000 requests</span><span class="big-sub" id="est-usd-sub"></span></div>
-        <p class="delta" id="est-delta"></p>
-        <div class="alerts" id="est-alerts"></div>
-        <h3 class="served-h">Cost per 1M tokens</h3>
-        <div class="prices" id="est-prices"></div>
+    <aside class="lab-side">
+      <section class="panel setup" aria-labelledby="h-setup">
+        <h2 id="h-setup">Setup</h2>
+        <div class="setup-sec" aria-label="Model">
+          <label class="field"><span>Model</span><select id="ctl-model"></select></label>
+          <div class="field"><span>Serving precision</span><div class="seg fill" id="ctl-precision" role="radiogroup" aria-label="Serving precision"></div></div>
+          <details class="disclose" id="model-more">
+            <summary>Model details <span class="summary-note" id="model-brief"></span></summary>
+            <p class="hint" id="model-hint"></p>
+          </details>
+        </div>
+        <div class="setup-sec" aria-label="GPU">
+          <label class="field"><span>Prefill GPU</span><select id="ctl-gpu"></select></label>
+          <p class="pick-meta" id="gpu-summary"></p>
+          <details class="disclose" id="gpu-more">
+            <summary>GPU figures &amp; assumptions</summary>
+            <p class="hint" id="gpu-hint"></p>
+          </details>
+        </div>
+        <div class="setup-sec" aria-labelledby="h-cluster">
+          <h3 id="h-cluster">Cluster</h3>
+          <div class="steppers">
+            <div class="stepper" id="ctl-nodes"></div>
+            <div class="stepper" id="ctl-gpn"></div>
+            <div class="field"><span>Tensor parallel</span><div class="seg" id="ctl-tp" role="radiogroup" aria-label="Tensor parallel size"></div></div>
+            <div class="stepper" id="ctl-pp"></div>
+          </div>
+          <div class="row-fields" id="ctl-stage-link" hidden></div>
+          <p class="hint" id="cluster-hint"></p>
+        </div>
+        <div class="setup-sec" id="ctl-load" aria-labelledby="h-load">
+          <h3 id="h-load">Load</h3>
+          <div id="trace-note" class="hint" hidden></div>
+          <div class="sliders" id="sliders"></div>
+          <details class="more" id="serving">
+            <summary>Load &amp; serving settings</summary>
+            <div class="more-body">
+              <h3>Workload source</h3>
+              <div class="seg wide" id="ctl-source" role="radiogroup" aria-label="Workload source"></div>
+              <div id="source-body"></div>
+              <h3>Synthetic conversations</h3>
+              <div class="grid" id="workload-fields"></div>
+              <h3>Serving</h3>
+              <div class="grid" id="serving-fields"></div>
+              <p class="status" id="workload-status"></p>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <section class="panel breakdown" aria-labelledby="h-breakdown">
+        <h2 id="h-breakdown">Where time and money go</h2>
         <h3 class="served-h">Prompt tokens served from</h3>
         <div class="served" id="est-bar" role="img" aria-label="Share of prompt tokens per tier"></div>
         <ul class="served-legend" id="est-legend"></ul>
         <details class="fold"><summary>Latency</summary><dl class="kv" id="est-latency"></dl></details>
-        <details class="fold"><summary>Cost &amp; GPUs</summary><dl class="kv" id="est-cost"></dl></details>
+        <details class="fold"><summary>Cost &amp; GPUs</summary>
+          <h4 class="fold-h">Cost per 1M tokens</h4>
+          <div class="prices" id="est-prices"></div>
+          <dl class="kv" id="est-cost"></dl>
+        </details>
         <details class="fold"><summary>Utilization &amp; caches</summary><dl class="kv" id="est-util"></dl></details>
         <p class="est-foot" id="est-foot"></p>
-      </div>
+      </section>
     </aside>
   </div>
 
-  <div class="minibar" id="minibar" aria-hidden="true">
+  <div class="minibar" id="minibar">
     <span><b id="mini-ttft">–</b> TTFT</span><span><b id="mini-usd">–</b> / 1k req</span><a href="#estimate">Details</a>
   </div>
 
@@ -118,39 +188,30 @@
     <div class="diagram" id="diagram"></div>
   </section>
 
-  <section class="panel wide" aria-labelledby="h-map">
-    <div class="sec-head">
-      <h2 id="h-map">Trade-off map</h2>
-      <p class="hint">Every combination of local disk, peer network and shared storage from the candidates (Methods &amp; data), on your GPUs and load. Down and left is better; the line joins the setups nothing beats on both.</p>
-    </div>
-    <div class="chips" id="map-chips" role="group" aria-label="Series to show"></div>
-    <div class="map-wrap">
-      <div class="chart-box map"><canvas id="map-chart" aria-label="Mean TTFT against cost per 1,000 requests for each setup"></canvas></div>
-      <div class="drawer" id="map-drawer"><p class="hint">Click a point to see that setup.</p></div>
-    </div>
-    <p class="status" id="map-status"></p>
-    <p class="hint" id="map-excluded"></p>
-  </section>
-
   <section class="panel wide" aria-labelledby="h-checks">
     <div class="sec-head">
       <h2 id="h-checks">How it measures up</h2>
       <p class="hint">The same formulas, applied to setups that were measured: published vLLM benchmarks, and kv-tier-bench s1 on an RTX PRO 6000. <span class="badge calibrated">calibrated</span> rows set a parameter nothing published gives, so they agree within the fit; <span class="badge check">check</span> rows test the model.</p>
     </div>
-    <div class="table-wrap"><table id="checks-table" class="checks"></table></div>
+    <div class="table-wrap"><table id="checks-table" class="checks stack"></table></div>
     <details class="fold">
       <summary>Every s1 point: model vs measured</summary>
       <p class="hint">Gap of the model against s1's median TTFT, RTX PRO 6000, one request at a time.</p>
       <div class="table-wrap"><table id="residuals-table"></table></div>
     </details>
-    <div id="market" hidden>
-      <h3 class="sub-h">Against what providers charge</h3>
-      <p class="hint" id="market-hint"></p>
-      <div class="row-fields"><button type="button" class="btn" id="market-run">Run the comparison</button></div>
-      <p class="status" id="market-status" aria-live="polite"></p>
-      <div class="table-wrap"><table id="market-table" class="checks"></table></div>
-      <p class="note" id="market-note"></p>
+  </section>
+
+  <section class="panel wide" id="market" aria-labelledby="h-market" hidden>
+    <div class="sec-head">
+      <h2 id="h-market">Against what providers charge</h2>
+      <div class="row"><button type="button" class="primary" id="market-run">Run the comparison</button><span class="status" id="market-status" aria-live="polite"></span></div>
     </div>
+    <details class="disclose" id="market-more">
+      <summary>How the comparison is set up</summary>
+      <p class="hint" id="market-hint"></p>
+    </details>
+    <div class="table-wrap"><table id="market-table" class="stack market"></table></div>
+    <p class="note" id="market-note"></p>
   </section>
 
   <section class="panel wide" aria-labelledby="h-methods">
@@ -174,6 +235,7 @@
         <li>GPUs in one node do not share KV caches. NVLink bandwidth is drawn in the diagram but does not enter the numbers. TP above 1 on PCIe-only GPUs (RTX PRO 6000, L40S) uses the NVLink TP efficiency: an assumption.</li>
         <li><b>Peer nodes</b>: a hit is a block in another node's CPU memory, pulled over the network. It needs 2+ nodes and CPU memory.</li>
         <li><b>Cost</b>: every GPU is paid for the whole time, busy or not. Prefill GPUs = nodes × GPUs per node; decode GPUs = whole TP instances sized for the load. Disks are billed on provisioned size per node. Object storage is billed on what is written per hour, kept for the retention time, plus any per-GB upload and retrieval fees (S3 Express); per-request fees are left out. CPU memory and the network are part of the VM. GPU prices are Nebius on-demand.</li>
+        <li><b>Cost at 60% busy</b>: at a fixed cluster and load every GPU is paid for the whole time, so a faster tier cuts TTFT but barely the bill. What it buys is headroom: prefill takes less GPU time per request, so the same GPUs serve more requests. The page's "$ per 1,000 requests at 60% busy", the tier lab's sweep, the comparison across models and the tier-mix map (by default; it can show the cost at your load instead) raise or lower the request rate until the prefill GPUs are busy 60% of the time (a few proportional steps, the last few percent closed in proportion: prefill GPUs' $ per request scale with 1 / rate, decode and storage stay per request), then price a request there. The provider comparison loads its reference deployments the same way. TTFT is always at your load, except across models, where both setups get the traffic that keeps GPU + CPU memory alone 60% busy.</li>
         <li><b>Cost per 1M tokens</b>: the prefill GPUs' cost is split by what their busy time served. Computing uncached tokens (with their attention over the cached part) goes to input; loading cached blocks goes to cached input; the per-request overhead is shared by token count. Idle time is split the same way. Storage goes to cached input, decode GPUs to output. A cached price above the input price means caching costs more than it saves for that setup.</li>
         <li><b>Large clusters</b> (over 8 nodes) are replayed at 8 nodes with the same load per node, and totals scaled up. That is exact for sticky routing and close for random routing. Shared storage has no contention limit in the simulator.</li>
         <li><b>Synthetic conversations</b> start at random (Poisson). Each turn adds a message and its answer to the context. All conversations share one system prompt. The first minutes (warm-up) fill the caches and are left out.</li>

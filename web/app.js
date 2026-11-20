@@ -6,6 +6,7 @@ import { renderDiagram } from "./diagram.js";
 import { drawFitChart, initMethods, renderMethods, slotOf } from "./methods.js";
 import { gpuKvGiB, served, variantBandwidth } from "./model.js";
 import { GPUS, MODELS, MOONCAKE_TRACES, SOFTWARE, SPEC_METHODS, VARIANTS } from "./presets.js";
+import { COMPARE_INSTANCES, isLab, LAB_SLOTS, labFrom, labId, logSpace, propOf, propsFor, SLOT_NAME, TARGET_BUSY } from "./lab.js";
 import { fitFor, MAX_SIM_NODES, paretoFrontier } from "./scenario.js";
 import { parseTrace } from "./sim.js";
 import { $, assumptionBadge, cssVar, el, fmt, gibf, numField, pctf, secs, usd } from "./ui.js";
@@ -19,6 +20,7 @@ let s1, defaults, cfg, market;
 let source = "synthetic";
 let trace = null; // a parsed workload from Mooncake or an upload
 let estimate = null; // the latest {current, baseline}
+let capEst = null; // its cost at the target busy share: {cap, base}
 const lastPick = { cpuGiB: 96, disk: null, p2p: null, shared: null }; // what a tier switch turns back on
 
 // ------------------------------------------------------------------------------------------------ helpers
@@ -86,11 +88,13 @@ function setupLabel(over = {}, { cluster = false } = {}) {
 
 function flash(target) {
   const ids = { gpu: "ctl-gpu", cpu: "tier-cpu", disk: "tier-disk", p2p: "tier-p2p", shared: "tier-shared", load: "ctl-load", nodes: "ctl-nodes", routing: "ctl-routing", decode: "ctl-decode" };
+  if (LAB_SLOTS.includes(target) && labSlot !== target) { labSlot = target; renderLab(); runSensSoon(0); }
   const node = $(ids[target] ?? target);
   if (!node) return;
-  if (["routing", "decode"].includes(target)) $("serving").open = true;
+  // open whatever hides it: folded sections (nested too) and the GPU choices
+  for (let d = node.closest("details"); d; d = d.parentElement?.closest("details")) d.open = true;
   node.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });
-  const box = node.closest(".tier, .panel, .field") ?? node;
+  const box = node.closest(".lab-panel, .fixed, .field, .setup-sec, .panel") ?? node;
   box.classList.remove("flash");
   void box.offsetWidth;
   box.classList.add("flash");
@@ -109,6 +113,8 @@ function changed({ methods = false, config = true } = {}) {
   clearTimeout(runTimer);
   $("estimate").classList.add("busy");
   runTimer = setTimeout(run, 180);
+  runSensSoon();
+  modelsStatus();
 }
 
 // re-rendering replaces the controls: put the focus back on the same one
@@ -130,6 +136,7 @@ function replaceCfg(c, { reset = false } = {}) {
   renderConfig();
   renderMethods();
   run();
+  runSensSoon(0);
 }
 
 // ------------------------------------------------------------------------------------------------ worker
@@ -144,7 +151,10 @@ let ghost = null; // the frontier before the last change that moved it
 const show = { nodes: false, gpus: false };
 
 // the map's combos override disk, p2p and shared, so a change to only those leaves them valid
-const keyOf = () => JSON.stringify({ ...cfg, sim: { ...cfg.sim, disk: null, p2p: null, shared: null }, trace: trace ? trace.name : source });
+const keyOf = () => {
+  const cand = Object.values(cfg.sim.candidates ?? {}).flat();
+  return JSON.stringify({ ...cfg, variants: cfg.variants.filter((v) => !isLab(v.id) || cand.includes(v.id)), sim: { ...cfg.sim, disk: null, p2p: null, shared: null }, trace: trace ? trace.name : source });
+};
 
 function run() {
   if (!worker) return;
@@ -152,8 +162,8 @@ function run() {
     jobId++;
     estimate = null;
     $("estimate").classList.remove("busy");
-    for (const id of ["est-ttft", "est-usd", "mini-ttft", "mini-usd"]) $(id).textContent = "–";
-    for (const id of ["est-ttft-sub", "est-usd-sub", "est-delta", "est-foot"]) $(id).textContent = "";
+    for (const id of ["est-ttft", "est-usd", "est-cap", "mini-ttft", "mini-usd"]) $(id).textContent = "–";
+    for (const id of ["est-ttft-sub", "est-usd-sub", "est-cap-sub", "est-delta", "est-foot"]) $(id).textContent = "";
     $("est-alerts").replaceChildren(el("div", { class: "alert", text: "Load a trace in “Load & serving settings” to see an estimate." }));
     $("map-status").textContent = "Load a trace to fill the map.";
     points = []; frontier = []; sweepKey = null; sweepComplete = false;
@@ -184,14 +194,20 @@ function onWorker({ data }) {
   if (data.id !== jobId) return; // an older job
   if (data.kind === "estimate") {
     estimate = data;
+    capEst = null;
     $("estimate").classList.remove("busy");
     renderEstimate();
-    keepFocus(renderTiers);
+    updateLabLive();
     renderDiagramNow();
     updateFrontier();
     scheduleChart();
+  } else if (data.kind === "capacity") {
+    capEst = { cap: data.cap, base: data.base };
+    renderEstimate();
+    updateFrontier();
+    scheduleChart();
   } else if (data.kind === "point") {
-    points.push(data.point);
+    points.push(withMetric(data.point));
     $("map-status").textContent = `Simulating setups: ${data.done} of ${data.total}`;
     if (data.point.series === "combo") updateFrontier();
     scheduleChart();
@@ -208,30 +224,31 @@ function onWorker({ data }) {
 function renderConfig() {
   renderGpuPicker();
   renderCluster();
-  renderTiers();
+  renderLab();
   renderSliders();
   renderSettings();
 }
 
+const fitText = (sim, kv) => {
+  const where = `TP ${sim.tp}${(sim.pp ?? 1) > 1 ? ` × ${sim.pp} nodes` : ""}`;
+  return kv > 0 ? `${fmt(kv, 3)} GiB KV at ${where}` : `model doesn't fit at ${where}`;
+};
+
 function renderGpuPicker() {
   const sim = cfg.sim;
-  $("ctl-gpu").replaceChildren(...cfg.gpus.map((g) => {
-    const kv = kvFor(g);
-    const on = g.id === sim.gpu;
-    return el("button", {
-      type: "button", class: `gpu-tile${kv <= 0 ? " nofit" : ""}`, role: "radio", "aria-checked": String(on),
-      onclick: () => {
-        if (sim.decodeGpu === sim.gpu) sim.decodeGpu = g.id;
-        sim.gpu = g.id;
-        if ((sim.pp ?? 1) > 1 || kvFor(g) <= 0) fitModel(); // across nodes: as few as this GPU needs
-        changed();
-      },
-    },
-    el("span", { class: "name", text: gpuShort(g) }),
-    el("span", { class: "meta", text: `${Math.round(g.mem_gib)} GiB · ${g.usd_per_hour != null ? `$${g.usd_per_hour.toFixed(2)}/h` : "no price"}` }),
-    el("span", { class: "meta fit", text: kv > 0 ? `${fmt(kv, 3)} GiB KV at TP ${sim.tp}${(sim.pp ?? 1) > 1 ? ` × ${sim.pp} nodes` : ""}` : `model doesn't fit at TP ${sim.tp}${(sim.pp ?? 1) > 1 ? ` × ${sim.pp} nodes` : ""}` }),
-    g.assumptions?.length ? el("span", { class: "badge assumption", text: "assumption" }) : null);
-  }));
+  const priceOf = (g) => (g.usd_per_hour != null ? `$${g.usd_per_hour.toFixed(2)}/h` : "no price");
+  $("ctl-gpu").replaceChildren(...cfg.gpus.map((g) => el("option", { value: g.id, selected: g.id === sim.gpu,
+    text: `${gpuShort(g)} · ${Math.round(g.mem_gib)} GiB · ${priceOf(g)}${kvFor(g) <= 0 ? " · doesn't fit" : ""}` })));
+  $("ctl-gpu").onchange = (ev) => {
+    const g = gpuOf(ev.target.value);
+    if (sim.decodeGpu === sim.gpu) sim.decodeGpu = g.id;
+    sim.gpu = g.id;
+    if ((sim.pp ?? 1) > 1 || kvFor(g) <= 0) fitModel(); // across nodes: as few as this GPU needs
+    changed();
+  };
+  const cur = gpuOf(sim.gpu), curKv = kvFor(cur);
+  $("gpu-summary").className = `pick-meta${curKv > 0 ? "" : " bad"}`;
+  $("gpu-summary").textContent = `${fitText(sim, curKv)}${cur.usd_per_hour == null ? " · no price: costs leave it out" : ""}`;
   const models = Object.keys(cfg.models);
   const opt = (k) => el("option", { value: k, text: cfg.models[k].name ?? k, selected: k === sim.model });
   const inS1 = (k) => k in s1.models;
@@ -248,6 +265,7 @@ function renderGpuPicker() {
   const mm = cfg.models[sim.model], mt = served(mm, { precision: prec, tp: sim.tp, attention: sim.attention });
   const mib = (b) => `${fmt(b / 2 ** 20, 3)} MiB`;
   const params = (n) => (n >= 1e12 ? `${fmt(n / 1e12, 3)}T` : `${fmt(n / 1e9, 3)}B`);
+  $("model-brief").textContent = `· ${params(mm.params)} active · ${fmt(mt.kv_bytes_per_token / 1024, 3)} KiB KV per token · ${fmt(mt.weights_bytes / 1e9, 3)} GB weights`;
   fill($("model-hint"),
     `${mm.arch ?? ""}${mm.arch ? ". " : ""}${fmt(mt.kv_bytes_per_token / 1024, 3)} KiB of KV per token at TP ${sim.tp}`,
     mt.read_fixed_bytes > 0 ? `, plus ${mib(mt.read_fixed_bytes)} per cached prefix that does not grow with its length` : "",
@@ -305,71 +323,465 @@ function renderCluster() {
   );
 }
 
-function tierRow({ key, title, sub, on, toggle, disabledReason, body, tags }) {
-  const sw = toggle ? el("label", { class: "switch" },
-    el("input", { type: "checkbox", checked: on, disabled: !!disabledReason, "aria-label": `Use ${title}`, onchange: (ev) => toggle(ev.target.checked) }),
-    el("span", { class: "track" }), el("span", { text: disabledReason ? "unavailable" : on ? "on" : "off" })) : el("span", { class: "tier-sub", text: "always on" });
-  return el("div", { class: `tier${on ? "" : " off"}`, id: `tier-${key}` },
-    el("span", { class: "swatch", style: `background:var(${TIER_COLOR[key]})` }),
-    el("div", {},
-      el("div", { class: "tier-head" }, el("div", {}, el("div", { class: "tier-title", text: title }), el("div", { class: "tier-sub", text: disabledReason ?? sub })), sw),
-      on && body ? el("div", { class: `tier-body${body.length === 1 ? " one" : ""}` }, body) : null,
-      on && tags?.length ? el("div", { class: "tier-tags", style: "margin-top:8px" }, tags) : null));
-}
+// ------------------------------------------------------------------------------------------------ tier lab
 
-function variantSelect(slot) {
+let labSlot = null; // the tier being tuned: disk, p2p or shared
+const SLOT_SUB = { disk: "one per node", p2p: "another node's CPU memory, over the network", shared: "one store for the whole cluster" };
+const POS = 1000; // slider steps
+
+function slotBlocked(slot) {
   const sim = cfg.sim;
-  return el("label", { class: "field" }, el("span", { text: "Type" }),
-    el("select", { onchange: (ev) => { sim[slot] = ev.target.value; lastPick[slot] = ev.target.value; changed(); } },
-      slotVariants(slot).map((v) => el("option", { value: v.id, text: v.short, selected: v.id === sim[slot] }))));
+  if (slot !== "p2p") return null;
+  return sim.nodes < 2 ? "needs 2 or more nodes" : !(sim.cpuGiB > 0) ? "needs CPU memory: peers serve from it" : null;
+}
+const slotOn = (slot) => !!cfg.sim[slot] && !slotBlocked(slot);
+// the variant a slot runs, or would run when switched on
+const slotBase = (slot) => variant(cfg.sim[slot]) ?? variant(lastPick[slot]) ?? slotVariants(slot).find((v) => !isLab(v.id)) ?? null;
+function setSlot(slot, id) { cfg.sim[slot] = id; if (id) lastPick[slot] = id; }
+
+// the lab's own variant for a slot: made from what the slot runs on the first edit, then edited in place
+function labVariant(slot) {
+  const cur = slotBase(slot);
+  if (cur && isLab(cur.id)) { setSlot(slot, cur.id); return cur; }
+  const lv = labFrom(cur, slot);
+  const i = cfg.variants.findIndex((x) => x.id === lv.id);
+  if (i >= 0) cfg.variants[i] = lv; else cfg.variants.push(lv);
+  setSlot(slot, lv.id);
+  return lv;
 }
 
-function variantTags(v, extra = []) {
-  const price = v.family === "p2p" ? (v.usd_per_hour ? `$${v.usd_per_hour}/h per node` : null)
-    : v.usd_per_gib_month != null ? `$${v.usd_per_gib_month}/GiB-month${v.bill === "provisioned" ? ", provisioned" : ", stored"}` : "no price";
-  const perf = `${fmt(variantBandwidth(v), 3)} GiB/s + ${fmt((v.latency_s ?? 0) * 1000, 3)} ms`;
-  return [el("span", { class: "tier-sub", text: perf }), ...(v.assumptions?.length ? [assumptionBadge(v.assumptions.join(", "))] : []),
-    ...(v.edited?.length ? [el("span", { class: "badge assumption", text: "edited" })] : []),
-    el("span", { class: "tier-sub", text: [price, ...extra].filter(Boolean).join(" · ") })];
+// log sliders: `zero` at the left end, `unbounded` (null) at the right end
+const niceNum = (x) => Number(x.toPrecision(x < 10 ? 2 : 3));
+function propPos(p, x) {
+  if (x == null) return POS;
+  if (p.zero && !(x > 0)) return 0;
+  return Math.round((POS * Math.log(Math.min(p.max, Math.max(p.min, x)) / p.min)) / Math.log(p.max / p.min));
+}
+function posProp(p, pos) {
+  if (p.unbounded && pos >= POS) return null;
+  if (p.zero && pos <= 0) return 0;
+  return niceNum(p.min * (p.max / p.min) ** (pos / POS));
+}
+const propText = (p, x) => (x == null ? "unbounded" : p.key === "size" ? gibf(x) : p.key === "price" ? `$${fmt(x, 3)}` : fmt(x, 3));
+
+function propRow(slot, p) {
+  const v = slotBase(slot);
+  const val = v ? p.get(v) : null;
+  const id = `lab-${slot}-${p.key}`;
+  const shown = (x) => (x == null ? "" : +Number(x).toPrecision(4));
+  const range = el("input", { type: "range", id, min: 0, max: POS, step: 1, value: propPos(p, val), "aria-label": `${p.label}, ${p.unit}` });
+  const num = el("input", { type: "number", id: `${id}-n`, step: "any", min: 0, value: shown(val), placeholder: p.unbounded ? "no limit" : "0", inputmode: "decimal", "aria-label": `${p.label} in ${p.unit}` });
+  const apply = (x, commit) => {
+    const lv = labVariant(slot);
+    p.set(lv, x);
+    lv.edited = [...new Set([...(lv.edited ?? []), ...p.fields])];
+    changed({ config: commit, methods: commit });
+  };
+  range.addEventListener("input", () => { const x = posProp(p, Number(range.value)); num.value = shown(x); apply(x, false); });
+  range.addEventListener("change", () => { keepFocus(renderConfig); renderMethods(); });
+  num.addEventListener("change", () => {
+    const raw = num.value.trim();
+    const x = raw === "" ? (p.unbounded ? null : 0) : Number(raw);
+    if (x != null && !(Number.isFinite(x) && x >= 0)) { num.value = shown(val); return; }
+    if (x != null && !p.zero && x <= 0) { num.value = shown(val); return; }
+    apply(x, true);
+  });
+  return el("div", { class: "prop" },
+    el("label", { for: id }, p.label, el("small", { text: p.unit })),
+    range,
+    el("div", { class: "prop-num" }, num));
 }
 
-function renderTiers() {
+function labBody(slot) {
   const sim = cfg.sim;
-  const g = gpuOf(sim.gpu);
-  const kv = kvFor(g);
-  const rows = [];
-  rows.push(tierRow({ key: "gpu", title: "GPU memory", on: true,
-    sub: kv > 0 ? `${fmt(kv, 3)} GiB of KV cache per instance, after weights and activations: ${capacity(kv)}` : "the model does not fit",
-    tags: [el("span", { class: "tier-sub", text: `${fmt(g.mem_bw_tb_s, 3)} TB/s; part of the GPU price` })] }));
-  rows.push(tierRow({ key: "cpu", title: "CPU memory", on: sim.cpuGiB > 0, sub: sim.cpuGiB > 0 ? `per node, shared by its GPUs: ${perGroup(sim.cpuGiB)}` : "per node, shared by its GPUs",
-    toggle: (on) => { if (!on) lastPick.cpuGiB = sim.cpuGiB || lastPick.cpuGiB; sim.cpuGiB = on ? lastPick.cpuGiB : 0; changed(); },
-    body: [numField("GiB per node", sim, "cpuGiB", { step: 1, onchange: () => { sim.cpuGiB = Math.max(1, sim.cpuGiB ?? 1); lastPick.cpuGiB = sim.cpuGiB; changed(); } })],
-    tags: [el("span", { class: "tier-sub", text: `${fmt(g.host_gib_s, 3)} GiB/s to the GPU + ${fmt(cfg.software.cpu_load_latency_s * 1000, 2)} ms · part of the VM: no extra cost` })] }));
-  const disk = variant(sim.disk);
-  rows.push(tierRow({ key: "disk", title: "Local disk", on: !!disk, sub: disk ? `one per node: ${perGroup(disk.capacity_gib)}` : "one per node",
-    toggle: (on) => { sim.disk = on ? lastPick.disk : null; changed(); },
-    body: disk ? [variantSelect("disk"), el("div", { class: "field" }, el("span", { text: "Size per node" }), el("span", { class: "tier-sub", style: "color:var(--text)", text: gibf(disk.capacity_gib) }))] : null,
-    tags: disk ? variantTags(disk) : null }));
-  const p2p = variant(sim.p2p);
-  const p2pBlocked = sim.nodes < 2 ? "needs 2 or more nodes" : !(sim.cpuGiB > 0) ? "needs CPU memory: peers serve from it" : null;
-  const p2pSub = sim.routing === "sticky" ? "another node's CPU memory. Sticky routing keeps a conversation on one node, so peers mostly share the system prompt" : "another node's CPU memory, over the network";
-  rows.push(tierRow({ key: "p2p", title: "Peer nodes", on: !!p2p && !p2pBlocked, sub: p2pSub, disabledReason: p2pBlocked,
-    toggle: (on) => { sim.p2p = on ? lastPick.p2p : null; changed(); },
-    body: p2p ? [variantSelect("p2p")] : null, tags: p2p ? variantTags(p2p) : null }));
-  const shared = variant(sim.shared);
-  rows.push(tierRow({ key: "shared", title: "Shared storage", on: !!shared, sub: shared ? `one store for the whole cluster: ${capacity(shared.capacity_gib)}` : "one store for the whole cluster",
-    toggle: (on) => { sim.shared = on ? lastPick.shared : null; changed(); },
-    body: shared ? [variantSelect("shared"), shared.bill === "provisioned"
-      ? el("div", { class: "field" }, el("span", { text: "Size" }), el("span", { class: "tier-sub", style: "color:var(--text)", text: gibf(shared.capacity_gib) }))
-      : numField("Keep for (hours)", sim, "retentionH", { onchange: () => { sim.retentionH = Math.max(0.01, sim.retentionH ?? 1); changed(); } })] : null,
-    tags: shared ? variantTags(shared, [shared.capacity_gib == null ? "scales without limit" : null]) : null }));
-  $("tiers").replaceChildren(...rows);
+  const blocked = slotBlocked(slot);
+  const on = slotOn(slot);
+  const v = slotBase(slot);
+  const sw = el("label", { class: "switch" },
+    el("input", { type: "checkbox", checked: on, disabled: !!blocked, "aria-label": `Use ${SLOT_NAME[slot]}`,
+      onchange: (ev) => { setSlot(slot, ev.target.checked ? (lastPick[slot] ?? v?.id ?? null) : null); changed(); } }),
+    el("span", { class: "track" }), el("span", { text: blocked ? "unavailable" : on ? "on" : "off" }));
+  const selId = sim[slot] ?? lastPick[slot];
+  const lab = cfg.variants.find((x) => x.id === labId(slot));
+  const chip = (id, text, title) => el("button", { type: "button", class: "chip", "aria-pressed": String(selId === id), title,
+    onclick: () => { setSlot(slot, id); changed(); } }, text);
+  const presets = el("div", { class: "presets" }, el("span", { class: "presets-label", text: "Start from" }),
+    slotVariants(slot).filter((x) => !isLab(x.id)).map((x) => chip(x.id, x.short ?? x.name, x.name)),
+    lab ? chip(lab.id, "Your edits", lab.name) : null);
+  const extra = [];
+  if (v && slot !== "p2p") {
+    const fees = [v.usd_per_gib_written ? `$${v.usd_per_gib_written}/GiB written` : null, v.usd_per_gib_read ? `$${v.usd_per_gib_read}/GiB read` : null].filter(Boolean);
+    extra.push(el("p", { class: "tier-sub billing" }, v.bill === "provisioned"
+      ? `Billed on provisioned size${slot === "disk" ? ", per node" : ""}: size × price.`
+      : "Billed on bytes stored: what is written, kept for the retention time.", fees.length ? ` Plus ${fees.join(" and ")}.` : ""));
+    if (v.bill !== "provisioned") extra.push(numField("Keep for (hours)", sim, "retentionH", { id: "lab-retention", onchange: () => { sim.retentionH = Math.max(0.01, sim.retentionH ?? 1); changed(); } }));
+  }
+  const prov = !v ? null : isLab(v.id)
+    ? el("p", { class: "tier-sub prov" }, `Your values, started from ${variant(v.from)?.name ?? "a preset"}. `,
+      variant(v.from) ? el("button", { type: "button", class: "link", text: "Back to the preset", onclick: () => { setSlot(slot, v.from); changed(); } }) : null)
+    : el("div", { class: "tier-tags prov" }, ...(v.assumptions?.length ? [assumptionBadge(v.assumptions.join(", "))] : []),
+      v.sources?.[0]?.url ? el("a", { class: "tier-sub", href: v.sources[0].url, target: "_blank", rel: "noopener", text: `Source: ${v.sources[0].label}` }) : null);
+  const sticky = slot === "p2p" && sim.routing === "sticky" ? el("p", { class: "tier-sub", text: "Sticky routing keeps a conversation on one node, so peers mostly share the system prompt." }) : null;
+  return el("div", { class: `lab-panel${on ? "" : " off"}`, id: `tier-${slot}` },
+    el("div", { class: "lab-head" },
+      el("div", {}, el("div", { class: "lab-title" }, el("i", { class: "swatch", style: `background:var(${TIER_COLOR[slot]})` }), SLOT_NAME[slot]),
+        el("div", { class: "tier-sub", text: blocked ? `${SLOT_SUB[slot]}: ${blocked}` : SLOT_SUB[slot] })),
+      sw),
+    sticky,
+    presets,
+    v ? el("div", { class: "props" }, propsFor(slot).map((p) => propRow(slot, p))) : el("p", { class: "hint", text: "No variant for this tier: add one in Methods & data." }),
+    extra.length ? el("div", { class: "lab-extra" }, extra) : null,
+    el("p", { class: "lab-live", "data-live": slot }),
+    prov);
+}
+
+function renderFixedTiers() {
+  const sim = cfg.sim;
+  const cpuOn = sim.cpuGiB > 0;
+  const cpuSw = el("label", { class: "switch" },
+    el("input", { type: "checkbox", checked: cpuOn, "aria-label": "Use CPU memory",
+      onchange: (ev) => { if (!ev.target.checked) lastPick.cpuGiB = sim.cpuGiB || lastPick.cpuGiB; sim.cpuGiB = ev.target.checked ? lastPick.cpuGiB : 0; changed(); } }),
+    el("span", { class: "track" }), el("span", { text: cpuOn ? "on" : "off" }));
+  $("fixed-tiers").replaceChildren(
+    el("div", { class: "fixed", id: "tier-gpu" },
+      el("div", { class: "fixed-top" }, el("i", { class: "swatch", style: `background:var(${TIER_COLOR.gpu})` }), el("b", { text: "GPU memory" }),
+        el("span", { class: "tier-sub", text: "always on" })),
+      el("span", { class: "tier-sub fixed-sub", "data-live": "gpu" })),
+    el("div", { class: `fixed${cpuOn ? "" : " off"}`, id: "tier-cpu" },
+      el("div", { class: "fixed-top" }, el("i", { class: "swatch", style: `background:var(${TIER_COLOR.cpu})` }), el("b", { text: "CPU memory" }),
+        cpuOn ? numField("GiB/node", sim, "cpuGiB", { step: 1, id: "lab-cpu-gib", onchange: () => { sim.cpuGiB = Math.max(1, sim.cpuGiB ?? 1); lastPick.cpuGiB = sim.cpuGiB; changed(); } }) : null,
+        cpuSw),
+      el("span", { class: "tier-sub fixed-sub", "data-live": "cpu" })));
+}
+
+function renderLabTabs() {
+  $("lab-tabs").replaceChildren(...LAB_SLOTS.map((slot) => el("button", {
+    type: "button", role: "tab", id: `lab-tab-${slot}`, class: "lab-tab", "aria-selected": String(slot === labSlot), "aria-controls": "lab-body", tabindex: slot === labSlot ? "0" : "-1",
+    onclick: () => { if (labSlot !== slot) { labSlot = slot; keepFocus(renderLab); runSensSoon(0); } },
+    onkeydown: (ev) => {
+      const k = { ArrowRight: 1, ArrowLeft: -1 }[ev.key];
+      if (!k) return;
+      ev.preventDefault();
+      labSlot = LAB_SLOTS[(LAB_SLOTS.indexOf(slot) + k + LAB_SLOTS.length) % LAB_SLOTS.length];
+      renderLab(); runSensSoon(0); $(`lab-tab-${labSlot}`).focus();
+    },
+  },
+  el("i", { class: "swatch", style: `background:var(${TIER_COLOR[slot]})` }),
+  el("span", { class: "lab-tab-name", text: SLOT_NAME[slot] }),
+  el("small", { text: slotBlocked(slot) ? "unavailable" : slotOn(slot) ? variant(cfg.sim[slot])?.short ?? "on" : "off" }))));
+}
+
+function renderLab() {
+  if (!labSlot) labSlot = ["shared", "disk", "p2p"].find(slotOn) ?? "shared";
+  renderFixedTiers();
+  renderLabTabs();
+  $("lab-body").setAttribute("aria-labelledby", `lab-tab-${labSlot}`);
+  $("lab-body").replaceChildren(labBody(labSlot));
+  renderSensControls();
+  updateLabLive();
+}
+
+// the texts that follow the estimate (capacities in prompts, shares served), updated in place so a drag survives
+function updateLabLive() {
+  if (!cfg) return;
+  const sim = cfg.sim;
+  const g = gpuOf(sim.gpu), kv = kvFor(g);
+  const r = estimate?.current && !estimate.current.error ? estimate.current : null;
+  const served = (k) => (r?.share?.[k] != null ? ` · serves ${pctf(r.share[k], r.share[k] < 0.1 && r.share[k] > 0 ? 1 : 0)} of prompt tokens` : "");
+  const set = (k, text) => { const n = document.querySelector(`[data-live="${k}"]`); if (n) n.textContent = text; };
+  set("gpu", kv > 0 ? `${gibf(kv)} per instance: ${capacity(kv)} · ${fmt(g.mem_bw_tb_s, 3)} TB/s${served("gpu")}` : "the model does not fit");
+  set("cpu", sim.cpuGiB > 0 ? `per node: ${perGroup(sim.cpuGiB)} · ${fmt(g.host_gib_s, 3)} GiB/s to the GPU${served("cpu")}` : "per node, shared by its GPUs");
+  const v = slotBase(labSlot);
+  if (v) set(labSlot, `${fmt(variantBandwidth(v), 3)} GiB/s + ${fmt((v.latency_s ?? 0) * 1000, 3)} ms · holds ${labSlot === "p2p" ? "what the peers' CPU memory holds" : labSlot === "disk" ? perGroup(v.capacity_gib) : capacity(v.capacity_gib)}${slotOn(labSlot) ? served(labSlot) : " · off"}`);
+}
+
+// ------------------------------------------------------------------------------------------------ sensitivity
+
+let labWorker = null;
+let sensId = 0, sensPoints = [], sensTimer = null, sensChart = null, sensPending = false;
+let sensProp = "bandwidth";
+
+function renderSensControls() {
+  const props = propsFor(labSlot);
+  if (!props.some((p) => p.key === sensProp)) sensProp = "bandwidth";
+  $("sens-prop").replaceChildren(...props.map((p) => el("option", { value: p.key, text: `${p.label} (${p.unit})`, selected: p.key === sensProp })));
+  $("sens-prop").onchange = (ev) => { sensProp = ev.target.value; runSensSoon(0); };
+}
+
+function runSensSoon(delay = 450) { clearTimeout(sensTimer); sensTimer = setTimeout(runSens, delay); }
+
+function runSens() {
+  if (!labWorker || !cfg) return;
+  const slot = labSlot, p = propOf(slot, sensProp), base = slotBase(slot);
+  sensId++;
+  sensPoints = [];
+  const why = slotBlocked(slot) ? `${SLOT_NAME[slot]} ${slotBlocked(slot)}.` : !base ? "No variant for this tier." : source !== "synthetic" ? "The sweep uses synthetic conversations: switch the workload source back to see it." : null;
+  $("sens-what").textContent = base ? `${SLOT_NAME[slot]}: ${base.short ?? base.name}. TTFT at your load (${fmt(cfg.workload.requestsPerMin, 3)} requests/min); cost with the load set so the prefill GPUs are ${pctf(TARGET_BUSY)} busy. Dashed: ${SLOT_NAME[slot].toLowerCase()} off.` : "";
+  $("sens-note").textContent = "";
+  if (why) { $("sens-status").textContent = why; drawSens(); return; }
+  $("sens-status").textContent = "Simulating…";
+  const cur = p.get(base);
+  labWorker.postMessage({ kind: "sens", id: sensId, config: cfg, slot, base, key: p.key, values: logSpace(p.min, p.max, 9, cur), capacity: true });
+}
+
+function onLab({ data }) {
+  if (data.id !== sensId) return;
+  if (data.kind === "sens-point") {
+    sensPoints.push(data.point);
+    $("sens-status").textContent = `Simulating ${data.done} of ${data.total}…`;
+    if (!sensPending) { sensPending = true; requestAnimationFrame(() => { sensPending = false; drawSens(); }); }
+  } else if (data.kind === "sens-done") {
+    $("sens-status").textContent = "";
+    drawSens();
+    sensNote();
+  }
+}
+
+// a dashed line and a label where the slider sits now
+const markerPlugin = {
+  id: "kvtbMarker",
+  afterDatasetsDraw(c, _, opts) {
+    if (opts?.x == null) return;
+    const x = c.scales.x.getPixelForValue(opts.x);
+    if (!(x >= c.chartArea.left - 1 && x <= c.chartArea.right + 1)) return;
+    const ctx = c.ctx;
+    ctx.save();
+    ctx.strokeStyle = cssVar("--text-2");
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.moveTo(x, c.chartArea.top); ctx.lineTo(x, c.chartArea.bottom); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.font = `600 12px ${getComputedStyle(document.body).fontFamily}`;
+    ctx.fillStyle = cssVar("--text");
+    const right = x < c.chartArea.right - 110;
+    ctx.textAlign = right ? "left" : "right";
+    ctx.fillText(opts.label, x + (right ? 6 : -6), c.chartArea.top + 12);
+    ctx.restore();
+  },
+};
+
+function drawSens() {
+  if (!window.Chart || $("pane-sens").hidden || !cfg) return;
+  const C = window.Chart;
+  C.defaults.font.family = getComputedStyle(document.body).fontFamily;
+  C.defaults.color = cssVar("--text-2");
+  const slot = labSlot, p = propOf(slot, sensProp), base = slotBase(slot);
+  const pts = sensPoints.filter((q) => q.x !== null && !q.error).sort((a, b) => (a.x ?? Infinity) - (b.x ?? Infinity));
+  const off = sensPoints.find((q) => q.x === null && !q.error);
+  const X = (x) => (x == null ? p.max : x > 0 ? x : p.min);
+  const accent = cssVar("--accent"), cost = cssVar("--tier-p2p");
+  const datasets = [
+    { label: "Mean TTFT at your load", data: pts.map((q) => ({ x: X(q.x), y: q.overloaded ? null : q.ttft, q })), yAxisID: "y", borderColor: accent, backgroundColor: accent, borderWidth: 2.5, pointRadius: 3, tension: 0.2 },
+    { label: `$ per 1k requests at ${pctf(TARGET_BUSY)} busy`, data: pts.map((q) => ({ x: X(q.x), y: q.capUsd, q })), yAxisID: "y2", borderColor: cost, backgroundColor: cost, borderWidth: 2.5, pointRadius: 3, tension: 0.2 },
+  ];
+  if (off && !off.overloaded) datasets.push({ label: "Tier off: TTFT", data: [{ x: p.min, y: off.ttft }, { x: p.max, y: off.ttft }], yAxisID: "y", borderColor: accent, borderDash: [6, 4], borderWidth: 1.5, pointRadius: 0, pointHitRadius: 0 });
+  if (off?.capUsd != null) datasets.push({ label: "Tier off: cost", data: [{ x: p.min, y: off.capUsd }, { x: p.max, y: off.capUsd }], yAxisID: "y2", borderColor: cost, borderDash: [6, 4], borderWidth: 1.5, pointRadius: 0, pointHitRadius: 0 });
+  const cur = base ? p.get(base) : null;
+  const tick = function (v) {
+    const m = v / 10 ** Math.floor(Math.log10(v));
+    return (this.chart.width < 560 ? [1] : [1, 2, 5]).some((k) => Math.abs(m - k) < 1e-6) ? propText(p, v) : "";
+  };
+  const options = {
+    maintainAspectRatio: false, animation: false, parsing: false,
+    interaction: { mode: "nearest", axis: "x", intersect: false },
+    scales: {
+      x: { type: "logarithmic", min: p.min, max: p.max, title: { display: true, text: `${p.label} (${p.unit})${p.unbounded ? ", right edge = unbounded" : ""}${p.zero ? ", left edge = free" : ""}` }, grid: { color: (g) => (g.tick?.label ? cssVar("--grid") : "transparent") }, ticks: { callback: tick, autoSkip: false, maxRotation: 0 } },
+      y: { beginAtZero: true, title: { display: true, text: "mean TTFT", color: accent }, grid: { color: cssVar("--grid") }, ticks: { callback: (v) => secs(v), maxTicksLimit: 6 } },
+      y2: { beginAtZero: true, position: "right", title: { display: true, text: "$ per 1k requests", color: cost }, grid: { display: false }, ticks: { callback: (v) => usd(v), maxTicksLimit: 6 } },
+    },
+    plugins: {
+      legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, boxHeight: 8, padding: 14 } },
+      tooltip: { filter: (t) => t.datasetIndex < 2, callbacks: {
+        title: (items) => { const q = items[0]?.raw.q; return q ? `${p.label}: ${propText(p, q.x)} ${q.x == null ? "" : p.unit}` : ""; },
+        label: (t) => { const q = t.raw.q; return t.datasetIndex === 0 ? `TTFT ${q.overloaded ? "overloaded" : secs(q.ttft)} (p90 ${secs(q.p90)}), prefill ${pctf(q.utilization)} busy` : `${usd(q.capUsd)} per 1k requests at ${fmt(q.capRpm, 3)} requests/min`; } } },
+      kvtbMarker: { x: X(cur), label: `now: ${propText(p, cur)}${cur == null ? "" : ` ${p.unit}`}` },
+    },
+  };
+  if (sensChart) { sensChart.data.datasets = datasets; sensChart.options = options; sensChart.update("none"); }
+  else sensChart = new C($("sens-chart"), { type: "line", data: { datasets }, options, plugins: [markerPlugin] });
+}
+
+// one or two sentences on what the curve says
+function sensNote() {
+  const slot = labSlot, p = propOf(slot, sensProp);
+  const pts = sensPoints.filter((q) => q.x !== null && !q.error && !q.overloaded && q.ttft != null).sort((a, b) => (a.x ?? Infinity) - (b.x ?? Infinity));
+  const off = sensPoints.find((q) => q.x === null && !q.error);
+  if (pts.length < 3) return;
+  const notes = [];
+  const best = Math.min(...pts.map((q) => q.ttft));
+  if (p.key === "bandwidth" || p.key === "size") {
+    const k = pts.find((q) => q.ttft <= best * 1.05);
+    if (k && k !== pts[0]) notes.push(`TTFT is within 5% of its best from ${propText(p, k.x)}${k.x == null ? "" : ` ${p.unit}`} up.`);
+    else if (k === pts[0]) notes.push(`TTFT barely moves with ${p.label.toLowerCase()} here.`);
+  } else if (p.key === "latency") {
+    const k = [...pts].reverse().find((q) => q.ttft <= best * 1.05);
+    if (k && k !== pts.at(-1)) notes.push(`TTFT is within 5% of its best below ${propText(p, k.x)} ms.`);
+  } else notes.push("Price changes the cost only: it never touches TTFT.");
+  if (off && !off.overloaded) {
+    const worse = pts.filter((q) => q.ttft > off.ttft);
+    if (worse.length === pts.length) notes.push(`Across this range the tier is slower than recomputing (tier off: ${secs(off.ttft)}): a cached prefix is always loaded, as vLLM does.`);
+    else if (worse.length) notes.push(`Where the blue line rises above the dashed one, loading from this tier is slower than recomputing (${secs(off.ttft)} with it off).`);
+  }
+  $("sens-note").textContent = notes.join(" ");
+}
+
+// ------------------------------------------------------------------------------------------------ across models
+
+let modelsWorker = null;
+let modelsId = 0, modelsRows = [], modelsKey = null, modelsRunning = false, modelsPending = false;
+const modelsCharts = {};
+// what the comparison depends on: everything but the page's own model, cluster shape and request rate
+const modelsKeyOf = () => JSON.stringify({ ...cfg, sim: { ...cfg.sim, model: null, tp: null, pp: null, nodes: null, gpusPerNode: null },
+  workload: { ...cfg.workload, requestsPerMin: null, durationMin: null } });
+
+function modelsHint() {
+  $("models-hint").textContent = `Each model on the deployment that holds it: ${gpuShort(gpuOf(cfg.sim.gpu))} when it is priced and holds the model, else B200, ` +
+    `at the smallest TP and fewest nodes, ${COMPARE_INSTANCES} instances. Traffic: the rate at which GPU + CPU memory alone keeps prefill ${pctf(TARGET_BUSY)} busy; ` +
+    `both setups get that traffic for TTFT. Cost: each setup loaded to ${pctf(TARGET_BUSY)} busy. Your tiers: ${setupLabel()}.`;
+}
+
+function modelsStatus() {
+  if (modelsRunning) return;
+  const stale = modelsRows.length && modelsKey !== modelsKeyOf();
+  $("models-status").textContent = source !== "synthetic" ? "The comparison uses synthetic conversations." : stale ? "Settings changed since this run." : "";
+  $("models-run").disabled = source !== "synthetic";
+  $("models-run").textContent = modelsRows.length ? "Run again with the current settings" : "Run across models";
+}
+
+function runModels() {
+  if (!modelsWorker || source !== "synthetic") { modelsStatus(); return; }
+  modelsId++;
+  modelsRows = [];
+  modelsKey = modelsKeyOf();
+  modelsRunning = true;
+  const models = Object.keys(cfg.models);
+  $("models-run").disabled = true;
+  $("models-status").textContent = `Simulating 0 of ${models.length} models…`;
+  modelsHint();
+  modelsWorker.postMessage({ kind: "models", id: modelsId, config: cfg, models });
+  drawModels();
+}
+
+function onModels({ data }) {
+  if (data.id !== modelsId) return;
+  if (data.kind === "models-row") {
+    modelsRows.push(data.row);
+    $("models-status").textContent = `Simulating ${data.done} of ${data.total} models…`;
+    if (!modelsPending) { modelsPending = true; requestAnimationFrame(() => { modelsPending = false; drawModels(); }); }
+  } else if (data.kind === "models-done") {
+    modelsRunning = false;
+    $("models-run").disabled = false;
+    modelsStatus();
+    drawModels();
+  }
+}
+
+const change = (a, b) => (a > 0 && b > 0 ? b / a - 1 : null);
+const changeText = (x) => (x == null ? "" : Math.abs(x) < 0.005 ? "same" : `${x > 0 ? "+" : "−"}${Math.abs(x * 100).toFixed(0)}%`);
+
+// "−22%" at the end of each "your tiers" bar: green when lower, red when higher
+const changePlugin = {
+  id: "kvtbChange",
+  afterDatasetsDraw(c, _, opts) {
+    const meta = c.getDatasetMeta(1);
+    if (!opts?.values || !c.isDatasetVisible(1)) return;
+    const ctx = c.ctx;
+    ctx.save();
+    ctx.font = `600 11px ${getComputedStyle(document.body).fontFamily}`;
+    ctx.textBaseline = "middle";
+    meta.data.forEach((bar, i) => {
+      const x = opts.values[i];
+      if (x == null) return;
+      const end = Math.max(bar.x, c.getDatasetMeta(0).data[i]?.x ?? 0);
+      ctx.fillStyle = Math.abs(x) < 0.005 ? cssVar("--text-2") : x < 0 ? cssVar("--good") : cssVar("--bad");
+      ctx.fillText(changeText(x), end + 6, bar.y);
+    });
+    ctx.restore();
+  },
+};
+
+function drawModels() {
+  if (!cfg) return;
+  const ok = modelsRows.filter((r) => !r.error).sort((a, b) => (change(a.base.ttft, a.tier.ttft) ?? 0) - (change(b.base.ttft, b.tier.ttft) ?? 0));
+  const name = (r) => cfg.models[r.model]?.name ?? r.model;
+  // the table
+  const cell = (label, text, cls) => el("td", { "data-label": label, text, class: cls });
+  const gainCls = (x) => (x == null ? null : x < -0.005 ? "good" : x > 0.005 ? "bad" : null);
+  $("models-table").replaceChildren(
+    el("thead", {}, el("tr", {}, ["Model", "Deployment", "Requests/min", "TTFT: GPU + CPU → yours", "Change", "$ per 1k at 60% busy: GPU + CPU → yours", "Change"].map((t) => el("th", { text: t })))),
+    el("tbody", {}, ...ok.map((r) => {
+      const dt = change(r.base.ttft, r.tier.ttft), dc = change(r.base.usd, r.tier.usd);
+      return el("tr", {},
+        el("td", { class: "span", text: name(r) }),
+        cell("Deployment", `${r.instances} × ${r.tp * r.pp} ${gpuShort({ name: r.gpuName })}`),
+        cell("Requests/min", fmt(r.rpm, 3)),
+        cell("TTFT", `${secs(r.base.ttft)} → ${secs(r.tier.ttft)}`),
+        cell("Change", changeText(dt), gainCls(dt)),
+        cell("$ per 1k", `${usd(r.base.usd)} → ${usd(r.tier.usd)}`),
+        cell("Change", changeText(dc), gainCls(dc)));
+    }), ...modelsRows.filter((r) => r.error).map((r) => el("tr", {}, el("td", { class: "span", text: name(r) }), el("td", { colspan: 6, class: "span note", text: r.error })))));
+  if (!window.Chart || $("pane-models").hidden) return;
+  const C = window.Chart;
+  C.defaults.font.family = getComputedStyle(document.body).fontFamily;
+  C.defaults.color = cssVar("--text-2");
+  const labels = ok.map(name);
+  const h = `${Math.max(120, 44 + labels.length * 30)}px`;
+  const bars = (key, fmtv) => ({
+    labels,
+    datasets: [
+      { label: "GPU + CPU memory", data: ok.map((r) => r.base[key]), backgroundColor: cssVar("--tier-miss"), borderRadius: 3, barPercentage: 0.8, categoryPercentage: 0.8 },
+      { label: "Your tiers", data: ok.map((r) => r.tier[key]), backgroundColor: cssVar("--accent"), borderRadius: 3, barPercentage: 0.8, categoryPercentage: 0.8 },
+    ],
+    fmtv,
+  });
+  for (const [id, key, f] of [["models-ttft", "ttft", secs], ["models-cost", "usd", usd]]) {
+    const data = bars(key, f);
+    $(id).parentElement.style.height = h;
+    const options = {
+      indexAxis: "y", maintainAspectRatio: false, animation: false,
+      scales: { x: { beginAtZero: true, grid: { color: cssVar("--grid") }, ticks: { callback: (v) => f(v), maxTicksLimit: 5, maxRotation: 0 } }, y: { grid: { display: false } } },
+      plugins: { legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, boxHeight: 8, padding: 14 } },
+        tooltip: { callbacks: { label: (t) => `${t.dataset.label}: ${f(t.raw)}`, afterBody: (items) => { const r = ok[items[0].dataIndex]; return `${r.instances} × ${r.tp * r.pp} ${r.gpuName}, ${fmt(r.rpm, 3)} requests/min`; } } } },
+    };
+    options.layout = { padding: { right: 44 } };
+    options.plugins.kvtbChange = { values: ok.map((r) => change(r.base[key], r.tier[key])) };
+    if (modelsCharts[id]) { modelsCharts[id].data = data; modelsCharts[id].options = options; modelsCharts[id].update("none"); }
+    else modelsCharts[id] = new C($(id), { type: "bar", data, options, plugins: [changePlugin] });
+  }
+}
+
+// ------------------------------------------------------------------------------------------------ chart tabs
+
+const TABS = ["sens", "models", "map"];
+function showTab(t) {
+  for (const k of TABS) {
+    $(`tab-${k}`).setAttribute("aria-selected", String(k === t));
+    $(`tab-${k}`).tabIndex = k === t ? 0 : -1;
+    $(`pane-${k}`).hidden = k !== t;
+  }
+  if (t === "sens") drawSens();
+  if (t === "models") { modelsHint(); if (!modelsRows.length && !modelsRunning) runModels(); else { modelsStatus(); drawModels(); } }
+  if (t === "map") scheduleChart();
+}
+
+function bindTabs() {
+  for (const k of TABS) {
+    $(`tab-${k}`).addEventListener("click", () => showTab(k));
+    $(`tab-${k}`).addEventListener("keydown", (ev) => {
+      const d = { ArrowRight: 1, ArrowLeft: -1 }[ev.key];
+      if (!d) return;
+      ev.preventDefault();
+      const next = TABS[(TABS.indexOf(k) + d + TABS.length) % TABS.length];
+      showTab(next);
+      $(`tab-${next}`).focus();
+    });
+  }
+  $("models-run").addEventListener("click", runModels);
 }
 
 // a slider with a number box; `log` maps the slider logarithmically
 const SLIDERS = [
   { key: "requestsPerMin", label: "Requests per minute", hint: "all users together", min: 1, max: 100000, log: true },
-  { key: "followUpShare", label: "Follow-up messages", hint: "share that continue a conversation (cache reuse)", min: 0, max: 95, scale: 100, unit: "%" },
+  { key: "followUpShare", label: "Follow-up messages (%)", hint: "share that continue a conversation (cache reuse)", min: 0, max: 95, scale: 100, unit: "%" },
   { key: "inputTokens", label: "Tokens in per message", hint: "the new text a user sends", min: 10, max: 32000, log: true },
   { key: "outputTokens", label: "Tokens out per answer", hint: "generated, then cached with the conversation", min: 1, max: 16000, log: true },
   { key: "thinkTimeS", label: "Pause between turns (s)", hint: "user reading and typing", min: 1, max: 7200, log: true },
@@ -379,6 +791,7 @@ function renderSliders() {
   const w = cfg.workload;
   const off = source !== "synthetic";
   $("sliders").classList.toggle("disabled", off);
+  if ($("map-metric")) { for (const p of points) withMetric(p); renderMapMetric(); }
   $("trace-note").hidden = !off;
   if (off) $("trace-note").textContent = trace ? `Replaying ${trace.name}: ${trace.requests.length.toLocaleString()} requests over ${fmt((trace.requests.at(-1).t - trace.requests[0].t) / 60, 3)} min. The load sliders apply to synthetic conversations only.` : "Load a trace in “Load & serving settings”. The load sliders apply to synthetic conversations only.";
   $("sliders").replaceChildren(...SLIDERS.map((s) => {
@@ -550,7 +963,8 @@ function renderEstimate() {
   const alert = (text, bad = false) => alerts.push(el("div", { class: `alert${bad ? " bad" : ""}`, text }));
   if (r.error) {
     $("est-prices").replaceChildren();
-    $("est-ttft").textContent = "–"; $("est-usd").textContent = "–"; $("est-ttft-sub").textContent = ""; $("est-usd-sub").textContent = "";
+    for (const id of ["est-ttft", "est-usd", "est-cap"]) $(id).textContent = "–";
+    for (const id of ["est-ttft-sub", "est-usd-sub", "est-cap-sub"]) $(id).textContent = "";
     $("mini-ttft").textContent = "–"; $("mini-usd").textContent = "–";
     $("est-delta").textContent = "";
     alert(`${r.error}. Pick a GPU with more memory or a larger tensor-parallel size.`, true);
@@ -563,8 +977,8 @@ function renderEstimate() {
   $("est-ttft").classList.remove("over");
   if (!r.requests) {
     $("est-prices").replaceChildren();
-    for (const id of ["est-ttft", "est-usd", "mini-ttft", "mini-usd"]) $(id).textContent = "–";
-    for (const id of ["est-ttft-sub", "est-usd-sub", "est-delta", "est-foot"]) $(id).textContent = "";
+    for (const id of ["est-ttft", "est-usd", "est-cap", "mini-ttft", "mini-usd"]) $(id).textContent = "–";
+    for (const id of ["est-ttft-sub", "est-usd-sub", "est-cap-sub", "est-delta", "est-foot"]) $(id).textContent = "";
     alert(source === "synthetic" ? "No requests after the warm-up: make the duration longer than the warm-up." : "No requests after the warm-up: lower the warm-up for this trace.", true);
     $("est-alerts").replaceChildren(...alerts);
     return;
@@ -578,6 +992,9 @@ function renderEstimate() {
   if (r.specUnavailable) alert(`${cfg.models[sim.model]?.name ?? sim.model} ships no drafter for ${r.specUnavailable}: decode runs without speculative decoding.`);
   if (r.belowSpeed > 0.005) alert(`${pctf(r.belowSpeed, 0)} of requests decode slower than ${fmt(sim.decodeSpeed, 3)} tok/s even one at a time on ${gpuShort(gpuOf(sim.decodeGpu))} (speculative decoding, which reaches it, is not modeled).`);
   $("est-usd-sub").textContent = r.priced ? `${usd(r.usdPer1MTokens)} per 1M tokens · ${usd(r.usd.total / Math.max(hours, 1e-9))} per hour` : "a GPU or tier here has no price";
+  const cap = capEst?.cap;
+  $("est-cap").textContent = source !== "synthetic" ? "–" : !capEst ? "…" : cap?.priced ? usd(cap.usdPer1k) : "–";
+  $("est-cap-sub").textContent = source !== "synthetic" ? "synthetic conversations only" : cap ? `serves ${fmt(cap.rpm, 3)} requests/min on these GPUs` : "";
   $("mini-ttft").textContent = overloaded ? "overloaded" : secs(r.ttft.mean);
   $("mini-usd").textContent = r.priced ? usd(r.usdPer1kRequests) : "no price";
 
@@ -585,30 +1002,32 @@ function renderEstimate() {
   const isBase = SLOTS.every((k) => !sim[k]) || (!sim.disk && !sim.shared && sim.p2p && sim.nodes < 2);
   const baseName = sim.cpuGiB > 0 ? "GPU + CPU" : "GPU only";
   if (overloaded || b.error || !b.requests) $("est-delta").textContent = "";
-  else if (isBase) $("est-delta").replaceChildren(el("span", { class: "hint", text: `This is the ${baseName} baseline. Turn on a tier to compare.` }));
+  else if (isBase) $("est-delta").replaceChildren(el("div", { class: "delta-base", text: `This is the ${baseName} baseline. Turn on a tier to compare.` }));
   else {
     const dt = r.ttft.mean / b.ttft.mean - 1;
-    const dc = r.priced && b.priced ? r.usdPer1kRequests / b.usdPer1kRequests - 1 : null;
+    const cc = capEst?.cap, cb = capEst?.base;
+    const dc = cc?.priced && cb?.priced ? cc.usdPer1k / cb.usdPer1k - 1 : null;
     const word = (x, less, more, same) => (Math.abs(x) < 0.005 ? same : `${Math.abs(x * 100).toFixed(0)}% ${x < 0 ? less : more}`);
     $("est-delta").replaceChildren(
-      el("span", { class: dt < -0.005 ? "better" : dt > 0.005 ? "worse" : "", text: word(dt, "faster", "slower", "about as fast") }),
-      dc == null ? "" : ", ",
-      dc == null ? "" : el("span", { class: dc < -0.005 ? "better" : dc > 0.005 ? "worse" : "", text: word(dc, "cheaper", "more expensive", "about the same cost") }),
-      ` vs ${baseName} (${secs(b.ttft.mean)}${b.priced ? `, ${usd(b.usdPer1kRequests)}` : ""})`);
+      el("div", { class: "delta-main" },
+        el("span", { class: dt < -0.005 ? "better" : dt > 0.005 ? "worse" : "", text: word(dt, "lower TTFT", "higher TTFT", "about the same TTFT") }),
+        dc == null ? "" : " · ",
+        dc == null ? "" : el("span", { class: dc < -0.005 ? "better" : dc > 0.005 ? "worse" : "", text: word(dc, "cheaper", "more expensive", "about the same cost") })),
+      el("div", { class: "delta-base", text: `vs the ${baseName} baseline: ${secs(b.ttft.mean)}${cb?.priced ? ` · ${usd(cb.usdPer1k)} at ${pctf(TARGET_BUSY)} busy` : ""}` }));
   }
   if (overloaded) alert(`Overloaded: prefill needs ${pctf(r.utilization)} of the GPUs' time, so the queue grows for as long as the load lasts and TTFT has no steady value. Add nodes or GPUs, or cache more.`, true);
   else if (r.utilization > 0.8) alert(`Prefill GPUs are ${pctf(r.utilization)} busy: waiting in the queue adds ${secs(r.wait)} on average.`);
   if (!r.priced) alert(`No price for ${[gpuOf(sim.gpu), sim.decode ? gpuOf(sim.decodeGpu) : null].filter((g) => g && g.usd_per_hour == null).map(gpuShort).filter((x, i, a) => a.indexOf(x) === i).join(" and ") || "a tier"}: set one in Methods & data to see cost.`);
+  const pr = r.price;
+  if (pr.cachedInput != null && pr.input != null && pr.cachedInput > pr.input)
+    alert("A cached token costs more than computing it here: the tiers' storage and load time outweigh the compute they save.");
   $("est-alerts").replaceChildren(...alerts);
 
-  const pr = r.price;
   const priceCell = (x, label, title) => el("div", { title }, el("b", { text: x == null ? "–" : usd(x) }), el("span", { text: label }));
   $("est-prices").replaceChildren(
     priceCell(pr.input, "input", "Prompt tokens recomputed: their share of the prefill GPUs (idle time included)."),
     priceCell(pr.cachedInput, "cached input", "Prompt tokens served from a cache tier: their share of the prefill GPUs (load time) plus storage."),
     priceCell(pr.output, sim.decode ? "output" : "output (decode off)", "Generated tokens: the decode GPUs."));
-  if (pr.cachedInput != null && pr.input != null && pr.cachedInput > pr.input)
-    $("est-prices").append(el("p", { class: "note warn", text: "A cached token costs more than computing it here: the tiers' storage and load time outweigh the compute they save." }));
   const order = r.order;
   $("est-bar").replaceChildren(...order.filter((k) => r.share[k] > 0.0005).map((k) => el("span", { style: `width:${(r.share[k] * 100).toFixed(2)}%;background:var(${TIER_COLOR[k]})`, title: `${TIER_NAME(k, sim)}: ${pctf(r.share[k], 1)}` })));
   $("est-legend").replaceChildren(...order.map((k) => el("li", {}, el("i", { style: `background:var(${TIER_COLOR[k]})` }), el("span", { text: TIER_NAME(k, sim) }), el("b", { text: pctf(r.share[k], r.share[k] < 0.1 && r.share[k] > 0 ? 1 : 0) }))));
@@ -690,12 +1109,31 @@ function bindDiagram() {
 let chart = null;
 let chartPending = false;
 let selected = null;
+let mapMetric = "cap"; // the map's cost: "cap" (at the target busy share) or "load" (at your load)
+const metricNow = () => (source === "synthetic" ? mapMetric : "load"); // a trace has its own rate: no busy-share cost
+const metricText = () => (metricNow() === "cap" ? `at ${pctf(TARGET_BUSY)} busy` : "at your load");
+// set a point's x to the cost the map shows, keeping both
+function withMetric(p) {
+  if (p.xLoad === undefined) p.xLoad = p.x;
+  p.x = metricNow() === "cap" ? p.capX ?? null : p.xLoad;
+  return p;
+}
 
 const currentPoint = () => {
   const r = estimate?.current;
   if (!r || r.error) return null;
-  return { series: "you", x: r.usdPer1kRequests, y: r.ttft.mean, p90: r.ttft.p90, priced: r.priced, overloaded: r.utilization >= 1, share: r.share, order: r.order, over: {} };
+  const capX = capEst?.cap?.priced ? capEst.cap.usdPer1k : null;
+  return withMetric({ series: "you", x: r.usdPer1kRequests, capX, y: r.ttft.mean, p90: r.ttft.p90, priced: r.priced, overloaded: r.utilization >= 1, share: r.share, order: r.order, over: {} });
 };
+
+function renderMapMetric() {
+  const off = source !== "synthetic";
+  $("map-metric").replaceChildren(...[["cap", `at ${pctf(TARGET_BUSY)} busy`], ["load", "at your load"]].map(([k, t]) => el("button", {
+    type: "button", role: "radio", "aria-checked": String(metricNow() === k), text: t, disabled: off && k === "cap",
+    title: k === "cap" ? "Each setup loaded until its prefill GPUs are busy 60% of the time: what its headroom is worth" : "Your cluster at your request rate: the bill, where every GPU is paid for anyway",
+    onclick: () => { if (mapMetric === k) return; mapMetric = k; for (const p of points) withMetric(p); for (const p of ghost ?? []) withMetric(p); selected = null; renderDrawer(); updateFrontier(); renderMapMetric(); scheduleChart(); },
+  })));
+}
 const plottable = (p) => p && !p.error && p.priced && !p.overloaded && Number.isFinite(p.x) && Number.isFinite(p.y);
 
 function updateFrontier() {
@@ -733,7 +1171,8 @@ function renderExcluded() {
   $("map-excluded").textContent = bad.length ? `Not plotted: ${bad.map((p) => `${pointLabel(p)} (${why(p)})`).join("; ")}.` : "";
 }
 
-// direct labels for the frontier, your setup and the curves' points
+// direct labels for the frontier, your setup and the curves' points. Each label takes the first spot around its point
+// that overlaps no point and no label already placed ("You" first); a label with no free spot is left to the tooltip.
 const labelPlugin = {
   id: "kvtbLabels",
   afterDatasetsDraw(c) {
@@ -741,24 +1180,46 @@ const labelPlugin = {
     ctx.save();
     ctx.font = `12px ${getComputedStyle(document.body).fontFamily}`;
     ctx.fillStyle = cssVar("--text-2");
+    ctx.textBaseline = "middle";
     const narrow = c.width < 520;
+    const area = c.chartArea;
+    const H = 14, GAP = 9;
+    const taken = []; // boxes {l, t, r, b}
+    const hits = (a) => taken.some((o) => a.l < o.r && a.r > o.l && a.t < o.b && a.b > o.t);
+    const inside = (a) => a.l >= area.left && a.r <= area.right + 8 && a.t >= area.top - 4 && a.b <= area.bottom;
+    const wanted = [];
     c.data.datasets.forEach((ds, i) => {
-      if (!ds.labels || !c.isDatasetVisible(i)) return;
+      if (!c.isDatasetVisible(i)) return;
       c.getDatasetMeta(i).data.forEach((pt, j) => {
-        const text = ds.labels[j];
-        if (!text || (narrow && ds.labelWide)) return;
-        const right = pt.x < c.chartArea.right - 120;
-        ctx.textAlign = right ? "left" : "right";
-        if (ds.labelBelow) { ctx.textAlign = "center"; ctx.fillText(text, pt.x, pt.y + 26); }
-        else ctx.fillText(text, pt.x + (right ? 10 : -10), pt.y - 8);
+        const r = (ds.pointRadius ?? 4) + 2;
+        taken.push({ l: pt.x - r, t: pt.y - r, r: pt.x + r, b: pt.y + r });
+        const text = ds.labels?.[j];
+        if (text && !(narrow && ds.labelWide)) wanted.push({ pt, text, below: !!ds.labelBelow, r });
       });
     });
+    wanted.sort((a, b) => b.below - a.below);
+    for (const { pt, text, below, r } of wanted) {
+      const w = ctx.measureText(text).width;
+      const off = r + GAP - 4;
+      // [x of the box's left edge, y of its middle]
+      const spots = below
+        ? [[pt.x - w / 2, pt.y + off + H / 2], [pt.x - w / 2, pt.y - off - H / 2], [pt.x + off, pt.y], [pt.x - off - w, pt.y]]
+        : [[pt.x + off, pt.y - H / 2 - 2], [pt.x - off - w, pt.y - H / 2 - 2], [pt.x + off, pt.y + H / 2 + 2], [pt.x - off - w, pt.y + H / 2 + 2], [pt.x + off, pt.y], [pt.x - off - w, pt.y], [pt.x - w / 2, pt.y - off - H / 2], [pt.x - w / 2, pt.y + off + H / 2]];
+      for (const [x, y] of spots) {
+        const box = { l: x - 2, t: y - H / 2, r: x + w + 2, b: y + H / 2 };
+        if (!inside(box) || hits(box)) continue;
+        taken.push(box);
+        ctx.textAlign = "left";
+        ctx.fillText(text, x, y);
+        break;
+      }
+    }
     ctx.restore();
   },
 };
 
 function drawMap() {
-  if (!window.Chart) return;
+  if (!window.Chart || $("pane-map").hidden) return;
   const C = window.Chart;
   C.defaults.color = cssVar("--text-2");
   C.defaults.borderColor = cssVar("--grid");
@@ -808,20 +1269,20 @@ function drawMap() {
   const xr = span(withGhost("x")), yr = span(withGhost("y"));
   const inView = (p) => p.x >= xr.min && p.x <= xr.max && p.y >= yr.min && p.y <= yr.max;
   if (ghost?.length) datasets.push({ label: `Frontier before your last change${ghost.some(inView) ? "" : " (off the chart)"}`, data: ghost.map(xy), showLine: true, borderColor: cssVar("--ghost"), borderDash: [6, 4], borderWidth: 1.5, pointRadius: 0, pointHitRadius: 0, order: 6 });
-  // on a log axis, label only 1-2-5 steps
-  const tick = (v, f) => { if (!wideRange) return f(v); const m = v / 10 ** Math.floor(Math.log10(v)); return [1, 2, 5].some((k) => Math.abs(m - k) < 1e-6) ? f(v) : ""; };
+  // on a log axis, label only 1-2-5 steps, unless the range is narrow enough that every step fits
+  const tick = (v, f, r) => { if (!wideRange || r.max / r.min < 5) return f(v); const m = v / 10 ** Math.floor(Math.log10(v)); return [1, 2, 5].some((k) => Math.abs(m - k) < 1e-6) ? f(v) : ""; };
   const options = {
     layout: { padding: { right: 8 } },
     maintainAspectRatio: false, animation: false, parsing: false,
     interaction: { mode: "nearest", intersect: true },
     scales: {
       // node counts and other GPUs span orders of magnitude: log axes then
-      x: { type: wideRange ? "logarithmic" : "linear", title: { display: true, text: `$ per 1,000 requests${wideRange ? " (log)" : ""}` }, grid: { color: cssVar("--grid") }, ...xr, ticks: { maxTicksLimit: 8, callback: (v) => tick(v, usd) } },
-      y: { type: wideRange ? "logarithmic" : "linear", title: { display: true, text: `mean time to first token${wideRange ? " (log)" : ""}` }, grid: { color: cssVar("--grid") }, ...yr, ticks: { maxTicksLimit: 8, callback: (v) => tick(v, secs) } },
+      x: { type: wideRange ? "logarithmic" : "linear", title: { display: true, text: `$ per 1,000 requests ${metricText()}${wideRange ? " (log)" : ""}` }, grid: { color: cssVar("--grid") }, ...xr, ticks: { maxTicksLimit: 8, callback: (v) => tick(v, usd, xr) } },
+      y: { type: wideRange ? "logarithmic" : "linear", title: { display: true, text: `mean time to first token${wideRange ? " (log)" : ""}` }, grid: { color: cssVar("--grid") }, ...yr, ticks: { maxTicksLimit: 8, callback: (v) => tick(v, secs, yr) } },
     },
     plugins: {
       legend: { position: "bottom", labels: { usePointStyle: true, boxWidth: 8, boxHeight: 8, padding: 14 } },
-      tooltip: { filter: (_, i) => i === 0, callbacks: { label: (t) => { const p = t.raw.p; return [pointLabel(p), `TTFT ${secs(p.y)} (p90 ${secs(p.p90)}) · ${usd(p.x)} per 1k requests`]; } } },
+      tooltip: { filter: (_, i) => i === 0, callbacks: { label: (t) => { const p = t.raw.p; return [pointLabel(p), `TTFT ${secs(p.y)} (p90 ${secs(p.p90)}) · ${usd(p.x)} per 1k requests ${metricText()}`]; } } },
     },
     onClick: (_, els) => { if (els.length) { selected = els[0].element.$context.raw.p; renderDrawer(); } },
     onHover: (ev, els) => { ev.native.target.style.cursor = els.length ? "pointer" : "default"; },
@@ -835,7 +1296,11 @@ function drawMap() {
 function renderDrawer() {
   const p = selected;
   const box = $("map-drawer");
-  if (!p) { box.replaceChildren(el("p", { class: "hint", text: "Click a point to see that setup." })); return; }
+  box.hidden = !p;
+  $("map-wrap").classList.toggle("open", !!p);
+  $("map-tip").hidden = !!p;
+  if (!p) { box.replaceChildren(); return; }
+  const close = () => { selected = null; renderDrawer(); $("map-chart").focus?.(); };
   const apply = () => {
     const sim = cfg.sim;
     if (p.series === "gpus") { sim.gpu = p.over.gpu; sim.decodeGpu = p.over.decodeGpu; }
@@ -846,8 +1311,8 @@ function renderDrawer() {
     changed();
   };
   box.replaceChildren(
-    el("h3", { text: pointLabel(p) }),
-    el("div", { class: "nums" }, el("div", {}, el("b", { text: secs(p.y) }), el("span", { text: "mean TTFT" })), el("div", {}, el("b", { text: usd(p.x) }), el("span", { text: "per 1k requests" }))),
+    el("div", { class: "drawer-head" }, el("h3", { text: pointLabel(p) }), el("button", { type: "button", text: "×", "aria-label": "Close", title: "Close", onclick: close })),
+    el("div", { class: "nums" }, el("div", {}, el("b", { text: secs(p.y) }), el("span", { text: "mean TTFT" })), el("div", {}, el("b", { text: usd(p.x) }), el("span", { text: `per 1k requests ${metricText()}` }))),
     el("p", { class: "hint", text: `p90 TTFT ${secs(p.p90)}` }),
     el("div", { class: "served" }, (p.order ?? []).filter((k) => p.share[k] > 0.0005).map((k) => el("span", { style: `width:${(p.share[k] * 100).toFixed(2)}%;background:var(${TIER_COLOR[k]})`, title: `${k}: ${pctf(p.share[k], 1)}` }))),
     el("ul", { class: "served-legend" }, (p.order ?? []).map((k) => el("li", {}, el("i", { style: `background:var(${TIER_COLOR[k]})` }), el("span", { text: TIER_NAME(k, { ...cfg.sim, ...p.over }) }), el("b", { text: pctf(p.share[k]) })))),
@@ -875,7 +1340,12 @@ function redrawCharts() {
   if (!cfg) return;
   chart?.destroy();
   chart = null;
+  sensChart?.destroy();
+  sensChart = null;
+  for (const k of Object.keys(modelsCharts)) { modelsCharts[k].destroy(); delete modelsCharts[k]; }
   scheduleChart();
+  drawSens();
+  drawModels();
   drawFitChart();
 }
 
@@ -887,9 +1357,14 @@ function syncLastPick() {
   if (cfg.sim.cpuGiB > 0) lastPick.cpuGiB = cfg.sim.cpuGiB;
 }
 
+// the bar shows while the estimate is off screen; hidden, it leaves the keyboard and screen readers alone
 function bindMinibar() {
   const bar = $("minibar");
-  new IntersectionObserver(([e]) => bar.classList.toggle("hide", e.isIntersecting), { threshold: 0.15 }).observe($("estimate"));
+  new IntersectionObserver(([e]) => {
+    bar.classList.toggle("hide", e.isIntersecting);
+    bar.inert = e.isIntersecting;
+    bar.setAttribute("aria-hidden", String(e.isIntersecting));
+  }, { threshold: 0.15 }).observe($("estimate"));
 }
 
 async function main() {
@@ -912,14 +1387,24 @@ async function main() {
   renderConfig();
   renderMethods();
   renderChips();
+  renderMapMetric();
+  document.fonts?.ready.then(redrawCharts); // canvas text keeps the fallback font until redrawn
   bindDiagram();
   bindMinibar();
   renderDiagramNow();
   worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
   worker.onmessage = onWorker;
   worker.onerror = (e) => { $("map-status").textContent = `Simulation failed: ${e.message}`; };
+  labWorker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
+  labWorker.onmessage = onLab;
+  labWorker.onerror = (e) => { $("sens-status").textContent = `Simulation failed: ${e.message}`; };
+  modelsWorker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
+  modelsWorker.onmessage = onModels;
+  modelsWorker.onerror = (e) => { modelsRunning = false; $("models-status").textContent = `Simulation failed: ${e.message}`; };
+  bindTabs();
   run();
-  if (!window.Chart) window.addEventListener("load", () => { scheduleChart(); drawFitChart(); });
+  runSensSoon(0);
+  if (!window.Chart) window.addEventListener("load", () => { scheduleChart(); drawSens(); drawFitChart(); });
 }
 
 main();
