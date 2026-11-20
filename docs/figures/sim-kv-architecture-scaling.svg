@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 560" width="980" height="560">
+<rect width="980" height="560" rx="12" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="88" y="34" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="18" font-weight="700" fill="#0f172a">KV Cache Scaling Across Classic &amp; 2026 Frontier Architectures (0 to 128K Tokens)</text>
+<text x="88" y="55" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12.5" fill="#475569">Comparing GQA, SWA, MLA, Gated DeltaNet (Qwen3.8), KDA+MLA (Kimi K3), and CSA2 FP4 (DeepSeek-V4.1)</text>
+<rect x="88" y="76" width="607" height="416" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"/>
+<line x1="88.0" y1="76" x2="88.0" y2="492" stroke="#e2e8f0" stroke-dasharray="4,4"/>
+<text x="88.0" y="512" text-anchor="middle" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#334155">0</text>
+<line x1="163.9" y1="76" x2="163.9" y2="492" stroke="#e2e8f0" stroke-dasharray="4,4"/>
+<text x="163.9" y="512" text-anchor="middle" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#334155">16K</text>
+<line x1="239.8" y1="76" x2="239.8" y2="492" stroke="#e2e8f0" stroke-dasharray="4,4"/>
+<text x="239.8" y="512" text-anchor="middle" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#334155">32K</text>
+<line x1="391.5" y1="76" x2="391.5" y2="492" stroke="#e2e8f0" stroke-dasharray="4,4"/>
+<text x="391.5" y="512" text-anchor="middle" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#334155">64K</text>
+<line x1="543.2" y1="76" x2="543.2" y2="492" stroke="#e2e8f0" stroke-dasharray="4,4"/>
+<text x="543.2" y="512" text-anchor="middle" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#334155">96K</text>
+<line x1="695.0" y1="76" x2="695.0" y2="492" stroke="#e2e8f0" stroke-dasharray="4,4"/>
+<text x="695.0" y="512" text-anchor="middle" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#334155">128K</text>
+<line x1="88" y1="492.0" x2="695" y2="492.0" stroke="#e2e8f0" stroke-dasharray="4,4"/>
+<text x="78" y="496.0" text-anchor="end" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#334155">0 GiB</text>
+<line x1="88" y1="397.5" x2="695" y2="397.5" stroke="#e2e8f0" stroke-dasharray="4,4"/>
+<text x="78" y="401.5" text-anchor="end" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#334155">10 GiB</text>
+<line x1="88" y1="302.9" x2="695" y2="302.9" stroke="#e2e8f0" stroke-dasharray="4,4"/>
+<text x="78" y="306.9" text-anchor="end" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#334155">20 GiB</text>
+<line x1="88" y1="208.4" x2="695" y2="208.4" stroke="#e2e8f0" stroke-dasharray="4,4"/>
+<text x="78" y="212.4" text-anchor="end" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#334155">30 GiB</text>
+<line x1="88" y1="113.8" x2="695" y2="113.8" stroke="#e2e8f0" stroke-dasharray="4,4"/>
+<text x="78" y="117.8" text-anchor="end" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#334155">40 GiB</text>
+<text x="391.5" y="542" text-anchor="middle" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#0f172a">Sequence Context Length (Tokens)</text>
+<text transform="translate(24,284.0) rotate(-90)" text-anchor="middle" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#0f172a">Single-Request State Size (GiB)</text>
+<polyline fill="none" stroke="#dc2626" stroke-width="2.8" points="88.0,492.0 97.5,486.1 107.0,480.2 125.9,468.4 163.9,444.7 239.8,397.5 391.5,302.9 543.2,208.4 695.0,113.8"/>
+<circle cx="107.0" cy="480.2" r="3.2" fill="#dc2626"/>
+<circle cx="239.8" cy="397.5" r="3.2" fill="#dc2626"/>
+<circle cx="391.5" cy="302.9" r="3.2" fill="#dc2626"/>
+<circle cx="695.0" cy="113.8" r="3.2" fill="#dc2626"/>
+<line x1="709" y1="90" x2="729" y2="90" stroke="#dc2626" stroke-width="3.2"/>
+<circle cx="719" cy="90" r="3.2" fill="#dc2626"/>
+<text x="735" y="93" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#0f172a">Llama-3.1-70B (GQA 80L)</text>
+<text x="735" y="107" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="9.5" fill="#475569">320 KiB/tok → 40.0 GiB</text>
+<polyline fill="none" stroke="#ea580c" stroke-width="2.8" points="88.0,492.0 97.5,487.3 107.0,482.5 125.9,473.1 163.9,454.2 239.8,416.4 391.5,340.7 543.2,265.1 695.0,189.5"/>
+<circle cx="107.0" cy="482.5" r="3.2" fill="#ea580c"/>
+<circle cx="239.8" cy="416.4" r="3.2" fill="#ea580c"/>
+<circle cx="391.5" cy="340.7" r="3.2" fill="#ea580c"/>
+<circle cx="695.0" cy="189.5" r="3.2" fill="#ea580c"/>
+<line x1="709" y1="141" x2="729" y2="141" stroke="#ea580c" stroke-width="3.2"/>
+<circle cx="719" cy="141" r="3.2" fill="#ea580c"/>
+<text x="735" y="144" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#0f172a">Qwen3-32B (GQA 64L)</text>
+<text x="735" y="158" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="9.5" fill="#475569">256 KiB/tok → 32.0 GiB</text>
+<polyline fill="none" stroke="#7c3aed" stroke-width="2.8" points="88.0,492.0 97.5,485.2 107.0,478.4 125.9,471.6 163.9,458.0 239.8,430.8 391.5,376.5 543.2,322.1 695.0,267.8"/>
+<circle cx="107.0" cy="478.4" r="3.2" fill="#7c3aed"/>
+<circle cx="239.8" cy="430.8" r="3.2" fill="#7c3aed"/>
+<circle cx="391.5" cy="376.5" r="3.2" fill="#7c3aed"/>
+<circle cx="695.0" cy="267.8" r="3.2" fill="#7c3aed"/>
+<line x1="709" y1="192" x2="729" y2="192" stroke="#7c3aed" stroke-width="3.2"/>
+<circle cx="719" cy="192" r="3.2" fill="#7c3aed"/>
+<text x="735" y="195" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#0f172a">Gemma-2-27B (50% SWA + GQA)</text>
+<text x="735" y="209" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="9.5" fill="#475569">368→184 KiB/tok → 23.7 GiB</text>
+<polyline fill="none" stroke="#d97706" stroke-width="2.8" points="88.0,492.0 97.5,488.5 107.0,485.1 125.9,478.1 163.9,464.2 239.8,436.5 391.5,380.9 543.2,325.4 695.0,269.8"/>
+<circle cx="107.0" cy="485.1" r="3.2" fill="#d97706"/>
+<circle cx="239.8" cy="436.5" r="3.2" fill="#d97706"/>
+<circle cx="391.5" cy="380.9" r="3.2" fill="#d97706"/>
+<circle cx="695.0" cy="269.8" r="3.2" fill="#d97706"/>
+<line x1="709" y1="243" x2="729" y2="243" stroke="#d97706" stroke-width="3.2"/>
+<circle cx="719" cy="243" r="3.2" fill="#d97706"/>
+<text x="735" y="246" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#0f172a">Qwen3-235B-A22B (16:1 GQA)</text>
+<text x="735" y="260" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="9.5" fill="#475569">188 KiB/tok → 23.5 GiB</text>
+<polyline fill="none" stroke="#2563eb" stroke-width="2.8" points="88.0,492.0 97.5,490.7 107.0,489.5 125.9,486.9 163.9,481.9 239.8,471.7 391.5,451.4 543.2,431.2 695.0,410.9"/>
+<circle cx="107.0" cy="489.5" r="3.2" fill="#2563eb"/>
+<circle cx="239.8" cy="471.7" r="3.2" fill="#2563eb"/>
+<circle cx="391.5" cy="451.4" r="3.2" fill="#2563eb"/>
+<circle cx="695.0" cy="410.9" r="3.2" fill="#2563eb"/>
+<line x1="709" y1="294" x2="729" y2="294" stroke="#2563eb" stroke-width="3.2"/>
+<circle cx="719" cy="294" r="3.2" fill="#2563eb"/>
+<text x="735" y="297" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#0f172a">DeepSeek-V3 / Kimi-K2 (MLA)</text>
+<text x="735" y="311" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="9.5" fill="#475569">68.6 KiB/tok → 8.58 GiB</text>
+<polyline fill="none" stroke="#0284c7" stroke-width="2.8" points="88.0,492.0 97.5,489.0 107.0,487.9 125.9,485.5 163.9,480.8 239.8,471.3 391.5,452.4 543.2,433.5 695.0,414.6"/>
+<circle cx="107.0" cy="487.9" r="3.2" fill="#0284c7"/>
+<circle cx="239.8" cy="471.3" r="3.2" fill="#0284c7"/>
+<circle cx="391.5" cy="452.4" r="3.2" fill="#0284c7"/>
+<circle cx="695.0" cy="414.6" r="3.2" fill="#0284c7"/>
+<line x1="709" y1="345" x2="729" y2="345" stroke="#0284c7" stroke-width="3.2"/>
+<circle cx="719" cy="345" r="3.2" fill="#0284c7"/>
+<text x="735" y="348" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#0f172a">Qwen3.8-27B (3:1 GDN+Attn)</text>
+<text x="735" y="362" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="9.5" fill="#475569">64 KiB/tok + O(1) → 8.19 GiB</text>
+<polyline fill="none" stroke="#059669" stroke-width="2.8" points="88.0,492.0 97.5,486.0 107.0,485.6 125.9,484.7 163.9,482.9 239.8,479.4 391.5,472.3 543.2,465.2 695.0,458.1"/>
+<circle cx="107.0" cy="485.6" r="3.2" fill="#059669"/>
+<circle cx="239.8" cy="479.4" r="3.2" fill="#059669"/>
+<circle cx="391.5" cy="472.3" r="3.2" fill="#059669"/>
+<circle cx="695.0" cy="458.1" r="3.2" fill="#059669"/>
+<line x1="709" y1="396" x2="729" y2="396" stroke="#059669" stroke-width="3.2"/>
+<circle cx="719" cy="396" r="3.2" fill="#059669"/>
+<text x="735" y="399" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#0f172a">Kimi K3 2.8T (69 KDA + 24 MLA)</text>
+<text x="735" y="413" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="9.5" fill="#475569">24 KiB/tok + 626MB → 3.58 GiB</text>
+<polyline fill="none" stroke="#047857" stroke-width="2.8" stroke-dasharray="5,3" points="88.0,492.0 97.5,492.0 107.0,492.0 125.9,491.9 163.9,491.9 239.8,491.7 391.5,491.5 543.2,491.2 695.0,491.0"/>
+<circle cx="107.0" cy="492.0" r="3.2" fill="#047857"/>
+<circle cx="239.8" cy="491.7" r="3.2" fill="#047857"/>
+<circle cx="391.5" cy="491.5" r="3.2" fill="#047857"/>
+<circle cx="695.0" cy="491.0" r="3.2" fill="#047857"/>
+<line x1="709" y1="447" x2="729" y2="447" stroke="#047857" stroke-width="3.2" stroke-dasharray="5,3"/>
+<circle cx="719" cy="447" r="3.2" fill="#047857"/>
+<text x="735" y="450" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#0f172a">DeepSeek-V4.1-Flash (CSA2 FP4)</text>
+<text x="735" y="464" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="9.5" fill="#475569">0.87 KiB/tok → 0.11 GiB (!)</text>
+<rect x="88" y="76" width="607" height="416" fill="none" stroke="#94a3b8" stroke-width="1.2"/>
+</svg>

@@ -120,3 +120,41 @@ test("serving precision: FP8 halves bf16 weights and KV, FP4 is 4.5 bits a weigh
   assert.equal(prefillTflops(f4, { tflops_bf16: 1, tflops_fp8: 2, tflops_fp4: 4 }), 2);
   assert.equal(prefillTflops(withPrecision(g, "fp8"), { tflops_bf16: 1, tflops_fp8: 2, tflops_fp4: 4 }), 2);
 });
+
+test("DP-attention replicates active dense weights, GPUDirect RDMA skips host bounce, NVMe pipelines chunks, and NVL72 uses NVLink", async () => {
+  const { denseWeightBytes, effectiveLink, instanceWeightBytes, prefixBytes, served, timing } = await import("../model.js");
+  const { MODELS, VARIANTS } = await import("../presets.js");
+
+  // 1. Kimi K3 uses mla_use_nope (24 * 512 * 2 = 24,576 B/tok BF16) and replicates active dense weights under DP.
+  const kimi = MODELS["kimi-k3"];
+  assert.equal(kimi.kv_bytes_per_token, 24 * 512 * 2);
+  const kimiDp = served(kimi, { precision: "fp8", tp: 8, attention: "dp" });
+  const kimiTp = served(kimi, { precision: "fp8", tp: 8, attention: "tp" });
+  assert.ok(instanceWeightBytes(kimiDp, 8) > instanceWeightBytes(kimiTp, 8) + 300e9);
+
+  // 2. DeepSeek V4.1 Flash: excludes 196B Engram lookup table from active dense weights; FP4 gives 890 B/tok; RTX PRO 6000 gets 528B Blackwell row.
+  const ds = MODELS["deepseek-v4.1-flash"];
+  assert.ok(denseWeightBytes(ds) < 20e9, `active dense weights exclude Engram table: ${denseWeightBytes(ds)}`);
+  const rtx = GPUS.find((g) => g.id === "rtx-pro-6000");
+  assert.equal(served(ds, { precision: "fp4", tp: 1, attention: "dp", gpu: rtx }).kv_bytes_per_token, 890);
+  assert.equal(served(ds, { precision: "fp8", tp: 1, attention: "dp", gpu: rtx }).kv_bytes_per_token, 1650);
+
+  // 3. Local Gen5 NVMe pipelines host DMA (~11.5 GB/s, not 9.48 GB/s); GPUDirect RDMA skips host PCIe bounce (~35.5 GB/s, not 21.3 GB/s).
+  const m = S1.models["qwen3-vl-32b"];
+  const h100 = GPUS.find((g) => g.id === "h100");
+  const T = timing(m, h100, SOFTWARE, 1);
+  const bytes = prefixBytes(m, 32768);
+  const nvme = VARIANTS.find((v) => v.id === "fs-nvme-gen5");
+  const ndr = VARIANTS.find((v) => v.id === "p2p-ib-ndr");
+  assert.ok((bytes / 1e9) / T.loadFor(nvme)(32768) > 11.2, "pipelined NVMe load matches py-kvcache 11.2-12.0 GB/s");
+  assert.ok((bytes / 1e9) / T.loadFor(ndr)(32768) > 34.5, "GPUDirect RDMA skips redundant host PCIe copy");
+
+  // 4. GB200 and VR200 NVL72 upgrade intra-rack RDMA links to rack-scale NVLink 5/6, while B200 (8-GPU domain) does not cross nodes over NVLink.
+  const gb200 = GPUS.find((g) => g.id === "gb200");
+  const vr200 = GPUS.find((g) => g.id === "vr200");
+  const b200 = GPUS.find((g) => g.id === "b200");
+  assert.ok(variantBandwidth(effectiveLink(ndr, gb200, 4, 8)) > 600, "GB200 NVL72 intra-rack uses NVLink 5");
+  assert.ok(variantBandwidth(effectiveLink(ndr, vr200, 8, 8)) > 1200, "VR200 NVL72 intra-rack uses NVLink 6");
+  assert.equal(effectiveLink(ndr, gb200, 10, 8), ndr, "80 GPUs > 72-GPU NVL72 domain falls back to scale-out RDMA");
+  assert.equal(effectiveLink(ndr, b200, 2, 8), ndr, "HGX B200 8-GPU domain never spans separate nodes over NVLink");
+});

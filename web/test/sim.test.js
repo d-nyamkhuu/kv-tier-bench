@@ -595,3 +595,35 @@ test("S3 bucket size limit and S3-only object retention bound occupancy and stor
   assert.equal(rTtl.tokens.gpu, 100); // GPU still had it at t=30
   assert.equal(snap.shared.usedGiB, 0); // S3 expired it after 10s
 });
+
+test("batched prefill serializes concurrent CPU->GPU loads on the same worker's PCIe hostLane, while sibling workers run in parallel", () => {
+  const hostLimited = { ...base, gpu: { ...GPU, host_gib_s: gib(100), mem_bw_tb_s: 1, mbu: 1 }, gpuGiB: 0, cpuGiB: 1, prefillBatchTokens: 8192 };
+  // Request 0 warms CPU cache; requests 1 & 2 arrive together at t=5 and both hit CPU (100 bytes @ 100 B/s = 1.0 s PCIe transfer each).
+  const reqs = (c1, c2) => [
+    { t: 0, conv: 0, n: 100, hashes: ["p"] },
+    { t: 5, conv: c1, n: 100, hashes: ["p"] },
+    { t: 5, conv: c2, n: 100, hashes: ["p"] },
+  ];
+  const measure = (cluster, c1, c2) => {
+    const loads = [];
+    simulate({ requests: reqs(c1, c2) }, { ...hostLimited, routing: "sticky", cluster },
+      (req, _ttft, k, _B, load) => { if (req.t === 5) { assert.equal(k.cpu, 1); loads.push(load); } });
+    return loads.sort((a, b) => a - b);
+  };
+  const sameGpu = measure({ nodes: 1, gpusPerNode: 1, tp: 1 }, 0, 0);
+  const twoGpus = measure({ nodes: 1, gpusPerNode: 2, tp: 1 }, 0, 1);
+  assert.ok(Math.abs(sameGpu[1] - sameGpu[0] - 1) < 1e-9, `same GPU PCIe link queues second H2D transfer: ${sameGpu}`);
+  assert.ok(Math.abs(twoGpus[1] - twoGpus[0]) < 1e-9, `distinct GPUs run PCIe H2D transfers in parallel: ${twoGpus}`);
+});
+
+test("skipSlowLoads bypasses slow storage tiers when GPU recomputation is faster", () => {
+  // Toy GPU recomputes 1000 tokens in 1.0 s; slow disk takes 0.48 + 5.0 = 5.48 s.
+  const verySlowDisk = { family: "fs", bw_gib_s: 200 / GIB, latency_s: 0.48, capacity_gib: gib(10000) };
+  const work = { blockTokens: null, requests: [{ t: 0, n: 1000, hashes: Array.from({ length: 10 }, (_, j) => `h${j}`) },
+    { t: 20, n: 1000, hashes: Array.from({ length: 10 }, (_, j) => `h${j}`) }] };
+  const stock = simulate(work, { ...base, gpuGiB: 0, cpuGiB: 0, disk: verySlowDisk, skipSlowLoads: false });
+  const smart = simulate(work, { ...base, gpuGiB: 0, cpuGiB: 0, disk: verySlowDisk, skipSlowLoads: true });
+  assert.equal(stock.tokens.disk, 1000);
+  assert.equal(smart.tokens.disk, 0);
+  assert.ok(smart.ttft.p90 < stock.ttft.p90 / 4, `cost-aware guard avoids 5.5s disk stall: ${smart.ttft.p90} vs ${stock.ttft.p90}`);
+});

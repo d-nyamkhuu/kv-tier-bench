@@ -112,11 +112,21 @@ export function deriveArch(spec) {
 function moeShape(spec) {
   const decodeParams = spec.decode_active_params ?? spec.active_params ?? spec.total_params;
   const e = spec.experts;
-  if (!e) return { decode_params: decodeParams, expert_share: 0, expert_pick: 0, experts_per_token: 0 };
+  if (!e) {
+    return {
+      decode_params: decodeParams, dense_params: decodeParams, dense_weights_bytes: spec.weights_bytes,
+      expert_share: 0, expert_pick: 0, experts_per_token: 0,
+    };
+  }
   const pick = e.per_token / e.routed;
   const dense = Math.max(0, decodeParams - pick * e.params);
-  const share = e.bytes_per_param ? (e.params * e.bytes_per_param) / spec.weights_bytes : e.params / (e.params + dense);
-  return { decode_params: decodeParams, expert_share: Math.min(1, share), expert_pick: pick, experts_per_token: e.per_token };
+  const share = Math.min(1, e.bytes_per_param ? (e.params * e.bytes_per_param) / spec.weights_bytes : e.params / (e.params + dense));
+  const elemBytes = spec.compute_dtype === "fp8" ? 1 : spec.compute_dtype === "fp4" ? 4.5 / 8 : 2;
+  const denseBytes = Math.min(spec.weights_bytes * (1 - share), dense * elemBytes);
+  return {
+    decode_params: decodeParams, dense_params: dense, dense_weights_bytes: denseBytes,
+    expert_share: share, expert_pick: pick, experts_per_token: e.per_token,
+  };
 }
 
 // One Gated DeltaNet layer's state (recurrent + short convolution), as Qwen3.8's config.json describes it; the same
@@ -266,16 +276,28 @@ export const TP_SYNC_PER_LAYER_S = Object.fromEntries(Object.entries(TP_EFF.deco
 // at scale: vLLM --data-parallel-size with --enable-expert-parallel): each GPU keeps whole KV for its own requests,
 // so nothing is copied and bytes per token are TP1's.
 export function withTp(m, tp = 1, attention = "tp") {
-  const kv = attention === "dp" ? m.kv_bytes_per_token : m.kv_bytes_per_token_by_tp?.[tp] ?? m.kv_bytes_per_token;
+  const dp = attention === "dp";
+  const kv = dp ? m.kv_bytes_per_token : m.kv_bytes_per_token_by_tp?.[tp] ?? m.kv_bytes_per_token;
   const oldWin = m.state_window_bytes ?? 0;
-  const win = attention === "dp" ? oldWin : m.state_window_bytes_by_tp?.[tp] ?? oldWin;
-  return { ...m, kv_bytes_per_token: kv, state_window_bytes: win, state_bytes_per_prefix: m.state_bytes_per_prefix + (win - oldWin) };
+  const win = dp ? oldWin : m.state_window_bytes_by_tp?.[tp] ?? oldWin;
+  return {
+    ...m, attention: dp && tp > 1 ? "dp" : "tp",
+    kv_bytes_per_token: kv, state_window_bytes: win, state_bytes_per_prefix: m.state_bytes_per_prefix + (win - oldWin),
+  };
 }
+
+// Active non-expert matrix weights (excludes routed experts and O(1)-lookup Engram / n-gram tables).
+export const denseWeightBytes = (m) => m.dense_weights_bytes ?? m.weights_bytes * (1 - (m.expert_share ?? 0));
+
+// Total weight bytes held across one (tp x pp) prefill/decode instance. Under DP-attention + EP (tp > 1), routed
+// experts and sharded lookup tables are held once while active dense attention/shared-expert weights replicate per rank.
+export const instanceWeightBytes = (m, tp = 1) =>
+  m.attention === "dp" && tp > 1 ? m.weights_bytes + (tp - 1) * denseWeightBytes(m) : m.weights_bytes;
 
 // GPU KV cache of one instance (TP GPUs in each of `pp` nodes), as grid.gpu_kv_budget: memory x vLLM's
 // --gpu-memory-utilization, minus the weights (split across all its GPUs) and activations per GPU. <= 0: it does not fit.
 export function gpuKvGiB(m, gpu, sw, tp = 1, pp = 1) {
-  return pp * tp * (gpu.mem_gib * sw.gpu_memory_utilization - sw.activation_gib_per_gpu) - m.weights_bytes / GIB;
+  return pp * tp * (gpu.mem_gib * sw.gpu_memory_utilization - sw.activation_gib_per_gpu) - instanceWeightBytes(m, tp) / GIB;
 }
 
 export const perSeqBytes = (m, ctxTokens) => {
@@ -288,8 +310,8 @@ export const perSeqBytes = (m, ctxTokens) => {
 // routed experts, independently and evenly (an assumption: real routers are skewed, which touches fewer).
 export const expertCoverage = (m, batch) => (m.expert_pick ? 1 - (1 - m.expert_pick) ** Math.max(1, batch) : 1);
 
-// Weight bytes one decode step reads: the dense part, plus the experts the batch touches.
-export const decodeWeightBytes = (m, batch) => m.weights_bytes * (1 - (m.expert_share ?? 0) * (1 - expertCoverage(m, batch)));
+// Weight bytes one decode step reads: the active dense part, plus the routed experts the batch touches.
+export const decodeWeightBytes = (m, batch) => denseWeightBytes(m) + m.weights_bytes * (m.expert_share ?? 0) * expertCoverage(m, batch);
 
 // One batched decode step on a TP instance of its own (disaggregated prefill/decode). A step reads the weights it
 // needs once (an MoE batch reads the dense part and only the experts its tokens picked: one token of Kimi K3 reads
@@ -316,12 +338,31 @@ export const decodeWeightBytes = (m, batch) => m.weights_bytes * (1 - (m.expert_
 export const DEEPEP_LL_GB_S = [[8, 98, 127], [16, 63, 74], [32, 48, 53], [64, 43, 46], [128, 39, 39], [256, 39, 40]]; // [EP, dispatch, combine]
 export const NVLINK_EP_EFF = 153 / 200;
 const deepepRates = (ep) => DEEPEP_LL_GB_S.find(([n]) => n >= ep) ?? DEEPEP_LL_GB_S[DEEPEP_LL_GB_S.length - 1];
-export function decodeStep(m, gpu, batch, ctxTokens, tp = 1, { spec = null, ep = null, overlap = false, eff = TP_EFF } = {}) {
+
+// Inside a rack-scale NVLink domain (e.g., GB200 / VR200 NVL72 where nvlink_domain > 8), inter-node RDMA traffic
+// within the domain traverses the NVLink switch backplane per GPU rather than bottlenecking on scale-out NICs.
+export function effectiveLink(v, gpu, nodes = 1, gpusPerNode = 1) {
+  if (!v || !v.rdma || !gpu?.nvlink_gb_s) return v;
+  const domain = gpu.nvlink_domain ?? 1;
+  if (domain <= 8 || nodes * gpusPerNode > domain) return v;
+  return {
+    ...v,
+    bw_gib_s: ((gpu.nvlink_gb_s / 2) * NVLINK_EP_EFF * 1e9) / GIB,
+    link_gbit_s: null,
+    efficiency: 1,
+    latency_s: 0.00005,
+    rdma: true,
+    per_gpu: true,
+  };
+}
+
+export function decodeStep(m, gpu, batch, ctxTokens, tp = 1, { spec = null, ep = null, overlap = false, link = null, eff = TP_EFF } = {}) {
   const draft = spec?.draft ?? 0, q = 1 + draft;
   const width = ep && ep > tp ? ep : tp, groups = width / tp;
   const bw = gpu.mem_bw_tb_s * 1e12 * gpu.mbu;
   const share = m.expert_share ?? 0;
-  const weights = (tokens) => (m.weights_bytes * (1 - share)) / tp + (m.weights_bytes * share * expertCoverage(m, tokens)) / width;
+  const denseBytes = denseWeightBytes(m);
+  const weights = (tokens) => denseBytes / tp + (m.weights_bytes * share * expertCoverage(m, tokens)) / width;
   const peak = peakTflops(m, gpu);
   const flops = (tokens) => (peak && gpu.prefill_mfu ? (2 * (m.decode_params ?? m.params) * tokens) / (peak * 1e12 * gpu.prefill_mfu * tp * tpEff(eff.prefill, tp)) : 0);
   const layers = m.num_layers ?? m.full_attn_layers ?? 0;
@@ -334,7 +375,8 @@ export function decodeStep(m, gpu, batch, ctxTokens, tp = 1, { spec = null, ep =
     const inDomain = width <= (gpu.nvlink_domain ?? 1) && gpu.nvlink_gb_s;
     const nv = (gpu.nvlink_gb_s / 2) * NVLINK_EP_EFF * 1e9;
     const [, dGb, cGb] = deepepRates(width);
-    const move = inDomain ? (sends * 3) / nv : sends / (dGb * 1e9) + (sends * 2) / (cGb * 1e9);
+    const linkScale = link?.rdma && link.link_gbit_s ? link.link_gbit_s / 400 : 1;
+    const move = inDomain ? (sends * 3) / nv : sends / (dGb * linkScale * 1e9) + (sends * 2) / (cGb * linkScale * 1e9);
     comm = layers * (TP_SYNC_PER_LAYER_S[8] + move);
   }
   const verify = overlap ? Math.max(Math.max(memory, compute) + sync, comm) : Math.max(memory, compute) + sync + comm;
@@ -349,12 +391,14 @@ export function decodeStep(m, gpu, batch, ctxTokens, tp = 1, { spec = null, ep =
 
 export const decodeStepS = (m, gpu, batch, ctxTokens, tp = 1, eff = TP_EFF) => decodeStep(m, gpu, batch, ctxTokens, tp, { eff }).step;
 
-// KV memory of one attention group of a decode instance whose experts spread over `ep` GPUs: each GPU holds the dense
-// part / tp and its share of the experts. Without ep, an instance of tp GPUs in each of pp nodes (gpuKvGiB).
+// KV memory of one attention group of a decode instance whose experts spread over `ep` GPUs (wide-EP decode runs
+// without pipeline stages): each GPU holds the dense part / tp and its share of the experts/sharded tables.
+// Without ep, an instance of tp GPUs in each of pp nodes (gpuKvGiB).
 export function decodeKvGiB(m, gpu, sw, tp = 1, pp = 1, ep = null) {
   if (!ep || ep <= tp) return gpuKvGiB(m, gpu, sw, tp, pp);
-  const share = m.expert_share ?? 0;
-  const perGpu = (m.weights_bytes * (1 - share)) / tp + (m.weights_bytes * share) / ep;
+  const denseBytes = denseWeightBytes(m);
+  const shardedBytes = Math.max(0, m.weights_bytes - denseBytes);
+  const perGpu = denseBytes / tp + shardedBytes / ep;
   return tp * (gpu.mem_gib * sw.gpu_memory_utilization - sw.activation_gib_per_gpu) - (tp * perGpu) / GIB;
 }
 
@@ -391,6 +435,9 @@ export function withPrecision(m, precision = "released") {
   const p = PRECISIONS[precision];
   if (!p) return m;
   const weights = Math.min(m.weights_bytes, ((m.total_params ?? m.params) * p.bits) / 8);
+  const denseWeights = m.dense_weights_bytes != null
+    ? Math.min(m.dense_weights_bytes, ((m.dense_params ?? m.params) * p.bits) / 8)
+    : undefined;
   const kvScale = (m.kv_dtype_bytes ?? 2) > 1 ? 1 / (m.kv_dtype_bytes ?? 2) : 1; // to 1 byte per value
   const scaleKv = (total, fixed = 0) => fixed + (total - fixed) * kvScale;
   const fixed1 = m.fixed_kv_bytes_per_token ?? 0;
@@ -398,6 +445,7 @@ export function withPrecision(m, precision = "released") {
   const order = { bf16: 0, fp8: 1, fp4: 2 };
   return {
     ...m, weights_bytes: weights,
+    ...(denseWeights !== undefined ? { dense_weights_bytes: denseWeights } : {}),
     compute_dtype: order[p.compute] > order[m.compute_dtype ?? "bf16"] ? p.compute : m.compute_dtype ?? "bf16",
     kv_bytes_per_token: scaleKv(m.kv_bytes_per_token, fixed1),
     kv_bytes_per_token_by_tp: m.kv_bytes_per_token_by_tp && Object.fromEntries(
@@ -414,9 +462,11 @@ export function withPrecision(m, precision = "released") {
 export function served(m, { precision = "released", tp = 1, attention = "tp", gpu } = {}) {
   const model = withTp(withPrecision(m, precision), tp, attention);
   if (model.kv_layout !== "deepseek-v41") return model;
-  // fp8_ds_mla, FP8 index K. Three ratio-2 source layers and one ratio-1
-  // source own both records. The other index/query layers reuse those keys.
-  const row = !gpu || ["b200", "gb200", "b300"].includes(gpu.id) ? 528 : 584;
+  // In "fp4", use DeepSeek-V4.1-Flash's native FP4 (E2M1 + scale) CSA2 global KV (224 B KV + 132 B FP8 index K across
+  // 2.5 effective source layers = 890 B/token). In "released" / "fp8", use vLLM/LMCache's fp8_ds_mla layout
+  // (528 B on Blackwell/Rubin, 584 B on Hopper/Ada).
+  const isBlackwellOrNewer = !gpu || ["rtx-pro-6000", "b200", "gb200", "b300", "vr200"].includes(gpu.id);
+  const row = precision === "fp4" ? 224 : (isBlackwellOrNewer ? 528 : 584);
   const copies = attention === "dp" ? 1 : tp;
   const windowBytes = 128 * 40 * row * copies;
   return { ...model, kv_bytes_per_token: (row + 132) * 2.5 * copies,
@@ -431,31 +481,48 @@ export function served(m, { precision = "released", tp = 1, attention = "tp", gp
 const linkRails = (v, tp) => (v?.per_gpu ? tp : 1);
 export const stageHop = (m, link, tp = 1) => (link ? (n) => (link.latency_s ?? 0) + (n * (m.hidden_size ?? 0) * 2) / (variantBandwidth(link) * linkRails(link, tp) * GIB) : () => 0);
 
-// The per-model timing functions the simulator calls, for one instance of `gpu`: TP GPUs, in `pp.stages` nodes
-// joined by `pp.link`. `sw`: the software constants.
+// 2-stage chunked pipeline (storage/network -> host RAM -> GPU HBM): for M = 1 chunk it reduces to sequential
+// store-and-forward (bytes/bw + bytes/host); for M > 1 chunks, host DMA overlaps behind incoming chunks.
+export function stagedTransferSeconds(bytes, bwBytesPerS, hostBytesPerS, numChunks = 1) {
+  if (!(bytes > 0)) return 0;
+  const m = Math.max(1, numChunks);
+  const tTier = bytes / bwBytesPerS;
+  const tHost = bytes / hostBytesPerS;
+  return Math.max(tTier, tHost) + (bytes / m) / Math.max(bwBytesPerS, hostBytesPerS);
+}
+
+// The per-model timing functions the simulator calls, for one attention worker of `gpu`: `tpAttn` GPUs (1 under
+// DP-attention, `tp` under TP-attention), in `pp.stages` nodes joined by `pp.link`. `sw`: the software constants.
 export function timing(m, gpu, sw, tp = 1, eff = TP_EFF, { stages = 1, link = null } = {}) {
-  const peak = prefillTflops(m, gpu) * 1e12 * gpu.prefill_mfu * tp * tpEff(eff.prefill, tp);
-  const hop = stageHop(m, link, tp);
+  const tpAttn = m.attention === "dp" ? 1 : tp;
+  const peak = prefillTflops(m, gpu) * 1e12 * gpu.prefill_mfu * tpAttn * tpEff(eff.prefill, tpAttn);
+  const hop = stageHop(m, link, tpAttn);
   const flops = (n) => (n > 0 ? (2 * m.params * n + attnFlops(m, n) / sw.attn_eff_ratio) / peak : 0);
   const hops = (n) => (n > 0 ? (stages - 1) * hop(n) : 0); // the hidden states of the n tokens computed
   const compute = (n) => flops(n) + hops(n);
   const overhead = (n) => sw.request_overhead_s + sw.per_token_overhead_s * n;
   const R = (n) => (n > 0 ? overhead(n) + compute(n) : 0); // cold prefill
-  const host = gpu.host_gib_s * GIB * tp * stages; // one host link per GPU
+  const host = gpu.host_gib_s * GIB * tpAttn * stages; // one host link per GPU of this attention worker
   const cpuLoad = (k, state = true, bytes = prefixBytes(m, k, state)) => (k > 0 ? sw.cpu_load_latency_s + bytes / host : 0);
+  const chunkTokens = Math.max(1, m.block_size || 64);
   const loadFor = (v) => {
     if (!v) return () => 0;
-    const bw = variantBandwidth(v) * GIB * stages * linkRails(v, tp);
+    const bw = variantBandwidth(v) * GIB * stages * linkRails(v, tpAttn);
     const L = v.latency_s ?? 0;
-    return (k, state = true, bytes = prefixBytes(m, k, state)) => (k > 0 ? cpuLoad(k, state, bytes) + L + bytes / bw : 0);
+    if (v.rdma) {
+      // GPUDirect RDMA transfers directly into GPU HBM without staging through a second PCIe copy.
+      return (k, state = true, bytes = prefixBytes(m, k, state)) => (k > 0 ? L + bytes / bw : 0);
+    }
+    return (k, state = true, bytes = prefixBytes(m, k, state)) =>
+      (k > 0 ? L + sw.cpu_load_latency_s + stagedTransferSeconds(bytes, bw, host, Math.ceil(k / chunkTokens)) : 0);
   };
   // prefill -> decode KV transfer over a network variant, GPU to GPU
   const transferFor = (v) => {
     if (!v) return () => 0;
-    const bw = variantBandwidth(v) * GIB * stages * linkRails(v, tp);
+    const bw = variantBandwidth(v) * GIB * stages * linkRails(v, tpAttn);
     const L = v.latency_s ?? 0;
     return (k) => (k > 0 ? L + (m.prefix_replay_tokens ? perSeqBytes(m, k) : prefixBytes(m, k)) / bw : 0);
   };
   const ttft = (n, h, loadSeconds) => overhead(n) + loadSeconds + flops(n) - flops(Math.min(h, n)) + hops(Math.max(1, n - h));
-  return { compute, overhead, R, cpuLoad, loadFor, transferFor, ttft, flops, hops };
+  return { compute, overhead, R, cpuLoad, loadFor, transferFor, ttft, flops, hops, hostBytesPerS: host };
 }

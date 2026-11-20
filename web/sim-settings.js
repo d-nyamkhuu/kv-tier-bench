@@ -126,7 +126,7 @@ export function applySettings(config, settings) {
   Object.assign(config.sim, {
     model: settings.model, precision: settings.precision, gpu: settings.gpu, decodeGpu: settings.gpu,
     nodes: settings.nodes, gpusPerNode: settings.gpusPerNode, routing: settings.routing,
-    peerFirst: settings.lookup === "peer", saveDecode: settings.admission === "reply",
+    peerFirst: settings.lookup !== "stock", skipSlowLoads: settings.lookup === "smart", saveDecode: settings.admission === "reply",
     p2p: settings.interconnect, stageLink: settings.interconnect, transfer: settings.interconnect,
     cpuGiB: settings.cpu, shared: settings.backing || null,
     sharedCapacityGiB: settings.backing ? settings.s3Size : null,

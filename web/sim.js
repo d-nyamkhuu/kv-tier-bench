@@ -7,7 +7,7 @@
 
 import { Events } from "./events.js";
 import { decodePool } from "./decode.js";
-import { decodeStep, GIB, perSeqBytes, timing, variantBandwidth, writeBandwidth } from "./model.js";
+import { decodeStep, GIB, instanceWeightBytes, perSeqBytes, stagedTransferSeconds, timing, variantBandwidth, writeBandwidth } from "./model.js";
 
 // Byte-bounded LRU: a doubly linked list (oldest at head) indexed by a Map, so every operation is O(1).
 export class LRU {
@@ -250,14 +250,19 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
   const cl = { nodes: 1, gpusPerNode: 1, tp: 1, pp: 1, ...cfg.cluster };
   const pp = cl.pp;
   const T = timing(m, cfg.gpu, cfg.software, cl.tp, undefined, { stages: pp, link: cfg.stageLink });
-  const decodeEp = cfg.decode?.ep > cl.tp ? cfg.decode.ep : null; // experts over ep GPUs: decode runs without stages
-  const stepHops = !decodeEp && pp > 1 && cfg.stageLink ? (pp - 1) * (cfg.stageLink.latency_s ?? 0) : 0; // a decode step's hidden state is tiny
-  const decodeOpts = cfg.decode ? { spec: cfg.decode.spec ?? null, ep: decodeEp, overlap: !!cfg.decode.overlap } : null;
+  const decTp = cfg.decode?.tp ?? (m.attention === "dp" ? 1 : cl.tp);
+  const wideEp = cfg.decode?.wideEp !== undefined ? cfg.decode.wideEp : (cfg.decode?.ep > cl.tp ? cfg.decode.ep : null);
+  const decodeEp = cfg.decode?.ep > decTp ? cfg.decode.ep : (m.attention === "dp" && cl.tp > 1 ? cl.tp : null);
+  const stepHops = !wideEp && pp > 1 && cfg.stageLink ? (pp - 1) * (cfg.stageLink.latency_s ?? 0) : 0; // a decode step's hidden state is tiny
+  const decodeOpts = cfg.decode ? { spec: cfg.decode.spec ?? null, ep: decodeEp, link: cfg.decode.link ?? cfg.transfer ?? null, overlap: !!cfg.decode.overlap } : null;
   const B = workload.blockTokens ?? Math.max(m.block_size, Math.ceil((cfg.simBlockTokens ?? 0) / m.block_size) * m.block_size);
   const blockBytes = B * m.kv_bytes_per_token;
   const backingScale = cfg.externalCopiesPerGpuCopy ?? 1;
   const backingBlock = blockBytes * backingScale;
-  const perNode = Math.max(1, Math.floor(cl.gpusPerNode / cl.tp));
+  const replicasPerNode = Math.max(1, Math.floor(cl.gpusPerNode / cl.tp));
+  const dpRanks = m.attention === "dp" ? cl.tp : 1;
+  const tpAttn = m.attention === "dp" ? 1 : cl.tp;
+  const perNode = replicasPerNode * dpRanks;
   const gib = (x) => (x == null ? null : x * GIB);
 
   const externalState = m.read_fixed_bytes * backingScale;
@@ -269,7 +274,7 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
   const hook = { onAdd: (k) => holders.set(k, (holders.get(k) ?? 0) + 1), onEvict: (k) => { const c = holders.get(k) - 1; if (c) holders.set(k, c); else holders.delete(k); } };
   // one entry per cache group of pp nodes (a node when pp = 1).
   // Full-duplex lanes: frontend Ethernet (S3 and TCP links) is separate from dedicated RDMA rails (IB/RoCE).
-  // Per-GPU RDMA fabrics (InfiniBand) expose one independent tp-NIC rail group per prefill replica on the node.
+  // Per-GPU RDMA fabrics (InfiniBand / NVL72) expose one independent tpAttn-NIC rail group per worker on the node.
   const nodes = Array.from({ length: Math.max(1, Math.floor(cl.nodes / pp)) }, () => ({
     diskLane: { free: 0 }, ethTx: { free: 0 }, ethRx: { free: 0 }, rdmaTx: { free: 0 }, rdmaRx: { free: 0 },
     rdmaTxRails: Array.from({ length: perNode }, () => ({ free: 0 })),
@@ -285,9 +290,10 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
     : replica != null ? node.rdmaTxRails[replica] : earliest(node.rdmaTxRails);
   const rxLane = (node, v, replica = null) => !v?.rdma ? node.ethRx : !v.per_gpu ? node.rdmaRx
     : replica != null ? node.rdmaRxRails[replica] : earliest(node.rdmaRxRails);
-  const linkRails = (v) => (v?.per_gpu ? cl.tp : 1);
+  const linkRails = (v) => (v?.per_gpu ? tpAttn : 1);
+  const workerGpuGiB = cfg.gpuGiB == null ? null : cfg.gpuGiB / dpRanks;
   const inst = nodes.flatMap((node, ni) => Array.from({ length: perNode }, (_, replica) => ({
-    node: ni, replica, gpu: new LRU(gib(cfg.gpuGiB)), running: false, queue: [], head: 0, waiting: [], stepping: false,
+    node: ni, replica, hostLane: { free: 0 }, gpu: new LRU(gib(workerGpuGiB)), running: false, queue: [], head: 0, waiting: [], stepping: false,
   })));
   const sharedLifetime = cfg.sharedLifetimeS > 0 ? cfg.sharedLifetimeS : null;
   const sharedLastUse = sharedLifetime ? new Map() : null;
@@ -319,7 +325,7 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
   const dec = cfg.decode;
   const r = rng(cfg.seed ?? 7);
   const batchTokens = cfg.prefillBatchTokens > 0 ? cfg.prefillBatchTokens : null;
-  const weightRead = cfg.gpu.mem_bw_tb_s && cfg.gpu.mbu ? m.weights_bytes / cl.tp / (cfg.gpu.mem_bw_tb_s * 1e12 * cfg.gpu.mbu) : 0;
+  const weightRead = cfg.gpu.mem_bw_tb_s && cfg.gpu.mbu ? (instanceWeightBytes(m, cl.tp) / cl.tp) / (cfg.gpu.mem_bw_tb_s * 1e12 * cfg.gpu.mbu) : 0;
   const stepFloor = Math.min(weightRead, cfg.software.request_overhead_s);
   const requestDelay = cfg.software.request_overhead_s - stepFloor;
 
@@ -371,8 +377,8 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
 
   const profile = (batch, ctx) => {
     const model = dec.model ?? m;
-    const plain = decodeStep(model, dec.gpu, batch, ctx, cl.tp, { ...decodeOpts, spec: null });
-    const spec = decodeOpts.spec ? decodeStep(model, dec.gpu, batch, ctx, cl.tp, decodeOpts) : plain;
+    const plain = decodeStep(model, dec.gpu, batch, ctx, decTp, { ...decodeOpts, spec: null });
+    const spec = decodeOpts.spec ? decodeStep(model, dec.gpu, batch, ctx, decTp, decodeOpts) : plain;
     const best = (spec.step + stepHops) / spec.tokens < plain.step + stepHops ? spec : plain;
     const step = best.step + stepHops;
     return { step, perToken: step / best.tokens, tokens: best.tokens, plain: plain.step + stepHops };
@@ -495,6 +501,42 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
         where.pop();
       }
     }
+    // Cost-aware recompute guard (when enabled): if fetching slow lower-tier blocks (including current lane backlog)
+    // would take longer than recomputing those suffix tokens on the GPU, drop the slow-tier suffix and recompute.
+    if (cfg.skipSlowLoads && where.length) {
+      let cut = where.findIndex(w => w !== "gpu" && w !== "cpu");
+      if (cut >= 0) {
+        let estLoadS = 0;
+        for (const tier of lower) {
+          const cnt = where.slice(cut).filter(w => w === tier.key).length;
+          if (!cnt) continue;
+          const bytes = cnt * backingBlock + (where.at(-1) === tier.key ? externalState : 0);
+          const bw = variantBandwidth(tier.v) * GIB * pp * linkRails(tier.v);
+          const lane = tier.key === "disk" ? node.diskLane : tier.key === "shared" ? node.ethRx : rxLane(node, tier.v, here.replica);
+          const qWait = Math.max(0, lane.free - start);
+          const headRtt = tier.key === "shared" && s3 && ids.slice(cut).some((id, idx) => where[cut + idx] === "shared" && !node.knownObjects.has(id))
+            ? (cfg.shared.latency_s ?? 0) : 0;
+          const numChunks = Math.max(1, cnt * Math.ceil(B / Math.max(1, m.block_size || 64)));
+          const xferS = tier.v.rdma ? bytes / bw
+            : cfg.software.cpu_load_latency_s + stagedTransferSeconds(bytes, bw, T.hostBytesPerS, numChunks);
+          estLoadS += headRtt + qWait + (tier.v.latency_s ?? 0) + xferS;
+        }
+        const usableFast = Math.max(0, cut * B - (cut > 0 ? m.prefix_replay_tokens ?? 0 : 0));
+        const usableAll = Math.max(0, where.length * B - (m.prefix_replay_tokens ?? 0));
+        const savedComputeS = T.ttft(req.n, usableFast, 0) - T.ttft(req.n, usableAll, 0);
+        if (estLoadS > savedComputeS) {
+          where.length = cut;
+          if (m.read_fixed_bytes) {
+            while (where.length) {
+              const id = ids[where.length - 1];
+              const key = where[where.length - 1];
+              if (localPools[key]?.bytes(id) > (key === "gpu" ? blockBytes : backingBlock)) break;
+              where.pop();
+            }
+          }
+        }
+      }
+    }
     // MP touches a batch in reverse so an earlier prefix survives its tail.
     const peerBytes = new Map();
     for (let j = where.length - 1; j >= 0; j--) {
@@ -546,8 +588,19 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
     // window. Tier counts describe the global KV source even for those tokens.
     const usable = Math.max(0, h - (m.prefix_replay_tokens ?? 0));
     const out = req.out ?? 0;
+    const hostBw = T.hostBytesPerS;
+    const modelChunkTokens = Math.max(1, m.block_size || 64);
     const phases = [];
-    if (k.cpu) phases.push({ host: loadCpu(k.cpu * B, last === "cpu", readBytes("cpu")) });
+    if (k.cpu) {
+      const cpuBytes = readBytes("cpu");
+      phases.push({
+        tier: "cpu",
+        latency: cfg.software.cpu_load_latency_s,
+        payloads: cpuBytes > 0 && Number.isFinite(hostBw) ? [{ seconds: cpuBytes / hostBw, lanes: [here.hostLane] }] : [],
+        hostLatency: 0,
+        hostSeconds: 0,
+      });
+    }
     for (const tier of lower) {
       if (!k[tier.key]) continue;
       const bytes = readBytes(tier.key);
@@ -555,7 +608,15 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
       const payloads = tier.key === "p2p"
         ? [...peerBytes].map(([owner, size]) => ({ seconds: size / bw, lanes: [txLane(owner, tier.v), rxLane(node, tier.v, here.replica)] }))
         : [{ seconds: bytes / bw, lanes: [tier.key === "disk" ? node.diskLane : node.ethRx] }];
-      phases.push({ tier: tier.key, latency: tier.v.latency_s ?? 0, payloads, host: loadCpu(k[tier.key] * B, last === tier.key, bytes) });
+      let hostLatency = 0, hostSeconds = 0;
+      if (!tier.v.rdma) {
+        hostLatency = cfg.software.cpu_load_latency_s;
+        if (bytes > 0 && Number.isFinite(hostBw)) {
+          const numChunks = Math.max(1, Math.ceil((k[tier.key] * B) / modelChunkTokens));
+          hostSeconds = Math.max(0, stagedTransferSeconds(bytes, bw, hostBw, numChunks) - bytes / bw);
+        }
+      }
+      phases.push({ tier: tier.key, latency: tier.v.latency_s ?? 0, payloads, hostLatency, hostSeconds });
     }
     const afterHead = start + (headNeeded ? cfg.shared.latency_s ?? 0 : 0);
     const loadPhase = (index, time) => {
@@ -565,7 +626,14 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
         const move = (part, time) => {
           const payload = phase.payloads?.[part];
           if (!payload) {
-            events.at(time + phase.host, 1, now => loadPhase(index + 1, now));
+            events.at(time + (phase.hostLatency ?? 0), 1, hostReady => {
+              if (phase.hostSeconds > 0) {
+                const hostEnd = reserve(hostReady, phase.hostSeconds, [here.hostLane]);
+                events.at(hostEnd, 1, now => loadPhase(index + 1, now));
+              } else {
+                loadPhase(index + 1, hostReady);
+              }
+            });
             return;
           }
           if (measured && Object.hasOwn(firstPayloadReadS, phase.tier)) {
@@ -630,7 +698,7 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
           // Prefill-only mode reports prefill TTFT. Where a GPU decode profile
           // exists, estimate the local reply duration for dependent turns.
           const localStep = !dec && out && cfg.gpu.mem_bw_tb_s && cfg.gpu.mbu
-            ? decodeStep(m, cfg.gpu, 1, req.n + out / 2, cl.tp).step + stepHops : 0;
+            ? decodeStep(m, cfg.gpu, 1, req.n + out / 2, decTp, decodeOpts ?? {}).step + stepHops : 0;
           const finish = time + out * localStep;
           events.at(finish, 0, () => complete(time, time, finish, null));
         }
@@ -656,7 +724,7 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
           accepted.push(task.accepted / task.steps);
           if (decodeOpts.spec?.draft) speedups.push(task.plain / task.decodeSeconds);
           if (dec.speed && profile(1, task.ctx).perToken > 1 / dec.speed) slowRequests++;
-          decodeGpuSeconds += task.gpuSeconds * cl.tp;
+          decodeGpuSeconds += task.gpuSeconds * decTp;
         }
         if (!batchTokens) busy += loads + isolated / pp;
         // In batched prefill, requestDelay is host/scheduling delay off the GPU; only stepFloor + per-token work
@@ -791,8 +859,8 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
   // decode instances span pp nodes too and keep pp batches in flight, so a step's GPU time is tp, not tp x pp
   // (decode.pooled: sized to the load in GPU fractions, as a provider pooling many clusters' decode would)
   const decodeNeed = (decodeGpuSeconds * scaleUp) / Math.max(windowS, 1);
-  const decodeWidth = decodeEp ?? cl.tp * pp; // whole decode instances
-  const decodeGpus = !dec ? 0 : dec.pooled ? decodeNeed : Math.ceil(pool.peakGroups * scaleUp * cl.tp / decodeWidth) * decodeWidth;
+  const decodeWidth = wideEp ?? cl.tp * pp; // whole decode instances
+  const decodeGpus = !dec ? 0 : dec.pooled ? decodeNeed : Math.ceil(pool.peakGroups * scaleUp * decTp / decodeWidth) * decodeWidth;
   const prefillUsd = prefillGpus * usdH(cfg.gpu) * windowH;
   const decodeUsd = decodeGpus * usdH(dec?.gpu) * windowH;
   const baseHoldH = lifetime ? Math.min(cfg.retentionH ?? Infinity, lifetime / 3600) : cfg.retentionH;
@@ -852,7 +920,7 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
     acceptedTokens: accepted.length ? stats(accepted).mean : null, specSpeedup: speedups.length ? stats(speedups).mean : null,
     utilization: windowS ? busy / windowS / inst.length : 0, // above 1, requests queue without bound
     decodeUtilization: decodeGpus > 0 && windowS > 0 ? Math.min(1, decodeNeed / decodeGpus) : 0,
-    instances: inst.length * scaleUp, prefillGpus, decodeGpus, priced,
+    instances: nodes.length * replicasPerNode * scaleUp, prefillGpus, decodeGpus, priced,
     usd: { prefill: prefillUsd, decode: decodeUsd, storage: storageUsd, fixed: fixedUsd, total },
     usdPer1kRequests: counted ? ((total / scaleUp / counted) * 1e3) : 0,
     usdPer1MTokens: promptTokens + outputTokens ? (total / scaleUp / (promptTokens + outputTokens)) * 1e6 : 0,

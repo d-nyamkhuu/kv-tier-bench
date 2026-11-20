@@ -82,15 +82,27 @@ const obj = (o) => ({ family: "obj", link_gbit_s: S3_LINK_GBIT, efficiency: S3_E
 
 // short labels for the diagram, the chart and the estimate panel
 const SHORT = {
-  "fs-nvme-gen5": "NVMe Gen5", "fs-nvme-gen4": "NVMe Gen4", "fs-nebius-local-ssd": "Nebius local SSD", "fs-nebius-nrd": "Nebius network SSD",
+  "fs-nvme-gen5": "NVMe Gen5", "fs-nvme-gen4": "NVMe Gen4", "fs-bf4-icms": "BF-4 ICMS Pod",
+  "fs-nebius-local-ssd": "Nebius local SSD", "fs-nebius-nrd": "Nebius network SSD",
   "fs-nebius-io-m3": "Network SSD IO M3", "fs-nebius-network-ssd": "Network SSD (EC)", "fs-sata-ssd": "SATA SSD", "fs-hdd": "HDD",
   "obj-aws-s3-standard": "S3 Standard", "obj-aws-s3-express": "S3 Express", "obj-nebius-enhanced": "Nebius S3 Enhanced", "obj-nebius-standard": "Nebius S3 Standard",
   "p2p-tcp-10": "TCP 10G", "p2p-tcp-100": "TCP 100G", "p2p-tcp-200": "TCP 200G", "p2p-tcp-400": "TCP 400G",
-  "p2p-ib-hdr": "IB HDR 200G", "p2p-ib-ndr": "IB NDR 400G", "p2p-roce-200": "RoCE 200G", "p2p-roce-400": "RoCE 400G",
+  "p2p-ib-hdr": "IB HDR 200G", "p2p-ib-ndr": "IB NDR 400G", "p2p-ib-xdr": "IB XDR 800G", "p2p-rdma-1600": "CX-9 RDMA 1.6T",
+  "p2p-roce-200": "RoCE 200G", "p2p-roce-400": "RoCE 400G",
 };
 
 export const VARIANTS = [
   // ---------------------------------------------------------------------------------------------- local disk (fs)
+  {
+    id: "fs-bf4-icms", family: "fs", name: "BlueField-4 ICMS Context Pod (800G RDMA Flash)",
+    bw_gib_s: GB(100), write_bw_gib_s: GB(80), efficiency: RDMA_EFFICIENCY, latency_s: 0.0005, rdma: true, capacity_gib: GB(16384), shared: false, bill: "provisioned", usd_per_gib_month: 0.08, usd_per_hour: 0,
+    sources: [
+      src("NVIDIA Vera Rubin & BlueField-4 ICMS architecture", "https://www.nvidia.com/en-us/data-center/vera-rubin/", "BlueField-4 DPU ... 800Gb/s to 1.6Tb/s ... Inference Context Memory Storage (ICMS) pod-level KV context tier"),
+      ...rdmaSources,
+    ],
+    assumptions: ["efficiency", "latency_s", "capacity_gib", "usd_per_gib_month"],
+    note: "DPU-managed G3.5 KV context flash tier (BlueField-4 with 128 GB LPDDR5 staging) delivering GPUDirect RDMA into GPU HBM at 800 Gb/s (100 GB/s line rate × 71.1% Mooncake efficiency).",
+  },
   {
     id: "fs-nvme-gen5", family: "fs", name: "Local NVMe, PCIe Gen5 (Kioxia CM7-R)",
     bw_gib_s: GB(13.5), write_bw_gib_s: GB(6.7), efficiency: NVME_VS_FIO, latency_s: NVME_LATENCY_S, capacity_gib: GB(3840), shared: false, bill: "provisioned", usd_per_gib_month: 0.065, usd_per_hour: 0,
@@ -205,14 +217,18 @@ export const VARIANTS = [
   ...[
     ["p2p-ib-hdr", "RDMA, InfiniBand HDR 200 Gbit/s", 200, "ib"],
     ["p2p-ib-ndr", "RDMA, InfiniBand NDR 400 Gbit/s", 400, "ib"],
+    ["p2p-ib-xdr", "RDMA, InfiniBand XDR 800 Gbit/s", 800, "ib"],
+    ["p2p-rdma-1600", "RDMA, ConnectX-9 1.6 Tbit/s", 1600, "ib"],
     ["p2p-roce-200", "RDMA, RoCE 200 GbE", 200, "roce"],
     ["p2p-roce-400", "RDMA, RoCE 400 GbE", 400, "roce"],
   ].map(([id, name, gbit, kind]) => ({
     id, family: "p2p", name, rdma: true, per_gpu: kind === "ib",
     link_gbit_s: gbit, efficiency: RDMA_EFFICIENCY, cap_gib_s: null, latency_s: RDMA_LATENCY_S, usd_per_hour: 0,
-    sources: [...rdmaSources, ...(kind === "ib"
-      ? [src("Nebius GPU clusters", S.ib, "Each GPU in a VM is connected through a network interface card (NIC) that provides 400 Gbps")]
-      : [src("Nebius VM types", S.vmTypes, "RTX PRO 6000 ... BlueField-3 400 Gbps")])],
+    sources: [...rdmaSources, ...(gbit >= 800
+      ? [src("NVIDIA Quantum-X800 & ConnectX-9 SuperNIC", "https://www.nvidia.com/en-us/networking/products/infiniband/quantum-x800/", "800Gb/s InfiniBand XDR ... 1.6Tb/s ConnectX-9 SuperNIC scale-out per GPU")]
+      : kind === "ib"
+        ? [src("Nebius GPU clusters", S.ib, "Each GPU in a VM is connected through a network interface card (NIC) that provides 400 Gbps")]
+        : [src("Nebius VM types", S.vmTypes, "RTX PRO 6000 ... BlueField-3 400 Gbps")])],
     assumptions: kind === "ib" ? ["efficiency", "usd_per_hour"] : ["usd_per_hour"],
     note: "Efficiency is Mooncake's end-to-end KV transfer inside vLLM over RoCE (71%; a raw NIXL benchmark reaches 99%). Latency is the intercept of that transfer table (~1 ms). Dedicated RDMA fabric separate from frontend S3 Ethernet." +
       (kind === "ib" ? " One InfiniBand NIC per GPU (scales with TP); the RoCE efficiency is used for InfiniBand." : ""),
@@ -294,7 +310,7 @@ const NVL = {
 // tflops_fp4: dense FP4, on GPUs with FP4 tensor cores (Blackwell) only, set to twice FP8 (assumption, same ratio);
 // Hopper and Ada have none, so FP4 weights compute at FP8 there. Only decode uses it: prefill runs FP4 at the FP8 rate
 // (model.js prefillTflops).
-const BLACKWELL = new Set(["rtx-pro-6000", "b200", "b300", "gb200"]);
+const BLACKWELL = new Set(["rtx-pro-6000", "b200", "b300", "gb200", "vr200"]);
 const gpu = (g) => ({ mbu: MBU, nvlink_gb_s: null, nvlink_domain: g.pcie_only || !g.nvlink_gb_s ? 1 : 8, tflops_fp8: 2 * g.tflops_bf16, tflops_fp4: BLACKWELL.has(g.id) ? 4 * g.tflops_bf16 : null, ...g,
   assumptions: [...(g.assumptions ?? []), "tflops_fp8", ...(BLACKWELL.has(g.id) ? ["tflops_fp4"] : [])],
   sources: [...g.sources, ...MBU_SOURCES, ...(g.prefill_mfu === RTX_MFU ? [S1_CALIBRATION] : [INFERENCEX])] });
@@ -359,6 +375,15 @@ export const GPUS = [
     sources: [NVL.blackwellBrief, NVL.nvl72, src("NVIDIA GB200 NVL72", NV.gb200, "per GPU: FP16/BF16 Tensor Core 5 PFLOPS (sparse) ... 186 GB HBM3E ... 8 TB/s ... 900 GB/s of bidirectional bandwidth (C2C)"), C2C_MEASURED],
     assumptions: ["host_gib_s", "usd_per_hour"], note: "One Grace CPU serves two GPUs; the per-GPU C2C share is not published, so the GH200 measurement is used. Nebius: contact sales, no price.",
   }),
+  gpu({
+    id: "vr200", name: "VR200 (Vera Rubin NVL72, per GPU)", prefill_mfu: BLACKWELL_MFU, tflops_bf16: 6250, mem_gib: usable(288), mem_bw_tb_s: 22, host_gib_s: 2 * 326, usd_per_hour: null, nvlink_gb_s: 3600, nvlink_domain: 72,
+    sources: [
+      src("NVIDIA Vera Rubin NVL72", "https://www.nvidia.com/en-us/data-center/vera-rubin/", "Rubin GPU: 50 PFLOPS NVFP4 inference (sparse; 25 PFLOPS dense) ... 288 GB HBM4 ... 22 TB/s ... NVLink 6: 3.6 TB/s per GPU across 72-GPU rack domain (260 TB/s) ... Vera-Rubin NVLink-C2C: 1.8 TB/s bidirectional"),
+      C2C_MEASURED,
+    ],
+    assumptions: ["prefill_mfu", "tflops_bf16", "host_gib_s", "usd_per_hour"],
+    note: "Rubin R200 GPU in a 72-GPU NVLink 6 rack domain (288 GB HBM4 at 22 TB/s; 25 PFLOPS dense NVFP4). Host C2C link set to 2× Grace-Hopper's measured C2C (~652 GiB/s) matching Gen-2 NVLink-C2C's 2× line rate (1.8 TB/s bidir).",
+  }),
 ];
 
 // ---- Models beyond s1's two: open-weight releases with public config.json (fetched 2026-11-18). Each spec is read
@@ -397,19 +422,32 @@ const MODEL_SPECS = {
     assumptions: ["block_size"],
     note: "4.9 TB of bf16 weights: more than any 8-GPU node holds, so it runs across nodes (pipeline stages).",
   },
+  "qwen3-235b-a22b": {
+    name: "Qwen3-235B-A22B", hf_id: "Qwen/Qwen3-235B-A22B", released: "BF16", arch: "MoE 235B / 22B active; 94-layer 16:1 GQA (64 Q / 4 KV heads)",
+    spec: {
+      num_layers: 94, hidden_size: 4096, total_params: 235e9, active_params: 22e9, weights_bytes: 470192668672, compute_dtype: "bf16", block_size: 64, experts: moe({ layers: 94, routed: 128, per_token: 8, width: 4096, inter: 1536 }),
+      layers: [
+        { type: "full", count: 94, q_heads: 64, kv_heads: 4, k_dim: 128, v_dim: 128 },
+      ],
+    },
+    sources: [expertSrc("Qwen/Qwen3-235B-A22B", '"num_hidden_layers": 94, "num_attention_heads": 64, "num_key_value_heads": 4, "head_dim": 128, "num_experts": 128, "num_experts_per_tok": 8, "moe_intermediate_size": 1536'), cfgSrc("Qwen/Qwen3-235B-A22B"),
+      cardSrc("Qwen/Qwen3-235B-A22B", "235B total parameters and 22B activated parameters ... 94 layers, 64 Q heads and 4 KV heads")],
+    assumptions: ["block_size"],
+    note: "Extreme 16:1 GQA (4 KV heads): under TP=8 without DP-attention, KV heads replicate 2× across rank pairs.",
+  },
   "kimi-k3": {
-    name: "Kimi K3", hf_id: "moonshotai/Kimi-K3", released: "MXFP4 experts, BF16 attention", arch: "MoE 2.8T / 104B active; 69 KDA linear + 24 MLA layers",
+    name: "Kimi K3", hf_id: "moonshotai/Kimi-K3", released: "MXFP4 experts, BF16 attention", arch: "MoE 2.8T / 104B active; 69 KDA linear + 24 NoPE-MLA layers",
     spec: {
       num_layers: 93, hidden_size: 7168, total_params: 2.8e12, active_params: 104e9, weights_bytes: 1560936091448, compute_dtype: "fp8", block_size: 64, experts: moe({ layers: 92, routed: 896, per_token: 16, width: 3584, inter: 3072, bytes_per_param: MXFP4 }),
       layers: [
         { type: "linear", count: 69, state_bytes: gdnStateBytes({ k_heads: 96, v_heads: 96, k_dim: 128, v_dim: 128, conv: 4 }) },
-        { type: "mla", count: 24, q_heads: 96, latent: 512, rope: 64, qk_dim: 128 + 64, v_dim: 128 },
+        { type: "mla", count: 24, q_heads: 96, latent: 512, rope: 0, qk_dim: 128, v_dim: 128 },
       ],
     },
-    sources: [expertSrc("moonshotai/Kimi-K3", '"num_experts": 896, "num_experts_per_token": 16, "routed_expert_hidden_size": 3584, "moe_intermediate_size": 3072, "first_k_dense_replace": 1'), cfgSrc("moonshotai/Kimi-K3"), filesSrc("moonshotai/Kimi-K3", 1560936091448),
+    sources: [expertSrc("moonshotai/Kimi-K3", '"num_experts": 896, "num_experts_per_token": 16, "routed_expert_hidden_size": 3584, "moe_intermediate_size": 3072, "first_k_dense_replace": 1, "mla_use_nope": true'), cfgSrc("moonshotai/Kimi-K3"), filesSrc("moonshotai/Kimi-K3", 1560936091448),
       cardSrc("moonshotai/Kimi-K3", "Total Parameters 2.8T; Activated Parameters 104B; Attention-Layer Composition 69 KDA + 24 Gated MLA; MXFP4 weights / MXFP8 activations"), VLLM_MLA_TP, VLLM_STATE_TP],
-    assumptions: ["block_size", "KDA state as Gated DeltaNet's shape, bf16", "routed experts at MXFP4's 4.25 bits per parameter (the rest of the weight bytes are the dense part)"],
-    note: "Weights alone are 1.56 TB: in one node only 8 B300s hold it (vLLM's recipe runs it at TP 8 on Blackwell Ultra); other GPUs need two or more nodes.",
+    assumptions: ["block_size", "KDA state as Gated DeltaNet's shape, bf16", "mla_use_nope omits separate RoPE key cache (512 latent elements/layer)", "routed experts at MXFP4's 4.25 bits per parameter (the rest of the weight bytes are the dense part)"],
+    note: "Weights alone are 1.56 TB: in one node only 8 B300s or VR200s hold it; other GPUs need two or more nodes.",
   },
   "deepseek-v4.1-flash": {
     name: "DeepSeek V4.1 Flash", hf_id: "deepseek-ai/DeepSeek-V4.1-Flash", drafters: ["dspark"], drafter_params: { dspark: { draft: 4, layers: 3 } }, drafter_source: '"num_nextn_predict_layers": 3, "dspark_block_size": 5, "dspark_n_routed_experts": 128, "dspark_num_experts_per_tok": 3', kv_layout: "deepseek-v41", released: "FP8, FP4 experts, fp8_ds_mla KV", arch: "MoE 552B / 8B active in prefill; CSA2 compressed sparse attention, FP8 KV",

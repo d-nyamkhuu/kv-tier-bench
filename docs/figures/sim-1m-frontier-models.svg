@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 490" width="980" height="490">
+<rect width="980" height="490" rx="12" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="36" y="34" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="18" font-weight="700" fill="#0f172a">1-Million-Token (1,048,576) Single-Session KV Cache Footprint Across Frontier Models</text>
+<text x="36" y="55" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12.5" fill="#475569">Logarithmic comparison showing why hybrid linear-attention (GDN/KDA) and token-sparse CSA2 unlocked million-token serving</text>
+<rect x="28" y="92" width="924" height="35" rx="5" fill="#ffffff" stroke="#e2e8f0"/>
+<text x="38" y="107" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="700" fill="#0f172a">Llama-3.1-70B (BF16 GQA)</text>
+<text x="38" y="121" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="9.2" fill="#64748b">80L × 8 KV × 128d (Pure GQA)</text>
+<rect x="355" y="99" width="486.4" height="20" rx="4" fill="#dc2626" fill-opacity="0.88"/>
+<text x="849.4" y="113" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="10.8" font-weight="700" fill="#0f172a">320.00 GiB</text>
+<rect x="28" y="132" width="924" height="35" rx="5" fill="#ffffff" stroke="#e2e8f0"/>
+<text x="38" y="147" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="700" fill="#0f172a">Qwen3-235B-A22B (BF16 16:1 GQA)</text>
+<text x="38" y="161" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="9.2" fill="#64748b">94L × 4 KV × 128d (Extreme GQA MoE)</text>
+<rect x="355" y="139" width="446.4" height="20" rx="4" fill="#ea580c" fill-opacity="0.88"/>
+<text x="809.4" y="153" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="10.8" font-weight="700" fill="#0f172a">188.00 GiB</text>
+<rect x="28" y="172" width="924" height="35" rx="5" fill="#ffffff" stroke="#e2e8f0"/>
+<text x="38" y="187" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="700" fill="#0f172a">DeepSeek-V3 / Kimi K2 (BF16 MLA)</text>
+<text x="38" y="201" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="9.2" fill="#64748b">61L × 576d Latent (Pure MLA)</text>
+<rect x="355" y="179" width="370.5" height="20" rx="4" fill="#d97706" fill-opacity="0.88"/>
+<text x="733.5" y="193" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="10.8" font-weight="700" fill="#0f172a">68.63 GiB</text>
+<rect x="28" y="212" width="924" height="35" rx="5" fill="#ffffff" stroke="#e2e8f0"/>
+<text x="38" y="227" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="700" fill="#0f172a">Qwen3.8-27B (BF16 3:1 GDN+GQA)</text>
+<text x="38" y="241" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="9.2" fill="#64748b">48 Gated DeltaNet + 16 Full Attn</text>
+<rect x="355" y="219" width="365.5" height="20" rx="4" fill="#2563eb" fill-opacity="0.88"/>
+<text x="728.5" y="233" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="10.8" font-weight="700" fill="#0f172a">64.19 GiB</text>
+<rect x="28" y="252" width="924" height="35" rx="5" fill="#ffffff" stroke="#e2e8f0"/>
+<text x="38" y="267" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="700" fill="#0f172a">Qwen3.8-Flash-Next (FP8 Hybrid)</text>
+<text x="38" y="281" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="9.2" fill="#64748b">36 GDN + 12 Sparse-Indexed Attn</text>
+<rect x="355" y="259" width="291.9" height="20" rx="4" fill="#0284c7" fill-opacity="0.88"/>
+<text x="654.9" y="273" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="10.8" font-weight="700" fill="#0f172a">24.15 GiB</text>
+<rect x="28" y="292" width="924" height="35" rx="5" fill="#ffffff" stroke="#e2e8f0"/>
+<text x="38" y="307" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="700" fill="#0f172a">Kimi K3 2.8T (BF16 KDA + MLA)</text>
+<text x="38" y="321" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="9.2" fill="#64748b">69 KDA (626 MB O(1)) + 24 Gated MLA</text>
+<rect x="355" y="299" width="293.2" height="20" rx="4" fill="#059669" fill-opacity="0.88"/>
+<text x="656.2" y="313" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="10.8" font-weight="700" fill="#0f172a">24.58 GiB</text>
+<rect x="28" y="332" width="924" height="35" rx="5" fill="#ffffff" stroke="#e2e8f0"/>
+<text x="38" y="347" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="700" fill="#0f172a">Kimi K3 2.8T (FP8 KDA + MLA)</text>
+<text x="38" y="361" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="9.2" fill="#64748b">69 KDA (626 MB) + 24 MLA (FP8)</text>
+<rect x="355" y="339" width="242.8" height="20" rx="4" fill="#10b981" fill-opacity="0.88"/>
+<text x="605.8" y="353" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="10.8" font-weight="700" fill="#0f172a">12.58 GiB</text>
+<rect x="28" y="372" width="924" height="35" rx="5" fill="#ffffff" stroke="#e2e8f0"/>
+<text x="38" y="387" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="700" fill="#0f172a">DeepSeek-V4-Pro 1.6T (CSA + HCA)</text>
+<text x="38" y="401" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="9.2" fill="#64748b">Token-Compressed c4a/c128a Hybrid</text>
+<rect x="355" y="379" width="197.1" height="20" rx="4" fill="#0d9488" fill-opacity="0.88"/>
+<text x="560.1" y="393" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="10.8" font-weight="700" fill="#0f172a">6.86 GiB</text>
+<rect x="28" y="412" width="924" height="35" rx="5" fill="#ffffff" stroke="#e2e8f0"/>
+<text x="38" y="427" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="700" fill="#0f172a">DeepSeek-V4.1-Flash (CSA2 + FP4)</text>
+<text x="38" y="441" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="9.2" fill="#64748b">Asymmetric CED + Layer-Shared E2M1</text>
+<rect x="355" y="419" width="41.7" height="20" rx="4" fill="#047857" fill-opacity="0.88"/>
+<text x="404.7" y="433" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="10.8" font-weight="700" fill="#0f172a">0.87 GiB</text>
+<line x1="737.0" y1="88" x2="737.0" y2="452" stroke="#dc2626" stroke-width="1.6" stroke-dasharray="5,4"/>
+<text x="733.0" y="85.0" text-anchor="end" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="9.5" font-weight="700" fill="#dc2626">H100 (80 GB)</text>
+<line x1="803.0" y1="88" x2="803.0" y2="452" stroke="#d97706" stroke-width="1.6" stroke-dasharray="5,4"/>
+<text x="803.0" y="73.0" text-anchor="middle" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="9.5" font-weight="700" fill="#d97706">B200 (192 GB)</text>
+<line x1="833.5" y1="88" x2="833.5" y2="452" stroke="#2563eb" stroke-width="1.6" stroke-dasharray="5,4"/>
+<text x="837.5" y="85.0" text-anchor="start" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="9.5" font-weight="700" fill="#2563eb">Rubin R200 / B300 (288 GB)</text>
+</svg>

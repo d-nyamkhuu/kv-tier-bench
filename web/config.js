@@ -29,7 +29,7 @@ export const DEFAULT_SIM = {
   // "custom" method's numbers. decodeEp: GPUs the experts spread over in decode (null: the TP instance);
   // decodeOverlap: two-batch overlap hides the expert all-to-all (off: the measured EP runs sit nearer to no overlap)
   spec: "none", specTau: null, specCustom: { draft: 7, tau: 3, layers: 5, parallel: true }, decodeEp: null, decodeOverlap: false,
-  warmupMin: 20, retentionH: 1, simBlockTokens: 256, peerFirst: false, saveDecode: false,
+  warmupMin: 20, retentionH: 1, simBlockTokens: 256, peerFirst: false, saveDecode: false, skipSlowLoads: false,
   // prefillBatchTokens: vLLM's max_num_batched_tokens for continuous prefill batching (8192 is the vLLM, TensorRT-LLM
   // and SGLang default; the simulator page sets it). null runs one request at a time.
   prefillBatchTokens: null,
@@ -82,7 +82,7 @@ export function validate(c) {
   if (sim.sharedCapacityGiB != null && !(num(sim.sharedCapacityGiB) && sim.sharedCapacityGiB > 0)) errs.push("sim.sharedCapacityGiB must be a positive number");
   if (sim.sharedLifetimeS != null && !(num(sim.sharedLifetimeS) && sim.sharedLifetimeS > 0)) errs.push("sim.sharedLifetimeS must be a positive number of seconds, or null");
   if (sim.prefillBatchTokens != null && !(Number.isInteger(sim.prefillBatchTokens) && sim.prefillBatchTokens >= 1)) errs.push("sim.prefillBatchTokens must be a whole number of tokens, or empty for one request at a time");
-  for (const key of ["peerFirst", "saveDecode"]) if (sim[key] != null && typeof sim[key] !== "boolean") errs.push(`sim.${key} must be a boolean`);
+  for (const key of ["peerFirst", "saveDecode", "skipSlowLoads"]) if (sim[key] != null && typeof sim[key] !== "boolean") errs.push(`sim.${key} must be a boolean`);
   if (sim.precision != null && !["released", "fp8", "fp4"].includes(sim.precision)) errs.push('sim.precision must be "released", "fp8" or "fp4"');
   if (sim.decodeSpeed != null && !(Number.isFinite(sim.decodeSpeed) && sim.decodeSpeed > 0)) errs.push("sim.decodeSpeed must be a positive number of tokens/s, or null");
   if (sim.specTau != null && !(Number.isFinite(sim.specTau) && sim.specTau >= 1)) errs.push("sim.specTau must be at least 1 (tokens per step), or null");

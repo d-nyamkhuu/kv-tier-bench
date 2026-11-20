@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { defaultConfig } from "../config.js";
+import { instanceWeightBytes, served } from "../model.js";
 import { GPUS, MODELS, SOFTWARE, VARIANTS } from "../presets.js";
 import { prepareTrace, replay } from "../replay.js";
 import { compareTiers } from "../tier-comparison.js";
@@ -192,7 +193,8 @@ test("minute 49 counts each prefill replica's KV headroom once across pipeline s
     const gpu = c.gpus.find(g => g.id === "b200");
     const gpuCount = c.sim.nodes * gpusPerNode;
     const usable = gpuCount * (gpu.mem_gib * c.software.gpu_memory_utilization - c.software.activation_gib_per_gpu);
-    const weights = replicas * c.models[c.sim.model].weights_bytes / 2 ** 30;
+    const servedModel = served(c.models[c.sim.model], { gpu, precision: c.sim.precision, tp: r.layout.tp, attention: r.layout.attention ?? c.sim.attention });
+    const weights = replicas * instanceWeightBytes(servedModel, r.layout.tp) / 2 ** 30;
     assert.equal(r.instances, replicas);
     assert.ok(Math.abs(r.tiers.gpu - (usable - weights)) < 1e-8);
     assert.equal(r.kvBytesPerToken, (528 + 132) * (3 / 2 + 1));

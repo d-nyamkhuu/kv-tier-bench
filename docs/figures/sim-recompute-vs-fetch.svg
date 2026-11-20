@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 510" width="980" height="510">
+<rect width="980" height="510" rx="12" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="88" y="34" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="18" font-weight="700" fill="#0f172a">Prefill Recompute vs. Tiered KV Fetch Latency (320 KiB/tok Workload, TP=4)</text>
+<text x="88" y="55" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12.5" fill="#475569">Quadratic O(N²) prefill compute vs. linear O(N) KV transfer from Vera-Rubin C2C, PCIe5/6, RDMA, and NVMe</text>
+<rect x="88" y="76" width="627" height="366" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"/>
+<line x1="88.0" y1="76" x2="88.0" y2="442" stroke="#e2e8f0" stroke-dasharray="4,4"/>
+<text x="88.0" y="462" text-anchor="middle" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#334155">1K</text>
+<line x1="177.6" y1="76" x2="177.6" y2="442" stroke="#e2e8f0" stroke-dasharray="4,4"/>
+<text x="177.6" y="462" text-anchor="middle" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#334155">2K</text>
+<line x1="267.1" y1="76" x2="267.1" y2="442" stroke="#e2e8f0" stroke-dasharray="4,4"/>
+<text x="267.1" y="462" text-anchor="middle" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#334155">4K</text>
+<line x1="356.7" y1="76" x2="356.7" y2="442" stroke="#e2e8f0" stroke-dasharray="4,4"/>
+<text x="356.7" y="462" text-anchor="middle" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#334155">8K</text>
+<line x1="446.3" y1="76" x2="446.3" y2="442" stroke="#e2e8f0" stroke-dasharray="4,4"/>
+<text x="446.3" y="462" text-anchor="middle" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#334155">16K</text>
+<line x1="535.9" y1="76" x2="535.9" y2="442" stroke="#e2e8f0" stroke-dasharray="4,4"/>
+<text x="535.9" y="462" text-anchor="middle" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#334155">32K</text>
+<line x1="625.4" y1="76" x2="625.4" y2="442" stroke="#e2e8f0" stroke-dasharray="4,4"/>
+<text x="625.4" y="462" text-anchor="middle" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#334155">64K</text>
+<line x1="715.0" y1="76" x2="715.0" y2="442" stroke="#e2e8f0" stroke-dasharray="4,4"/>
+<text x="715.0" y="462" text-anchor="middle" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#334155">128K</text>
+<line x1="88" y1="418.1" x2="715" y2="418.1" stroke="#e2e8f0" stroke-dasharray="4,4"/>
+<text x="78" y="422.1" text-anchor="end" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#334155">2 ms</text>
+<line x1="88" y1="362.5" x2="715" y2="362.5" stroke="#e2e8f0" stroke-dasharray="4,4"/>
+<text x="78" y="366.5" text-anchor="end" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#334155">10 ms</text>
+<line x1="88" y1="306.9" x2="715" y2="306.9" stroke="#e2e8f0" stroke-dasharray="4,4"/>
+<text x="78" y="310.9" text-anchor="end" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#334155">50 ms</text>
+<line x1="88" y1="251.3" x2="715" y2="251.3" stroke="#e2e8f0" stroke-dasharray="4,4"/>
+<text x="78" y="255.3" text-anchor="end" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#334155">250 ms</text>
+<line x1="88" y1="203.4" x2="715" y2="203.4" stroke="#e2e8f0" stroke-dasharray="4,4"/>
+<text x="78" y="207.4" text-anchor="end" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#334155">1 s</text>
+<line x1="88" y1="147.8" x2="715" y2="147.8" stroke="#e2e8f0" stroke-dasharray="4,4"/>
+<text x="78" y="151.8" text-anchor="end" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#334155">5 s</text>
+<line x1="88" y1="92.2" x2="715" y2="92.2" stroke="#e2e8f0" stroke-dasharray="4,4"/>
+<text x="78" y="96.2" text-anchor="end" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="11" fill="#334155">25 s</text>
+<text x="401.5" y="492" text-anchor="middle" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#0f172a">Cached Prefix Length N (Tokens, Log Scale)</text>
+<text transform="translate(24,259.0) rotate(-90)" text-anchor="middle" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#0f172a">Time to First Token / Restoration Latency (Log Scale)</text>
+<polyline fill="none" stroke="#dc2626" stroke-width="3.4" points="88.0,295.1 177.6,273.9 267.1,251.0 356.7,226.7 446.3,200.8 535.9,172.8 625.4,141.6 715.0,106.6"/>
+<circle cx="88.0" cy="295.1" r="3" fill="#dc2626"/>
+<circle cx="177.6" cy="273.9" r="3" fill="#dc2626"/>
+<circle cx="267.1" cy="251.0" r="3" fill="#dc2626"/>
+<circle cx="356.7" cy="226.7" r="3" fill="#dc2626"/>
+<circle cx="446.3" cy="200.8" r="3" fill="#dc2626"/>
+<circle cx="535.9" cy="172.8" r="3" fill="#dc2626"/>
+<circle cx="625.4" cy="141.6" r="3" fill="#dc2626"/>
+<circle cx="715.0" cy="106.6" r="3" fill="#dc2626"/>
+<line x1="729" y1="94" x2="749" y2="94" stroke="#dc2626" stroke-width="3.2"/>
+<text x="755" y="97" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#0f172a">Full Prefill Recompute (4×H100)</text>
+<text x="755" y="111" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="9.5" fill="#475569">O(N) + O(N²) → 16.5 s @ 128K</text>
+<polyline fill="none" stroke="#047857" stroke-width="2.7" points="88.0,477.3 177.6,461.4 267.1,442.4 356.7,421.2 446.3,398.7 535.9,375.5 625.4,351.9 715.0,328.2"/>
+<circle cx="88.0" cy="477.3" r="3" fill="#047857"/>
+<circle cx="177.6" cy="461.4" r="3" fill="#047857"/>
+<circle cx="267.1" cy="442.4" r="3" fill="#047857"/>
+<circle cx="356.7" cy="421.2" r="3" fill="#047857"/>
+<circle cx="446.3" cy="398.7" r="3" fill="#047857"/>
+<circle cx="535.9" cy="375.5" r="3" fill="#047857"/>
+<circle cx="625.4" cy="351.9" r="3" fill="#047857"/>
+<circle cx="715.0" cy="328.2" r="3" fill="#047857"/>
+<line x1="729" y1="152" x2="749" y2="152" stroke="#047857" stroke-width="3.2"/>
+<text x="755" y="155" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#0f172a">Vera-Rubin NVLink-C2C Pool</text>
+<text x="755" y="169" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="9.5" fill="#475569">1.6 TB/s agg → 27 ms @ 128K</text>
+<polyline fill="none" stroke="#059669" stroke-width="2.7" points="88.0,418.7 177.6,398.0 267.1,375.8 356.7,352.7 446.3,329.3 535.9,305.5 625.4,281.7 715.0,257.8"/>
+<circle cx="88.0" cy="418.7" r="3" fill="#059669"/>
+<circle cx="177.6" cy="398.0" r="3" fill="#059669"/>
+<circle cx="267.1" cy="375.8" r="3" fill="#059669"/>
+<circle cx="356.7" cy="352.7" r="3" fill="#059669"/>
+<circle cx="446.3" cy="329.3" r="3" fill="#059669"/>
+<circle cx="535.9" cy="305.5" r="3" fill="#059669"/>
+<circle cx="625.4" cy="281.7" r="3" fill="#059669"/>
+<circle cx="715.0" cy="257.8" r="3" fill="#059669"/>
+<line x1="729" y1="210" x2="749" y2="210" stroke="#059669" stroke-width="3.2"/>
+<text x="755" y="213" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#0f172a">4× PCIe5 DDR5 / BF-4 ICMS</text>
+<text x="755" y="227" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="9.5" fill="#475569">175–208 GB/s → 207–246 ms</text>
+<polyline fill="none" stroke="#2563eb" stroke-width="2.7" stroke-dasharray="3,3" points="88.0,409.4 177.6,390.2 267.1,368.8 356.7,346.3 446.3,323.0 535.9,299.4 625.4,275.7 715.0,251.8"/>
+<circle cx="88.0" cy="409.4" r="3" fill="#2563eb"/>
+<circle cx="177.6" cy="390.2" r="3" fill="#2563eb"/>
+<circle cx="267.1" cy="368.8" r="3" fill="#2563eb"/>
+<circle cx="356.7" cy="346.3" r="3" fill="#2563eb"/>
+<circle cx="446.3" cy="323.0" r="3" fill="#2563eb"/>
+<circle cx="535.9" cy="299.4" r="3" fill="#2563eb"/>
+<circle cx="625.4" cy="275.7" r="3" fill="#2563eb"/>
+<circle cx="715.0" cy="251.8" r="3" fill="#2563eb"/>
+<line x1="729" y1="268" x2="749" y2="268" stroke="#2563eb" stroke-width="3.2" stroke-dasharray="3,3"/>
+<text x="755" y="271" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#0f172a">1× CX-9 1.6Tb/s RDMA Link</text>
+<text x="755" y="285" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="9.5" fill="#475569">175 GB/s GDR → 246 ms @ 128K</text>
+<polyline fill="none" stroke="#d97706" stroke-width="2.7" points="88.0,330.6 177.6,307.7 267.1,284.3 356.7,260.7 446.3,236.9 535.9,213.0 625.4,189.1 715.0,165.2"/>
+<circle cx="88.0" cy="330.6" r="3" fill="#d97706"/>
+<circle cx="177.6" cy="307.7" r="3" fill="#d97706"/>
+<circle cx="267.1" cy="284.3" r="3" fill="#d97706"/>
+<circle cx="356.7" cy="260.7" r="3" fill="#d97706"/>
+<circle cx="446.3" cy="236.9" r="3" fill="#d97706"/>
+<circle cx="535.9" cy="213.0" r="3" fill="#d97706"/>
+<circle cx="625.4" cy="189.1" r="3" fill="#d97706"/>
+<circle cx="715.0" cy="165.2" r="3" fill="#d97706"/>
+<line x1="729" y1="326" x2="749" y2="326" stroke="#d97706" stroke-width="3.2"/>
+<text x="755" y="329" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#0f172a">1× Gen5 NVMe (256 KiB GDS)</text>
+<text x="755" y="343" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="9.5" fill="#475569">14.2 GB/s seq → 3.03 s @ 128K</text>
+<polyline fill="none" stroke="#7c3aed" stroke-width="2.7" stroke-dasharray="6,4" points="88.0,267.5 177.6,244.0 267.1,220.3 356.7,196.4 446.3,172.5 535.9,148.6 625.4,124.7 715.0,100.8"/>
+<circle cx="88.0" cy="267.5" r="3" fill="#7c3aed"/>
+<circle cx="177.6" cy="244.0" r="3" fill="#7c3aed"/>
+<circle cx="267.1" cy="220.3" r="3" fill="#7c3aed"/>
+<circle cx="356.7" cy="196.4" r="3" fill="#7c3aed"/>
+<circle cx="446.3" cy="172.5" r="3" fill="#7c3aed"/>
+<circle cx="535.9" cy="148.6" r="3" fill="#7c3aed"/>
+<circle cx="625.4" cy="124.7" r="3" fill="#7c3aed"/>
+<circle cx="715.0" cy="100.8" r="3" fill="#7c3aed"/>
+<line x1="729" y1="384" x2="749" y2="384" stroke="#7c3aed" stroke-width="3.2" stroke-dasharray="6,4"/>
+<text x="755" y="387" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#0f172a">1× Gen5 NVMe (4 KiB fragmented)</text>
+<text x="755" y="401" font-family="'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, monospace" font-size="9.5" fill="#475569">IOPS-bound 2.2 GB/s → 19.5 s</text>
+<text x="103.0" y="93.6" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="10.5" font-weight="600" fill="#6d28d9">⚠ Fragmented 4 KiB SSD reads lose to GPU recompute below ~110K tokens!</text>
+<rect x="88" y="76" width="627" height="366" fill="none" stroke="#94a3b8" stroke-width="1.2"/>
+</svg>
