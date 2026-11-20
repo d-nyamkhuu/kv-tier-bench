@@ -196,8 +196,11 @@ test("a saturated inter-node link is flagged as rising TTFT, and RDMA with FP8 k
 
 test("the measured period sets the replay length", () => {
   const c = config();
-  applySettings(c, { ...DEFAULT_SETTINGS, hours: 3 });
+  assert.equal(DEFAULT_SETTINGS.hours, 3);
+  applySettings(c, DEFAULT_SETTINGS);
   assert.equal(c.workload.durationMin, 180 + 20);
+  applySettings(c, { ...DEFAULT_SETTINGS, hours: 2 });
+  assert.equal(c.workload.durationMin, 120 + 20);
 });
 
 test("prices scale prefill GPUs and provisioned tiers to the chosen busy share, keeping variable tiers fixed", () => {

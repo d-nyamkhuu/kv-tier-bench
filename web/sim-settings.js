@@ -22,7 +22,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   model: "minimax-m3", precision: "fp8", gpu: "b200", nodes: 2, gpusPerNode: 8, interconnect: "p2p-ib-ndr",
   rate: 480, turns: 1.5, ownPrompt: 50, pause: 6, pattern: "steady", routing: "round-robin",
   cpu: 768, disk: "fs-nvme-gen5", diskSize: 1536, lookup: "peer", backing: "obj-aws-s3-standard", s3Size: 8192, s3Ttl: 360,
-  start: "warm", hours: 2, spread: "moderate", prompts: 10, batch: 8192, priceAt: "0.6",
+  start: "warm", hours: 3, spread: "moderate", prompts: 10, batch: 8192, priceAt: "0.6",
   spec: "none", decodeEp: 0, decodeSpeed: 0, decodeOverlap: "off",
   admission: "prompt", prefix: 6000, input: 800, output: 400, gpuBudget: 100, rewrite: 0, lifetime: 0, minCache: 0,
 });
@@ -47,7 +47,7 @@ export const SCENARIOS = [
   },
   {
     id: "ample", name: "Plenty of GPU memory",
-    description: "DeepSeek V4.1 Flash with sticky routing: the whole hour fits and hits in GPU memory.",
+    description: "DeepSeek V4.1 Flash with sticky routing: the whole replay fits and hits in GPU memory.",
     settings: forModel({ ...LIGHT, model: "deepseek-v4.1-flash", routing: "sticky", backing: "" }),
   },
   {

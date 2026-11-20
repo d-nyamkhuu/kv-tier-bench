@@ -411,7 +411,7 @@ $("trace-file").addEventListener("change", async event => {
   selectWorkloadSource();
 });
 
-controls.addEventListener("input", event => {
+function onControlUpdate(event) {
   if (event.target.id === "trace-file") return;
   if (event.target.id === "workload-source" || event.target.id === "trace-block") {
     selectWorkloadSource();
@@ -429,9 +429,17 @@ controls.addEventListener("input", event => {
   if (config) refit(event.target.id);
   showScenario(readSettings());
   schedule();
+}
+
+// Sliders update live on input and end the drag on change; selects update reliably on change across desktop and iOS Safari.
+controls.addEventListener("input", event => {
+  if (event.target.tagName === "SELECT") return;
+  onControlUpdate(event);
 });
-// A slider fires change on release and a select with each pick, so either ends the change in progress.
-controls.addEventListener("change", () => { editing = false; });
+controls.addEventListener("change", event => {
+  if (event.target.tagName === "SELECT") onControlUpdate(event);
+  editing = false;
+});
 const editSettings = $("edit-settings");
 editSettings.onclick = () => {
   editSettings.setAttribute("aria-expanded", String(editSettings.getAttribute("aria-expanded") !== "true"));

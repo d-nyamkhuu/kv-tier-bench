@@ -40,7 +40,9 @@ function drawTrack(track, selected, hovered = -1) {
     ctx.fillStyle = "#516075"; ctx.fillText(fmt(value) + unit, left - 5, py + 4);
   }
   ctx.textAlign = "center";
-  const interval = width < 480 ? 15 : 10;
+  const maxTicks = Math.max(2, Math.floor((width - left - right) / 42));
+  const tickSteps = values.length >= 60 ? [10, 15, 30, 60, 120, 180, 240, 360] : [1, 2, 5, 10, 15, 30];
+  const interval = tickSteps.find(step => values.length / step <= maxTicks) ?? Math.ceil(values.length / maxTicks);
   for (let i = 0; i <= values.length; i += interval) {
     ctx.fillText(String(i), x(i), height - 5);
   }
@@ -215,6 +217,7 @@ export function timeline() {
   slider.oninput = () => inspect(slider.valueAsNumber - 1);
 
   return result => {
+    const wasAtEnd = selected < 0 || selected === minutes.length - 1;
     resize.disconnect();
     container.replaceChildren();
     events.replaceChildren();
@@ -234,7 +237,7 @@ export function timeline() {
       return;
     }
     slider.max = minutes.length;
-    if (selected < 0 || selected >= minutes.length) selected = minutes.length - 1;
+    if (wasAtEnd || selected >= minutes.length) selected = minutes.length - 1;
     const peak = Math.max(...minutes.map(m => m.mean ?? 0));
     const scale = peak < 2 ? 1000 : 1;
     const markers = [];
