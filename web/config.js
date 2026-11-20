@@ -16,18 +16,24 @@ const clone = (x) => JSON.parse(JSON.stringify(x));
 export const DEFAULT_WORKLOAD = {
   requestsPerMin: 300, followUpShare: 0.8, systemTokens: 6000, inputTokens: 800, outputTokens: 400, thinkTimeS: 600,
   durationMin: 60, maxContextTokens: 65536, seed: 1,
+  // sim.synthetic's optional realism: length variation, distinct system prompts, arrival pattern
+  lengthSpread: 0, systemPrompts: 1, arrivalPattern: "steady",
 };
 export const DEFAULT_SIM = {
-  model: "qwen3.8-27b", gpu: "rtx-pro-6000", nodes: 2, gpusPerNode: 2, tp: 1, pp: 1, stageLink: "p2p-ib-ndr", attention: "dp", precision: "released", routing: "sticky",
+  model: "qwen3.8-27b", gpu: "rtx-pro-6000", nodes: 2, gpusPerNode: 8, tp: 1, pp: 1, stageLink: "p2p-ib-ndr", attention: "dp", precision: "released", routing: "round-robin",
   cpuGiB: 96, disk: null, p2p: null, shared: "obj-aws-s3-standard",
   // decodeBatch: vLLM's default max_num_seqs on GPUs with 70+ GiB (256 below), docs.vllm.ai SchedulerConfig
-  // decodeSpeed: tokens/s each request decodes at (null: fill the batch, the most tokens per GPU)
+  // decodeSpeed: tokens/s each request decodes at (null: no per-user speed target)
   decode: true, decodeGpu: "rtx-pro-6000", decodeBatch: 1024, decodeSpeed: null, transfer: "p2p-tcp-400",
   // spec: presets.SPEC_METHODS id; specTau: accepted tokens per step, overriding the method's; specCustom: the
   // "custom" method's numbers. decodeEp: GPUs the experts spread over in decode (null: the TP instance);
   // decodeOverlap: two-batch overlap hides the expert all-to-all (off: the measured EP runs sit nearer to no overlap)
   spec: "none", specTau: null, specCustom: { draft: 7, tau: 3, layers: 5, parallel: true }, decodeEp: null, decodeOverlap: false,
-  warmupMin: 20, retentionH: 1, simBlockTokens: 512,
+  warmupMin: 20, retentionH: 1, simBlockTokens: 256, peerFirst: false, saveDecode: false,
+  // prefillBatchTokens: vLLM's max_num_batched_tokens for continuous prefill batching (8192 is the vLLM, TensorRT-LLM
+  // and SGLang default; the simulator page uses it). null runs one request at a time, which the lab's target-busy
+  // costs assume.
+  prefillBatchTokens: null,
   // the variants the trade-off map combines, per slot (plus "off")
   candidates: { disk: ["fs-nvme-gen5", "fs-nebius-nrd"], p2p: ["p2p-tcp-100", "p2p-roce-400"], shared: ["obj-aws-s3-standard", "obj-aws-s3-express"] },
 };
@@ -72,6 +78,10 @@ export function validate(c) {
   for (const k of ["nodes", "gpusPerNode", "tp"]) if (!(Number.isInteger(sim[k]) && sim[k] >= 1)) errs.push(`sim.${k} must be a whole number >= 1`);
   if (![1, 2, 4, 8].includes(sim.tp)) errs.push("sim.tp must be 1, 2, 4 or 8");
   if (sim.gpusPerNode % sim.tp) errs.push("sim.tp must divide sim.gpusPerNode");
+  if (sim.gpuBudgetFraction != null && !(num(sim.gpuBudgetFraction) && sim.gpuBudgetFraction > 0 && sim.gpuBudgetFraction <= 1)) errs.push("sim.gpuBudgetFraction must be greater than 0 and at most 1");
+  if (sim.diskCapacityGiB != null && !(num(sim.diskCapacityGiB) && sim.diskCapacityGiB > 0)) errs.push("sim.diskCapacityGiB must be a positive number");
+  if (sim.prefillBatchTokens != null && !(Number.isInteger(sim.prefillBatchTokens) && sim.prefillBatchTokens >= 1)) errs.push("sim.prefillBatchTokens must be a whole number of tokens, or empty for one request at a time");
+  for (const key of ["peerFirst", "saveDecode"]) if (sim[key] != null && typeof sim[key] !== "boolean") errs.push(`sim.${key} must be a boolean`);
   if (sim.precision != null && !["released", "fp8", "fp4"].includes(sim.precision)) errs.push('sim.precision must be "released", "fp8" or "fp4"');
   if (sim.decodeSpeed != null && !(Number.isFinite(sim.decodeSpeed) && sim.decodeSpeed > 0)) errs.push("sim.decodeSpeed must be a positive number of tokens/s, or null");
   if (sim.specTau != null && !(Number.isFinite(sim.specTau) && sim.specTau >= 1)) errs.push("sim.specTau must be at least 1 (tokens per step), or null");
@@ -94,6 +104,9 @@ export function validate(c) {
     ids.add(v.id);
     if (!FAMILIES.includes(v.family)) errs.push(`${at}: family must be one of ${FAMILIES.join(", ")}`);
     if (!(num(v.bw_gib_s) && v.bw_gib_s > 0) && !(num(v.link_gbit_s) && v.link_gbit_s > 0)) errs.push(`${at}: needs bw_gib_s or link_gbit_s > 0`);
+    for (const key of ["usd_per_1k_put", "usd_per_1k_get"]) {
+      if (v[key] != null && !(num(v[key]) && v[key] >= 0)) errs.push(`${at}: ${key} must be nonnegative`);
+    }
     if (!numOrNull(v.latency_s)) errs.push(`${at}: latency_s must be a number or empty`);
     if (!Array.isArray(v.sources) || v.sources.some((s) => typeof s?.url !== "string" || !/^https:\/\//.test(s.url))) errs.push(`${at}: sources need https:// urls`);
     for (const k of ["capacity_gib", "usd_per_gib_month", "usd_per_gib_written", "usd_per_gib_read", "usd_per_hour", "efficiency", "cap_gib_s"]) if (!numOrNull(v[k])) errs.push(`${at}: ${k} must be a number or empty`);
@@ -116,6 +129,14 @@ export function importConfig(text, defaults) {
       const d = defaults.gpus?.find((x) => x.id === g?.id);
       if (d) for (const [k, v] of Object.entries(d)) if (g[k] === undefined) g[k] = structuredClone(v);
     }
+    for (const v of Array.isArray(c.variants) ? c.variants : []) {
+      const preset = defaults.variants?.find(p => p.id === v?.id);
+      if (preset?.usd_per_1k_put != null && v.usd_per_1k_put === undefined &&
+          /request fees.*left out/i.test(v.note ?? "")) v.note = preset.note;
+      for (const key of ["usd_per_1k_put", "usd_per_1k_get"]) {
+        if (preset?.[key] != null && v[key] === undefined) v[key] = preset[key];
+      }
+    }
     c.software = { ...defaults.software, ...(c.software || {}) };
     // models saved before a field existed (decode's expert shares, say) take it from the current presets; edited
     // fields stay as saved, and a model the save lacks comes back whole
@@ -124,6 +145,13 @@ export function importConfig(text, defaults) {
       for (const [id, d] of Object.entries(defaults.models)) {
         const m = c.models[id];
         if (!m || typeof m !== "object") { c.models[id] = structuredClone(d); continue; }
+        if (d.kv_layout === "deepseek-v41" && !m.kv_layout && m.kv_bytes_per_token !== 890) {
+          m.kv_layout = "custom";
+          m.prefix_replay_tokens ??= 0;
+        }
+        if (d.kv_layout === "deepseek-v41" && !m.kv_layout && m.kv_bytes_per_token === 890) {
+          for (const k of ["kv_bytes_per_token", "kv_bytes_per_token_by_tp", "read_fixed_bytes", "state_bytes_per_prefix", "state_window_bytes", "kv_dtype_bytes", "spec", "arch", "released", "note", "sources", "assumptions"]) m[k] = structuredClone(d[k]);
+        }
         for (const [k, v] of Object.entries(d)) if (m[k] === undefined) m[k] = structuredClone(v);
       }
     }

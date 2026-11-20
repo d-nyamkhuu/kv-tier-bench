@@ -85,7 +85,6 @@ const SHORT = {
   "fs-nvme-gen5": "NVMe Gen5", "fs-nvme-gen4": "NVMe Gen4", "fs-nebius-local-ssd": "Nebius local SSD", "fs-nebius-nrd": "Nebius network SSD",
   "fs-nebius-io-m3": "Network SSD IO M3", "fs-nebius-network-ssd": "Network SSD (EC)", "fs-sata-ssd": "SATA SSD", "fs-hdd": "HDD",
   "obj-aws-s3-standard": "S3 Standard", "obj-aws-s3-express": "S3 Express", "obj-nebius-enhanced": "Nebius S3 Enhanced", "obj-nebius-standard": "Nebius S3 Standard",
-  "fs-nebius-shared-fs": "Shared filesystem",
   "p2p-tcp-10": "TCP 10G", "p2p-tcp-100": "TCP 100G", "p2p-tcp-200": "TCP 200G", "p2p-tcp-400": "TCP 400G",
   "p2p-ib-hdr": "IB HDR 200G", "p2p-ib-ndr": "IB NDR 400G", "p2p-roce-200": "RoCE 200G", "p2p-roce-400": "RoCE 400G",
 };
@@ -161,21 +160,21 @@ export const VARIANTS = [
 
   // ---------------------------------------------------------------------------------------------- shared storage
   obj({
-    id: "obj-aws-s3-standard", name: "Amazon S3 Standard", latency_s: S3_STANDARD_LATENCY_S, usd_per_gib_month: 0.023,
+    id: "obj-aws-s3-standard", name: "Amazon S3 Standard", latency_s: S3_STANDARD_LATENCY_S, usd_per_gib_month: 0.023, usd_per_1k_put: 0.005, usd_per_1k_get: 0.0004,
     sources: [
       src("Amazon S3 performance", AWS_S3, "These applications can achieve consistent small object latencies (and first-byte-out latencies for larger objects) of roughly 100–200 milliseconds."),
       src("Amazon S3 pricing (US East, N. Virginia)", AWS_PRICES, "Standard Storage First 50 TB per GB Mo | $0.023"),
     ],
-    note: "One bucket for the whole cluster, unbounded. GET request fees ($0.0004 per 1,000) are left out; they depend on the object size the connector uses.",
+    note: "One bucket for the whole cluster, unbounded. US East request prices are $0.005 per thousand PUTs and $0.0004 per thousand GETs or HEADs.",
   }),
   obj({
-    id: "obj-aws-s3-express", name: "Amazon S3 Express One Zone", latency_s: 0.007, usd_per_gib_month: 0.11, usd_per_gib_written: 0.0032, usd_per_gib_read: 0.0006,
+    id: "obj-aws-s3-express", name: "Amazon S3 Express One Zone", latency_s: 0.007, usd_per_gib_month: 0.11, usd_per_1k_put: 0.00113, usd_per_1k_get: 0.00003, usd_per_gib_written: 0.0032, usd_per_gib_read: 0.0006,
     sources: [
       src("AWS Storage Blog: Spark on S3 Express One Zone (03 Sep 2026)", "https://aws.amazon.com/blogs/storage/run-spark-31-faster-and-optimize-compute-costs-with-amazon-s3-express-one-zone-on-amazon-emr/", "S3 Express One Zone completing each read in 7 milliseconds instead of 121 milliseconds"),
       src("Amazon S3 Express One Zone", "https://aws.amazon.com/s3/storage-classes/express-one-zone/", "consistent single-digit millisecond request latency"),
       src("Amazon S3 pricing (US East, N. Virginia)", AWS_PRICES, "Express One Zone Storage $0.11 per GB Mo ... Object Upload $0.0032 per GB ... Object Retrieval $0.0006 per GB"),
     ],
-    note: "Latency is the mean GET AWS measured on this class (S3 Standard: 121 ms in the same test). Upload and retrieval fees per GB are included; request fees are left out.",
+    note: "Latency is the mean GET AWS measured on this class (S3 Standard: 121 ms in the same test). Includes upload, retrieval, PUT, GET and HEAD charges (US East).",
   }),
   obj({
     id: "obj-nebius-enhanced", name: "Nebius Object Storage, Enhanced Throughput", latency_s: S3_STANDARD_LATENCY_S / 2, usd_per_gib_month: 0.11,
@@ -198,18 +197,6 @@ export const VARIANTS = [
     assumptions: ["latency_s", "link_gbit_s"],
     note: "Latency: AWS S3 Standard's. Throughput: a tenth of Enhanced Throughput, per Nebius's \"up to 10x\". Region-wide cap of 20 GB/s per tenant, which the simulator does not enforce. GET fees left out.",
   }),
-  {
-    id: "fs-nebius-shared-fs", family: "fs", name: "Nebius Shared Filesystem, 4 TiB",
-    bw_gib_s: 3.7, efficiency: NVME_VS_FIO, latency_s: NVME_LATENCY_S, capacity_gib: 4096, shared: true, bill: "provisioned", usd_per_gib_month: 0.08, usd_per_hour: 0,
-    sources: [
-      src("Nebius disk types", S.types, "Each 4 TiB of SSD filesystem improves ... Read bandwidth: by up to 3.70 GiB/s"),
-      src("Nebius disk types", S.types, "Tested read bandwidth per client: up to 15 GiB/s"),
-      src("Nebius Compute pricing", S.pricing, "Shared Filesystem SSD | $0.08"),
-      ...pykvSources,
-    ],
-    assumptions: ["efficiency", "latency_s"], note: "One filesystem for the whole cluster. Read bandwidth grows with size, up to 15 GiB/s per client.",
-  },
-
   // ---------------------------------------------------------------------------------------------- peer network
   tcp(10),
   tcp(100),
@@ -305,7 +292,8 @@ const NVL = {
 // tflops_fp8: dense FP8 peak, used for models released in FP8 (weights and activations). Set to twice BF16, the ratio
 // NVIDIA's Hopper and Blackwell datasheets show; not quoted per GPU here, so marked as an assumption.
 // tflops_fp4: dense FP4, on GPUs with FP4 tensor cores (Blackwell) only, set to twice FP8 (assumption, same ratio);
-// Hopper and Ada have none, so FP4 weights compute at FP8 there.
+// Hopper and Ada have none, so FP4 weights compute at FP8 there. Only decode uses it: prefill runs FP4 at the FP8 rate
+// (model.js prefillTflops).
 const BLACKWELL = new Set(["rtx-pro-6000", "b200", "b300", "gb200"]);
 const gpu = (g) => ({ mbu: MBU, nvlink_gb_s: null, nvlink_domain: g.pcie_only || !g.nvlink_gb_s ? 1 : 8, tflops_fp8: 2 * g.tflops_bf16, tflops_fp4: BLACKWELL.has(g.id) ? 4 * g.tflops_bf16 : null, ...g,
   assumptions: [...(g.assumptions ?? []), "tflops_fp8", ...(BLACKWELL.has(g.id) ? ["tflops_fp4"] : [])],
@@ -417,19 +405,20 @@ const MODEL_SPECS = {
     note: "Weights alone are 1.56 TB: in one node only 8 B300s hold it (vLLM's recipe runs it at TP 8 on Blackwell Ultra); other GPUs need two or more nodes.",
   },
   "deepseek-v4.1-flash": {
-    name: "DeepSeek V4.1 Flash", hf_id: "deepseek-ai/DeepSeek-V4.1-Flash", drafters: ["dspark"], drafter_params: { dspark: { draft: 4, layers: 3 } }, drafter_source: '"num_nextn_predict_layers": 3, "dspark_block_size": 5, "dspark_n_routed_experts": 128, "dspark_num_experts_per_tok": 3', released: "FP8, FP4 experts, FP4 KV", arch: "MoE 552B / 8B active in prefill; CSA2 compressed sparse attention, FP4 KV",
+    name: "DeepSeek V4.1 Flash", hf_id: "deepseek-ai/DeepSeek-V4.1-Flash", drafters: ["dspark"], drafter_params: { dspark: { draft: 4, layers: 3 } }, drafter_source: '"num_nextn_predict_layers": 3, "dspark_block_size": 5, "dspark_n_routed_experts": 128, "dspark_num_experts_per_tok": 3', kv_layout: "deepseek-v41", released: "FP8, FP4 experts, fp8_ds_mla KV", arch: "MoE 552B / 8B active in prefill; CSA2 compressed sparse attention, FP8 KV",
     spec: {
-      num_layers: 40, hidden_size: 5120, kv_dtype_bytes: 0.5, total_params: 552e9, active_params: 8e9, weights_bytes: 510296708312, compute_dtype: "fp8", block_size: 64, decode_active_params: 16e9, experts: moe({ layers: 40, routed: 384, per_token: 6, width: 5120, inter: 2304 }),
+      num_layers: 40, hidden_size: 5120, kv_dtype_bytes: 1, total_params: 552e9, active_params: 8e9, weights_bytes: 510296708312, compute_dtype: "fp8", block_size: 64, decode_active_params: 16e9, experts: moe({ layers: 40, routed: 384, per_token: 6, width: 5120, inter: 2304 }),
       layers: [
-        { type: "given", kv_bytes_per_token: 890, copies_per_tp: true },
+        { type: "given", kv_bytes_per_token: (528 + 132) * (3 / 2 + 1), copies_per_tp: true },
+        { type: "swa", count: 40, kv_heads: 1, q_heads: 0, k_dim: 528, v_dim: 0, window: 128 },
         { type: "full", stores: false, count: 40, q_heads: 64, kv_heads: 1, k_dim: 512, v_dim: 512, topk: 512 },
         { type: "full", stores: false, count: 8, q_heads: 0, kv_heads: 1, k_dim: 0, v_dim: 0, topk: 1, index_heads: 32, index_dim: 128 }, // the indexer only
       ],
     },
     sources: [expertSrc("deepseek-ai/DeepSeek-V4.1-Flash", '"n_routed_experts": 384, "num_experts_per_tok": 6, "moe_intermediate_size": 2304, "expert_dtype": "fp4"'), cfgSrc("deepseek-ai/DeepSeek-V4.1-Flash"), filesSrc("deepseek-ai/DeepSeek-V4.1-Flash", 510296708312),
-      cardSrc("deepseek-ai/DeepSeek-V4.1-Flash", "these designs reduce the global KV cache footprint to 890 bytes per token ... activate only 8B parameters per token during prefill and 16B during decode ... SWA Bounded Replay reconstructs missing SWA KV states by replaying only the most recent n_win tokens, avoiding the need to persist SWA KV to SSD"), VLLM_MLA_TP],
-    assumptions: ["block_size", "its DSpark drafter: 4 drafted tokens per block of 5 and 3 layers of the model's size (the config's dspark_block_size and next-token layers); accepted tokens as measured on Qwen3-8B", "attention FLOPs (64 heads of 512 over the top 512 tokens on 40 layers, indexer on 8)", "the 890 B copied on every TP rank, like MLA"],
-    note: "KV per token is the card's figure (FP4). The sliding-window part is replayed, not stored, so nothing fixed is cached; the replay of 128 tokens is not modeled. Prefill uses the card's 8B active parameters, decode its 16B.",
+      src("LMCache validated DeepSeek V4.1 recipe", "https://docs.lmcache.ai/recipes/deepseek_v41_flash.html", "fp8_ds_mla, 128-token window and compressed/indexer groups"), src("vLLM V4.1 packed KV and index K", "https://github.com/vllm-project/vllm/blob/82c6b325b49ce361f5a295eb7d932e1b439e187d/vllm/models/deepseek_v41/attention.py", "528/584-byte KV records, 132-byte FP8 index K; only KV sources own the index K cache"), cardSrc("deepseek-ai/DeepSeek-V4.1-Flash", "these designs reduce the global KV cache footprint to 890 bytes per token ... activate only 8B parameters per token during prefill and 16B during decode ... SWA Bounded Replay reconstructs missing SWA KV states by replaying only the most recent n_win tokens, avoiding the need to persist SWA KV to SSD"), VLLM_MLA_TP],
+    assumptions: ["block_size", "its DSpark drafter: 4 drafted tokens per block of 5 and 3 layers of the model's size (the config's dspark_block_size and next-token layers); accepted tokens as measured on Qwen3-8B", "attention FLOPs (64 heads of 512 over the top 512 tokens on 40 layers, indexer on 8)", "bounded replay rebuilds the trailing window on a prefix hit; logical payload excludes page padding"],
+    note: "LMCache fp8_ds_mla payload estimate. Four layers own both compressed KV and index K. All 40 layers use a 128-token live window. With bounded replay enabled, persistent caches hold only compressed KV and index K. Excludes scratch rings and page padding. Prefill uses the card's 8B active parameters, decode its 16B.",
   },
   "glm-5.3": {
     name: "GLM-5.3", hf_id: "zai-org/GLM-5.3", drafters: ["mtp"], drafter_source: '"num_nextn_predict_layers": 1', released: "FP8", arch: "MoE 744B / 40B active; MLA with DeepSeek sparse attention on all 78 layers",
@@ -554,5 +543,5 @@ export const SPEC_METHODS = [
 
 export const MODELS = Object.fromEntries(Object.entries(MODEL_SPECS).map(([id, x]) => {
   const { spec, ...info } = x;
-  return [id, { ...info, ...deriveArch(spec), spec, assumptions: x.assumptions ?? [] }];
+  return [id, { ...info, ...deriveArch(spec), ...(x.kv_layout === "deepseek-v41" ? { read_fixed_bytes: 0, prefix_replay_tokens: 128 } : {}), spec, assumptions: x.assumptions ?? [] }];
 }));

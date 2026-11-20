@@ -1,10 +1,12 @@
 // The page: the configurator, the live estimate, the cluster diagram and the trade-off map. Simulations run in
 // worker.js; the maths is in model.js, sim.js and scenario.js.
 
-import { defaultConfig, loadSaved, save } from "./config.js";
+import { defaultConfig, loadSaved, save, validate } from "./config.js";
+import { readAdvancedHash, withOverrides } from "./sim-settings.js";
+import { loadOpenRouterPrices, showInputPrices } from "./openrouter.js";
 import { renderDiagram } from "./diagram.js";
 import { drawFitChart, initMethods, renderMethods, slotOf } from "./methods.js";
-import { gpuKvGiB, served, variantBandwidth } from "./model.js";
+import { gpuKvGiB, PRECISION_LABELS, served, variantBandwidth } from "./model.js";
 import { GPUS, MODELS, MOONCAKE_TRACES, SOFTWARE, SPEC_METHODS, VARIANTS } from "./presets.js";
 import { COMPARE_INSTANCES, isLab, LAB_SLOTS, labFrom, labId, logSpace, propOf, propsFor, SLOT_NAME, TARGET_BUSY } from "./lab.js";
 import { fitFor, MAX_SIM_NODES, paretoFrontier } from "./scenario.js";
@@ -36,7 +38,7 @@ const fill = (host, ...kids) => host.replaceChildren(...kids.filter((k) => k != 
 function capacity(gib) {
   if (gib == null) return "no size limit";
   if (!(gib > 0)) return "";
-  const m = served(cfg.models[cfg.sim.model], { precision: cfg.sim.precision, tp: cfg.sim.tp, attention: cfg.sim.attention });
+  const m = served(cfg.models[cfg.sim.model], { gpu: gpuOf(cfg.sim.gpu), precision: cfg.sim.precision, tp: cfg.sim.tp, attention: cfg.sim.attention });
   const bytes = gib * 2 ** 30;
   const tok = m.kv_bytes_per_token > 0 ? bytes / m.kv_bytes_per_token : null;
   const big = (x) => (x >= 1e9 ? `${fmt(x / 1e9, 3)}B` : x >= 1e6 ? `${fmt(x / 1e6, 3)}M` : x >= 1e3 ? `${fmt(x / 1e3, 3)}k` : fmt(x, 3));
@@ -74,8 +76,8 @@ function perGroup(gib) {
 }
 
 function kvFor(gpu, tp = cfg.sim.tp, pp = cfg.sim.pp ?? 1) {
-  const m = served(cfg.models[cfg.sim.model], { precision: cfg.sim.precision, tp, attention: cfg.sim.attention });
-  return gpuKvGiB(m, gpu, cfg.software, tp, pp);
+  const m = served(cfg.models[cfg.sim.model], { gpu, precision: cfg.sim.precision, tp, attention: cfg.sim.attention });
+  return gpuKvGiB(m, gpu, cfg.software, tp, pp) * (cfg.sim.gpuBudgetFraction ?? 1);
 }
 
 // "GPU + CPU + NVMe Gen5 + S3 Standard" for a setup, with tier overrides
@@ -222,6 +224,7 @@ function onWorker({ data }) {
 // ------------------------------------------------------------------------------------------------ configurator
 
 function renderConfig() {
+  showInputPrices($("openrouter-input-prices"), market, cfg.sim.model);
   renderGpuPicker();
   renderCluster();
   renderLab();
@@ -257,19 +260,20 @@ function renderGpuPicker() {
     el("optgroup", { label: "Other open-weight models" }, models.filter((k) => !inS1(k)).map(opt)));
   $("ctl-model").onchange = (ev) => { sim.model = ev.target.value; fitModel(); changed({ methods: true }); };
   const prec = sim.precision ?? "released";
-  $("ctl-precision").replaceChildren(...[["released", "As released"], ["fp8", "FP8"], ["fp4", "FP4"]].map(([v, t]) => el("button", {
+  $("ctl-precision").replaceChildren(...Object.entries(PRECISION_LABELS).map(([v, t]) => el("button", {
     type: "button", role: "radio", "aria-checked": String(v === prec), text: t,
-    title: v === "released" ? `as the checkpoint ships: ${cfg.models[sim.model].released ?? "BF16"}` : v === "fp8" ? "FP8 weights, compute and KV cache" : "NVFP4 weights (4.5 bits per parameter), FP4 compute on Blackwell, FP8 KV cache",
+    title: v === "released" ? `as the checkpoint ships: ${cfg.models[sim.model].released ?? "BF16"}` : v === "fp8" ? "FP8 weights, compute and KV cache" : "NVFP4 weights (4.5 bits per parameter), prefill at the FP8 rate, FP4 decode compute on Blackwell, FP8 KV cache",
     onclick: () => { sim.precision = v; fitModel(); changed({ methods: true }); },
   })));
-  const mm = cfg.models[sim.model], mt = served(mm, { precision: prec, tp: sim.tp, attention: sim.attention });
+  const mm = cfg.models[sim.model], mt = served(mm, { gpu: gpuOf(sim.gpu), precision: prec, tp: sim.tp, attention: sim.attention });
   const mib = (b) => `${fmt(b / 2 ** 20, 3)} MiB`;
   const params = (n) => (n >= 1e12 ? `${fmt(n / 1e12, 3)}T` : `${fmt(n / 1e9, 3)}B`);
   $("model-brief").textContent = `· ${params(mm.params)} active · ${fmt(mt.kv_bytes_per_token / 1024, 3)} KiB KV per token · ${fmt(mt.weights_bytes / 1e9, 3)} GB weights`;
   fill($("model-hint"),
     `${mm.arch ?? ""}${mm.arch ? ". " : ""}${fmt(mt.kv_bytes_per_token / 1024, 3)} KiB of KV per token at TP ${sim.tp}`,
+    mt.prefix_replay_tokens ? `, rebuilding the last ${mt.prefix_replay_tokens} tokens of attention window on a cache hit` : "",
     mt.read_fixed_bytes > 0 ? `, plus ${mib(mt.read_fixed_bytes)} per cached prefix that does not grow with its length` : "",
-    `. ${params(mm.params)} parameters active per token (${params(mm.total_params ?? mm.params)} in all). Released as ${mm.released ?? "BF16"}; served ${prec === "released" ? "as released" : `in ${prec.toUpperCase()}`}: ${fmt(mt.weights_bytes / 1e9, 4)} GB of weights, computed in ${(mt.compute_dtype ?? "bf16").toUpperCase()}${mt.compute_dtype === "fp4" && !gpuOf(sim.gpu).tflops_fp4 ? ` (at FP8 speed: ${gpuShort(gpuOf(sim.gpu))} has no FP4 tensor cores)` : ""}.`,
+    `. ${params(mm.params)} parameters active per token (${params(mm.total_params ?? mm.params)} in all). Released as ${mm.released ?? "BF16"}; served ${prec === "released" ? "as released" : `in ${prec.toUpperCase()}`}: ${fmt(mt.weights_bytes / 1e9, 4)} GB of weights, computed in ${(mt.compute_dtype ?? "bf16").toUpperCase()}${mt.compute_dtype === "fp4" ? (gpuOf(sim.gpu).tflops_fp4 ? " (prefill at the FP8 rate, as measured)" : ` (at FP8 speed: ${gpuShort(gpuOf(sim.gpu))} has no FP4 tensor cores)`) : ""}.`,
     mm.assumptions?.length ? el("span", {}, " ", assumptionBadge(mm.assumptions.join("; "))) : null,
     mm.note ? el("span", {}, ` ${mm.note}`) : null,
     mm.sources?.[0] ? el("span", {}, " ", el("a", { href: mm.sources[0].url, text: "config.json", target: "_blank", rel: "noopener" })) : null);
@@ -319,7 +323,7 @@ function renderCluster() {
     kv > 0 ? `${fmt(kv, 3)} GiB of KV cache per instance.` : el("b", { class: "error", text: `${cfg.models[sim.model].name ?? sim.model} does not fit ${gpuShort(g)} at ${where}.` }),
     pp > 1 ? el("span", {}, " A request passes the stages in turn; the next one enters the first stage as soon as it is free. ", assumptionBadge("ideal pipelining")) : null,
     sim.tp > 1 && g.pcie_only ? el("span", {}, " ", assumptionBadge("TP over PCIe"), " The TP efficiency comes from NVLink machines.") : null,
-    sim.nodes > MAX_SIM_NODES ? ` Simulated at ${MAX_SIM_NODES} nodes with the same load per node, then scaled.` : null,
+    sim.nodes > MAX_SIM_NODES ? ` Live estimates replay the full cluster. Sweeps use up to ${MAX_SIM_NODES} nodes at the same load per node.` : null,
   );
 }
 
@@ -864,8 +868,13 @@ function renderSettings() {
   );
   const dec = el("label", { class: "field check", id: "ctl-decode" }, el("input", { type: "checkbox", checked: !!sim.decode, onchange: (ev) => { sim.decode = ev.target.checked; re(); } }), el("span", { text: "Decode on GPUs of its own (disaggregated)" }));
   $("serving-fields").replaceChildren(
+    ...[["peerFirst", "Prefer peer CPU over shared storage after local SSD"], ["saveDecode", "Save generated reply chunks to backing tiers"]].map(([key, label]) =>
+      el("label", { class: "field check" }, el("input", { type: "checkbox", checked: !!sim[key], onchange: ev => { sim[key] = ev.target.checked; re(); } }), el("span", { text: label }))),
+    numField("Prefill batch budget (tokens per step; empty = one request at a time)", sim, "prefillBatchTokens", {
+      step: 1, onchange: () => { const v = sim.prefillBatchTokens; sim.prefillBatchTokens = v > 0 ? Math.round(v) : null; re(); } }),
     el("label", { class: "field" }, el("span", { text: "Routing" }),
       el("select", { id: "ctl-routing", onchange: (ev) => { sim.routing = ev.target.value; re(); } },
+        el("option", { value: "round-robin", text: "Round-robin across nodes", selected: sim.routing === "round-robin" }),
         el("option", { value: "sticky", text: "Sticky: a conversation stays on one instance", selected: sim.routing === "sticky" }),
         el("option", { value: "random", text: "Random instance per request", selected: sim.routing === "random" }))),
     el("label", { class: "field" }, el("span", { text: "Attention across a TP group" }),
@@ -885,7 +894,7 @@ function renderSettings() {
           el("option", { value: "", text: "free (same machine)", selected: !sim.transfer }),
           slotVariants("p2p").map((v) => el("option", { value: v.id, text: v.short, selected: v.id === sim.transfer })))),
     ] : []),
-    numField("Simulated block (tokens)", sim, "simBlockTokens", { step: 1, onchange: () => { sim.simBlockTokens = Math.max(16, Math.round(sim.simBlockTokens ?? 512)); re(); } }),
+    numField("Simulated block (tokens)", sim, "simBlockTokens", { step: 1, onchange: () => { sim.simBlockTokens = Math.max(16, Math.round(sim.simBlockTokens ?? 256)); re(); } }),
   );
 }
 
@@ -934,11 +943,11 @@ function epFields(sim, re) {
   return out;
 }
 
-// Decode speed per request: blank fills the batch; a number runs the largest batch that holds it. OpenRouter's p50 for
+// Decode speed per request: an optional target limits the size of a batch of ready sequences. OpenRouter's p50 for
 // the model, when the snapshot has one, is a click away.
 function speedField(sim, re) {
   const p50 = market?.models?.[sim.model]?.speed;
-  const field = numField("Decode speed per request (tok/s)", sim, "decodeSpeed", { id: "ctl-decode-speed", placeholder: "blank: fill the batch",
+  const field = numField("Decode speed per request (tok/s)", sim, "decodeSpeed", { id: "ctl-decode-speed", placeholder: "no speed target",
     onchange: () => { if (!(sim.decodeSpeed > 0)) sim.decodeSpeed = null; re(); } });
   if (p50?.p50_tok_s) field.append(el("button", { type: "button", class: "link", id: "ctl-decode-speed-or",
     text: `OpenRouter p50: ${fmt(p50.p50_tok_s, 3)} tok/s (${p50.as_of})`, title: p50.url,
@@ -1052,7 +1061,8 @@ function renderEstimate() {
     sim.decode ? ["Decode GPUs", `${r.decodeGpus} × ${gpuShort(gd)}`] : null,
     ["Prefill GPUs, $/hour", per(r.usd.prefill, gp)],
     sim.decode ? ["Decode GPUs, $/hour", per(r.usd.decode, gd)] : null,
-    ["Storage, $/hour", usd(r.usd.storage / hours)],
+    ["Storage and requests, $/hour", usd(r.usd.storage / hours)],
+    r.requestUsd ? ["Included S3 request charges, $/hour", usd(r.requestUsd / hours)] : null,
     r.usd.fixed ? ["Network and other, $/hour", usd(r.usd.fixed / hours)] : null,
     ["Total, $/hour", r.priced ? usd(r.usd.total / hours) : "no price"],
     ["Per 1M tokens (in + out)", r.priced ? usd(r.usdPer1MTokens) : "no price"],
@@ -1370,7 +1380,7 @@ function bindMinibar() {
 async function main() {
   try {
     s1 = await fetch("./data/s1.json").then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); });
-    market = await fetch("./data/openrouter.json").then((r) => (r.ok ? r.json() : null)).catch(() => null); // optional
+    market = await loadOpenRouterPrices();
   } catch (e) {
     $("load-error").hidden = false;
     $("load-error").textContent = `Could not load data/s1.json (${e.message}). Serve this folder over HTTP, e.g. python -m http.server -d web.`;
@@ -1380,10 +1390,23 @@ async function main() {
   const saved = loadSaved(storage, defaults);
   cfg = saved ?? structuredClone(defaults);
   if (!cfg.models[cfg.sim.model]) cfg.sim.model = Object.keys(cfg.models)[0];
+  // The simulator's "Open this setup" link carries its settings in the hash. They apply to this visit only: nothing is
+  // saved until the user changes something here. The hash is cleared so a reload returns to the saved configuration.
+  const handoff = readAdvancedHash(location.hash);
+  let fromSimulator = false;
+  if (handoff) {
+    const next = withOverrides(cfg, handoff);
+    if (!validate(next).length) {
+      cfg = next;
+      fromSimulator = true;
+    }
+    history.replaceState(null, "", location.pathname + location.search);
+  }
   syncLastPick();
   initTheme();
   initMethods({ cfg: () => cfg, changed, s1, defaults, replaceCfg, storage, market });
-  $("config-status").textContent = saved ? "Loaded your saved configuration from this browser." : "Defaults: published figures.";
+  $("config-status").textContent = fromSimulator ? "Showing the simulator’s setup. It is saved in this browser once you change something here."
+    : saved ? "Loaded your saved configuration from this browser." : "Defaults: published figures.";
   renderConfig();
   renderMethods();
   renderChips();

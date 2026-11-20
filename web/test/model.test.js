@@ -89,7 +89,7 @@ test("windowed attention costs n x window, not n^2, once past the window", async
 });
 
 test("serving precision: FP8 halves bf16 weights and KV, FP4 is 4.5 bits a weight; nothing grows past the release", async () => {
-  const { withPrecision, peakTflops } = await import("../model.js");
+  const { withPrecision, peakTflops, prefillTflops } = await import("../model.js");
   const { MODELS } = await import("../presets.js");
   const g = MODELS["gemma-4-31b"];
   const f8 = withPrecision(g, "fp8"), f4 = withPrecision(g, "fp4");
@@ -98,7 +98,7 @@ test("serving precision: FP8 halves bf16 weights and KV, FP4 is 4.5 bits a weigh
   assert.equal(f8.kv_bytes_per_token, g.kv_bytes_per_token / 2);
   assert.equal(f8.read_fixed_bytes, g.read_fixed_bytes / 2); // Gemma's fixed part is all sliding-window KV
   assert.equal(withPrecision(g, "released"), g);
-  const ds = MODELS["deepseek-v4.1-flash"]; // released FP8 with FP4 experts and an FP4 KV cache
+  const ds = MODELS["deepseek-v4.1-flash"]; // released FP8 with FP4 experts and packed FP8 KV
   assert.equal(withPrecision(ds, "fp8").weights_bytes, ds.weights_bytes);
   assert.equal(withPrecision(ds, "fp8").kv_bytes_per_token, ds.kv_bytes_per_token);
   const kimi = MODELS["kimi-k3"]; // linear-attention state stays bf16
@@ -106,4 +106,7 @@ test("serving precision: FP8 halves bf16 weights and KV, FP4 is 4.5 bits a weigh
   // FP4 computes at FP4 on Blackwell, at FP8 where there are no FP4 tensor cores
   assert.equal(peakTflops(f4, { tflops_bf16: 1, tflops_fp8: 2, tflops_fp4: 4 }), 4);
   assert.equal(peakTflops(f4, { tflops_bf16: 1, tflops_fp8: 2, tflops_fp4: null }), 2);
+  // prefill runs FP4 at the FP8 rate (fitted to InferenceX's DeepSeek-R1 NVFP4 runs)
+  assert.equal(prefillTflops(f4, { tflops_bf16: 1, tflops_fp8: 2, tflops_fp4: 4 }), 2);
+  assert.equal(prefillTflops(withPrecision(g, "fp8"), { tflops_bf16: 1, tflops_fp8: 2, tflops_fp4: 4 }), 2);
 });

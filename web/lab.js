@@ -68,14 +68,19 @@ const withRate = (c, rpm) => ({ ...c, workload: { ...c.workload, requestsPerMin:
 // The setup at the config's load (`first`, the TTFT a user sees), then loaded until its prefill GPUs are busy `target`
 // of the time (`cap`, what serving costs at that utilization). The busy share grows nearly in proportion to the rate,
 // so a few proportional corrections land within a few percent.
+// The search loads the GPUs on the one-at-a-time prefill model, whose busy time grows in proportion to the load.
+// With continuous prefill batching on, `first` (the TTFT at the user's load) stays batched; the target-busy cost does not.
 export function atBusy(c, over = {}, { target = TARGET_BUSY, first = null, steps = 4 } = {}) {
   const r0 = first ?? runScenario(c, over);
   if (r0.error || !r0.requests) return { first: r0, cap: null };
-  let rpm = c.workload.requestsPerMin, r = r0;
+  const batched = (over.prefillBatchTokens ?? c.sim.prefillBatchTokens) > 0;
+  const serial = batched ? { ...over, prefillBatchTokens: null } : over;
+  let rpm = c.workload.requestsPerMin, r = batched ? runScenario(c, serial) : r0;
+  if (r.error || !r.requests) return { first: r0, cap: null };
   for (let i = 0; i < steps && Math.abs(r.utilization / target - 1) > 0.03; i++) {
     if (!(r.utilization > 0)) break;
     rpm = Math.min(2e5, Math.max(0.05, (rpm * target) / Math.min(r.utilization, 4)));
-    r = runScenario(withRate(c, rpm), over);
+    r = runScenario(withRate(c, rpm), serial);
     if (r.error || !r.requests) return { first: r0, cap: null };
   }
   // the last run lands within a few percent of the target; the rest is closed in proportion: prefill GPUs cost the

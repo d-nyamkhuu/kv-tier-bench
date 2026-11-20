@@ -127,6 +127,7 @@ export const curve = (rows) => rows.map((r) => [r.tokens, r.ttft_s]).sort((a, b)
 // Bytes a prefix of `tokens` occupies in a tier: KV for every token plus a fixed part (the hybrid model's
 // linear-attention state snapshot).
 // `state` false: the KV blocks only (a hit spread over tiers reads the state from the tier holding its last block).
+const windowFraction = (m, tokens) => m.kv_layout === "deepseek-v41" ? Math.min(tokens / 128, 1) : 1;
 export const prefixBytes = (m, tokens, state = true) => (tokens > 0 ? (state ? m.read_fixed_bytes : 0) + m.kv_bytes_per_token * tokens : 0);
 
 // Weighted least squares of y = L + c*x with weights 1/y^2 (relative error), L >= 0. Returns {L, c}.
@@ -247,7 +248,7 @@ export function gpuKvGiB(m, gpu, sw, tp = 1, pp = 1) {
   return pp * tp * (gpu.mem_gib * sw.gpu_memory_utilization - sw.activation_gib_per_gpu) - m.weights_bytes / GIB;
 }
 
-const perSeqBytes = (m, ctxTokens) => m.state_bytes_per_prefix + m.kv_bytes_per_token * ctxTokens;
+export const perSeqBytes = (m, ctxTokens) => m.state_bytes_per_prefix * windowFraction(m, ctxTokens) + m.kv_bytes_per_token * ctxTokens;
 
 // The share of an MoE model's routed experts a decode batch touches: each of `batch` tokens picks per_token of
 // routed experts, independently and evenly (an assumption: real routers are skewed, which touches fewer).
@@ -339,11 +340,18 @@ export const prefillFlops = (m, n) => 2 * m.params * n + attnFlops(m, n);
 export const peakTflops = (m, gpu) =>
   (m.compute_dtype === "fp4" && gpu.tflops_fp4) || ((m.compute_dtype === "fp8" || m.compute_dtype === "fp4") && gpu.tflops_fp8) || gpu.tflops_bf16;
 
+// Prefill's peak: FP4 models prefill at the FP8 rate. InferenceX measures DeepSeek-R1 NVFP4 at 208-215 ms for an idle
+// 8k prompt on 4 B200s. The FP8 rate predicts 192-201 ms; the FP4 peak predicts 130 ms
+// (docs/design/prefill-batching.md). Decode keeps peakTflops.
+export const prefillTflops = (m, gpu) => (m.compute_dtype === "fp4" && gpu.tflops_fp8) || peakTflops(m, gpu);
+
 // Serving precision. "released": as the checkpoint ships. "fp8": FP8 weights (1 byte per parameter; block scales
 // are negligible) and FP8 compute, with vLLM's --kv-cache-dtype fp8. "fp4": NVFP4 weights (4 bits + one FP8 scale per
-// 16 values: 4.5 bits per parameter), FP4 compute where the GPU has FP4 tensor cores (Blackwell; else FP8), FP8 KV.
+// 16 values: 4.5 bits per parameter), FP8 KV; decode computes in FP4 where the GPU has FP4 tensor cores (Blackwell;
+// else FP8), prefill at the FP8 rate (prefillTflops).
 // Weights never grow past what was released; a KV cache already below 1 byte per value stays as it is; the
 // linear-attention state stays bf16. Every weight is counted at that precision, embeddings included: an assumption.
+export const PRECISION_LABELS = { released: "As released", fp8: "FP8", fp4: "FP4" };
 export const PRECISIONS = { released: null, fp8: { bits: 8, compute: "fp8" }, fp4: { bits: 4.5, compute: "fp4" } };
 export function withPrecision(m, precision = "released") {
   const p = PRECISIONS[precision];
@@ -363,7 +371,17 @@ export function withPrecision(m, precision = "released") {
 }
 
 // The model as an instance serves it: precision, then TP and attention layout.
-export const served = (m, { precision = "released", tp = 1, attention = "tp" } = {}) => withTp(withPrecision(m, precision), tp, attention);
+export function served(m, { precision = "released", tp = 1, attention = "tp", gpu } = {}) {
+  const model = withTp(withPrecision(m, precision), tp, attention);
+  if (model.kv_layout !== "deepseek-v41") return model;
+  // fp8_ds_mla, FP8 index K. Three ratio-2 source layers and one ratio-1
+  // source own both records. The other index/query layers reuse those keys.
+  const row = !gpu || ["b200", "gb200", "b300"].includes(gpu.id) ? 528 : 584;
+  const copies = attention === "dp" ? 1 : tp;
+  const windowBytes = 128 * 40 * row * copies;
+  return { ...model, kv_bytes_per_token: (row + 132) * 2.5 * copies,
+    state_window_bytes: windowBytes, read_fixed_bytes: 0, state_bytes_per_prefix: windowBytes, prefix_replay_tokens: 128 };
+}
 
 // Pipeline parallelism across nodes (`pp` stages, TP inside each node, as vLLM deploys a model too big for one node):
 // a request passes the stages one after another, so its prefill takes as long as on one TP group holding every layer,
@@ -374,7 +392,7 @@ export const stageHop = (m, link) => (link ? (n) => (link.latency_s ?? 0) + (n *
 // The per-model timing functions the simulator calls, for one instance of `gpu`: TP GPUs, in `pp.stages` nodes
 // joined by `pp.link`. `sw`: the software constants.
 export function timing(m, gpu, sw, tp = 1, eff = TP_EFF, { stages = 1, link = null } = {}) {
-  const peak = peakTflops(m, gpu) * 1e12 * gpu.prefill_mfu * tp * tpEff(eff.prefill, tp);
+  const peak = prefillTflops(m, gpu) * 1e12 * gpu.prefill_mfu * tp * tpEff(eff.prefill, tp);
   const hop = stageHop(m, link);
   const flops = (n) => (n > 0 ? (2 * m.params * n + attnFlops(m, n) / sw.attn_eff_ratio) / peak : 0);
   const hops = (n) => (n > 0 ? (stages - 1) * hop(n) : 0); // the hidden states of the n tokens computed
@@ -382,20 +400,20 @@ export function timing(m, gpu, sw, tp = 1, eff = TP_EFF, { stages = 1, link = nu
   const overhead = (n) => sw.request_overhead_s + sw.per_token_overhead_s * n;
   const R = (n) => (n > 0 ? overhead(n) + compute(n) : 0); // cold prefill
   const host = gpu.host_gib_s * GIB * tp * stages; // one host link per GPU
-  const cpuLoad = (k, state = true) => (k > 0 ? sw.cpu_load_latency_s + prefixBytes(m, k, state) / host : 0);
+  const cpuLoad = (k, state = true, bytes = prefixBytes(m, k, state)) => (k > 0 ? sw.cpu_load_latency_s + bytes / host : 0);
   const loadFor = (v) => {
     if (!v) return () => 0;
     const bw = variantBandwidth(v) * GIB * stages;
     const L = v.latency_s ?? 0;
-    return (k, state = true) => (k > 0 ? cpuLoad(k, state) + L + prefixBytes(m, k, state) / bw : 0);
+    return (k, state = true, bytes = prefixBytes(m, k, state)) => (k > 0 ? cpuLoad(k, state, bytes) + L + bytes / bw : 0);
   };
   // prefill -> decode KV transfer over a network variant, GPU to GPU
   const transferFor = (v) => {
     if (!v) return () => 0;
     const bw = variantBandwidth(v) * GIB * stages;
     const L = v.latency_s ?? 0;
-    return (k) => (k > 0 ? L + prefixBytes(m, k) / bw : 0);
+    return (k) => (k > 0 ? L + (m.prefix_replay_tokens ? perSeqBytes(m, k) : prefixBytes(m, k)) / bw : 0);
   };
   const ttft = (n, h, loadSeconds) => overhead(n) + loadSeconds + flops(n) - flops(Math.min(h, n)) + hops(Math.max(1, n - h));
-  return { compute, overhead, R, cpuLoad, loadFor, transferFor, ttft };
+  return { compute, overhead, R, cpuLoad, loadFor, transferFor, ttft, flops, hops };
 }

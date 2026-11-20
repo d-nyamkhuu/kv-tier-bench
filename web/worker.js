@@ -22,8 +22,9 @@ self.onmessage = async ({ data }) => {
   const { id, config, trace, series = ["combo", "nodes-yours", "nodes-base", "gpus"] } = data;
   latest = id;
   // 1. the live estimate: your setup and GPU + CPU on the same cluster
-  const current = runScenario(config, {}, trace);
-  const baseline = runScenario(config, BASELINE, trace);
+  const live = { maxSimNodes: config.sim.nodes };
+  const current = runScenario(config, {}, trace, live);
+  const baseline = runScenario(config, BASELINE, trace, live);
   self.postMessage({ id, kind: "estimate", current, baseline });
   // what the setup costs with its prefill GPUs loaded to the lab's target (synthetic load only: a trace has its own rate)
   if (!trace && !current.error && current.requests) {

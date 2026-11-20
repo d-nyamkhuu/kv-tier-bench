@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Advanced lab · KV Tier Bench</title>
+<meta name="description" content="Pick GPUs, nodes and KV-cache tiers for an LLM chat workload and see the mean time to first token and the cost per request, from published hardware and storage figures.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="icon" type="image/svg+xml" href="./layers.svg">
+<link rel="stylesheet" href="./style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"
+        integrity="sha384-bs/nf9FbdNouRbMiFcrcZfLXYPKiPaGVGplVbv7dLGECccEXDW+S3zjqSKR5ZEaD"
+        crossorigin="anonymous" defer></script>
+<script type="module" src="./app.js"></script>
+</head>
+<body>
+<header class="top">
+  <div class="top-inner">
+    <div>
+      <a href="./">← Simulator</a>
+      <h1>Advanced lab</h1>
+      <p class="tagline">Choose GPUs, nodes and cache tiers for a chat workload; see the mean time to first token and what it costs.</p>
+    </div>
+    <div class="theme" role="group" aria-label="Color theme">
+      <button type="button" data-theme-choice="light" aria-pressed="false">Light</button>
+      <button type="button" data-theme-choice="auto" aria-pressed="true">Auto</button>
+      <button type="button" data-theme-choice="dark" aria-pressed="false">Dark</button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <p class="status error" id="load-error" hidden></p>
+
+  <section class="estimate" id="estimate" aria-live="polite" aria-labelledby="h-est">
+    <div class="est-row">
+      <div class="est-id"><h2 id="h-est">Live estimate</h2><p class="est-setup" id="est-setup">…</p></div>
+      <div class="big"><span class="big-num" id="est-ttft">–</span><span class="big-label">mean TTFT at your load</span><span class="big-sub" id="est-ttft-sub"></span></div>
+      <div class="big"><span class="big-num" id="est-usd">–</span><span class="big-label">per 1,000 requests at your load</span><span class="big-sub" id="est-usd-sub"></span></div>
+      <div class="big" title="Every GPU is paid for the whole time, so a faster tier shows up as headroom: the same GPUs serve more requests. This is the cost per 1,000 requests with the load raised (or lowered) until the prefill GPUs are busy 60% of the time.">
+        <span class="big-num" id="est-cap">–</span><span class="big-label">per 1,000 requests at 60% busy</span><span class="big-sub" id="est-cap-sub"></span></div>
+      <div class="delta" id="est-delta"></div>
+    </div>
+    <div class="alerts" id="est-alerts"></div>
+  </section>
+
+  <div class="lab-grid">
+    <div class="lab-main">
+      <section class="panel" id="lab" aria-labelledby="h-lab">
+        <div class="sec-head">
+          <h2 id="h-lab">Tier lab</h2>
+          <p class="hint">A follow-up reads cached KV in the configured tier order. Choose a product and adjust latency, bandwidth, capacity or price to see the effect on TTFT and cost.</p>
+        </div>
+        <div class="fixed-tiers" id="fixed-tiers"></div>
+        <div class="lab-tabs" id="lab-tabs" role="tablist" aria-label="Tier to tune"></div>
+        <div class="lab-body" id="lab-body" role="tabpanel"></div>
+      </section>
+
+      <section class="panel" id="charts" aria-labelledby="h-charts">
+        <div class="sec-head">
+          <h2 id="h-charts">Trade-offs</h2>
+          <div class="tabs" role="tablist" aria-label="Chart">
+            <button type="button" role="tab" id="tab-sens" aria-selected="true" aria-controls="pane-sens">Sensitivity</button>
+            <button type="button" role="tab" id="tab-models" aria-selected="false" aria-controls="pane-models" tabindex="-1">Across models</button>
+            <button type="button" role="tab" id="tab-map" aria-selected="false" aria-controls="pane-map" tabindex="-1">Tier mixes</button>
+          </div>
+        </div>
+
+        <div role="tabpanel" id="pane-sens" aria-labelledby="tab-sens">
+          <div class="pane-head">
+            <label class="field inline"><span>Sweep</span><select id="sens-prop"></select></label>
+            <p class="hint" id="sens-what"></p>
+          </div>
+          <div class="chart-box sens"><canvas id="sens-chart" aria-label="Mean TTFT and cost per 1,000 requests as one tier property changes"></canvas></div>
+          <p class="status" id="sens-status"></p>
+          <p class="hint" id="sens-note"></p>
+        </div>
+
+        <div role="tabpanel" id="pane-models" aria-labelledby="tab-models" hidden>
+          <div class="pane-head">
+            <button type="button" class="primary" id="models-run">Run across models</button>
+            <span class="status" id="models-status" aria-live="polite"></span>
+          </div>
+          <p class="hint" id="models-hint"></p>
+          <div class="models-charts">
+            <div><h3 class="chart-h">Mean TTFT, same traffic</h3><div class="chart-box models"><canvas id="models-ttft" aria-label="Mean TTFT per model, with your tiers and with GPU and CPU memory only"></canvas></div></div>
+            <div><h3 class="chart-h">$ per 1,000 requests at 60% busy</h3><div class="chart-box models"><canvas id="models-cost" aria-label="Cost per 1,000 requests per model, with your tiers and with GPU and CPU memory only"></canvas></div></div>
+          </div>
+          <details class="disclose" id="models-more">
+            <summary>Numbers and deployments</summary>
+            <div class="table-wrap"><table id="models-table" class="stack models"></table></div>
+          </details>
+        </div>
+
+        <div role="tabpanel" id="pane-map" aria-labelledby="tab-map" hidden>
+          <p class="hint">Every combination of local disk, peer network and shared storage from the candidates (Methods &amp; data), on your GPUs. TTFT at your load; cost with the load set so the prefill GPUs are 60% busy (what a tier's headroom is worth), or at your load (the bill, where every GPU is paid for anyway). Down and left is better; the line joins the setups nothing beats on both.</p>
+          <div class="map-controls">
+            <div class="chips" id="map-chips" role="group" aria-label="Series to show"></div>
+            <div class="field inline"><span>Cost</span><div class="seg" id="map-metric" role="radiogroup" aria-label="Cost the map plots"></div></div>
+          </div>
+          <div class="map-wrap" id="map-wrap">
+            <div class="chart-box map"><canvas id="map-chart" aria-label="Mean TTFT against cost per 1,000 requests for each setup"></canvas></div>
+            <div class="drawer" id="map-drawer" hidden></div>
+          </div>
+          <p class="status" id="map-status"></p>
+          <p class="hint" id="map-tip">Click a point to see that setup and switch to it.</p>
+          <p class="hint" id="map-excluded"></p>
+        </div>
+      </section>
+    </div>
+
+    <aside class="lab-side">
+      <section class="panel setup" aria-labelledby="h-setup">
+        <h2 id="h-setup">Setup</h2>
+        <div class="setup-sec" aria-label="Model">
+          <label class="field"><span>Model</span><select id="ctl-model"></select></label>
+          <div class="field"><span>Serving precision</span><div class="seg fill" id="ctl-precision" role="radiogroup" aria-label="Serving precision"></div></div>
+          <details class="disclose" id="model-more">
+            <summary>Model details <span class="summary-note" id="model-brief"></span></summary>
+            <p class="hint" id="model-hint"></p>
+          </details>
+        </div>
+        <div class="setup-sec" aria-label="GPU">
+          <label class="field"><span>Prefill GPU</span><select id="ctl-gpu"></select></label>
+          <p class="pick-meta" id="gpu-summary"></p>
+          <details class="disclose" id="gpu-more">
+            <summary>GPU figures &amp; assumptions</summary>
+            <p class="hint" id="gpu-hint"></p>
+          </details>
+        </div>
+        <div class="setup-sec" aria-labelledby="h-cluster">
+          <h3 id="h-cluster">Cluster</h3>
+          <div class="steppers">
+            <div class="stepper" id="ctl-nodes"></div>
+            <div class="stepper" id="ctl-gpn"></div>
+            <div class="field"><span>Tensor parallel</span><div class="seg" id="ctl-tp" role="radiogroup" aria-label="Tensor parallel size"></div></div>
+            <div class="stepper" id="ctl-pp"></div>
+          </div>
+          <div class="row-fields" id="ctl-stage-link" hidden></div>
+          <p class="hint" id="cluster-hint"></p>
+        </div>
+        <div class="setup-sec" id="ctl-load" aria-labelledby="h-load">
+          <h3 id="h-load">Load</h3>
+          <div id="trace-note" class="hint" hidden></div>
+          <div class="sliders" id="sliders"></div>
+          <details class="more" id="serving">
+            <summary>Load &amp; serving settings</summary>
+            <div class="more-body">
+              <h3>Workload source</h3>
+              <div class="seg wide" id="ctl-source" role="radiogroup" aria-label="Workload source"></div>
+              <div id="source-body"></div>
+              <h3>Synthetic conversations</h3>
+              <div class="grid" id="workload-fields"></div>
+              <h3>Serving</h3>
+              <div class="grid" id="serving-fields"></div>
+              <p class="status" id="workload-status"></p>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <section class="panel breakdown" aria-labelledby="h-breakdown">
+        <h2 id="h-breakdown">Where time and money go</h2>
+        <h3 class="served-h">Prompt tokens served from</h3>
+        <div class="served" id="est-bar" role="img" aria-label="Share of prompt tokens per tier"></div>
+        <ul class="served-legend" id="est-legend"></ul>
+        <details class="fold"><summary>Latency</summary><dl class="kv" id="est-latency"></dl></details>
+        <details class="fold"><summary>Cost &amp; GPUs</summary>
+          <h4 class="fold-h">Modeled cost per 1M tokens</h4>
+          <div class="prices" id="est-prices"></div>
+          <h4 class="fold-h">OpenRouter input pricing</h4>
+          <div id="openrouter-input-prices" aria-live="polite"></div>
+          <dl class="kv" id="est-cost"></dl>
+        </details>
+        <details class="fold"><summary>Utilization &amp; caches</summary><dl class="kv" id="est-util"></dl></details>
+        <p class="est-foot" id="est-foot"></p>
+      </section>
+    </aside>
+  </div>
+
+  <div class="minibar" id="minibar">
+    <span><b id="mini-ttft">–</b> TTFT</span><span><b id="mini-usd">–</b> / 1k req</span><a href="#estimate">Details</a>
+  </div>
+
+  <section class="panel wide" aria-labelledby="h-arch">
+    <div class="sec-head">
+      <h2 id="h-arch">Your cluster</h2>
+      <p class="hint">Line width follows the share of prompt tokens each path serves. Hover a part for details; click it to edit.</p>
+    </div>
+    <div class="diagram" id="diagram"></div>
+  </section>
+
+  <section class="panel wide" aria-labelledby="h-checks">
+    <div class="sec-head">
+      <h2 id="h-checks">How it measures up</h2>
+      <p class="hint">The same formulas, applied to setups that were measured: published vLLM benchmarks, and kv-tier-bench s1 on an RTX PRO 6000. <span class="badge calibrated">calibrated</span> rows set a parameter nothing published gives, so they agree within the fit; <span class="badge check">check</span> rows test the model.</p>
+    </div>
+    <div class="table-wrap"><table id="checks-table" class="checks stack"></table></div>
+    <details class="fold">
+      <summary>Every s1 point: model vs measured</summary>
+      <p class="hint">Gap of the model against s1's median TTFT, RTX PRO 6000, one request at a time.</p>
+      <div class="table-wrap"><table id="residuals-table"></table></div>
+    </details>
+  </section>
+
+  <section class="panel wide" id="market" aria-labelledby="h-market" hidden>
+    <div class="sec-head">
+      <h2 id="h-market">Against what providers charge</h2>
+      <div class="row"><button type="button" class="primary" id="market-run">Run the comparison</button><span class="status" id="market-status" aria-live="polite"></span></div>
+    </div>
+    <details class="disclose" id="market-more">
+      <summary>How the comparison is set up</summary>
+      <p class="hint" id="market-hint"></p>
+    </details>
+    <div class="table-wrap"><table id="market-table" class="stack market"></table></div>
+    <p class="note" id="market-note"></p>
+  </section>
+
+  <section class="panel wide" aria-labelledby="h-methods">
+    <details id="methods">
+      <summary><h2 id="h-methods">Methods &amp; data</h2></summary>
+      <h3>How the estimate is made</h3>
+      <ul class="assumptions">
+        <li><b>Prefill</b> time = vLLM's overhead (per request and per prompt token) + the model's FLOPs ÷ (the GPU's dense peak, BF16 or FP8 as the model was released, × its prefill share of peak × TP × TP efficiency). Matrix multiplies run at that share; attention at a fixed fraction of it. With a cached prefix, only the rest is computed, but its attention still covers the whole prompt. Each instance (one GPU, or a TP group) prefills one request at a time, first come first served; waiting counts toward TTFT.</li>
+        <li><b>Models</b>: sizes and FLOPs are derived from each model's config.json and card. FLOPs: 2 × active parameters per token (MoE counts only the experts a token uses), plus attention: every earlier token in full layers, at most the window in sliding-window layers, the top-k tokens in sparse layers, and the indexer's scores over all tokens. KV per token counts the layers that keep every token; grouped-query heads are split over TP, and a latent (MLA) cache is copied on every TP rank, as vLLM does. Linear-attention state and the last window of sliding-window layers are a fixed part of every cached prefix, whatever its length. KV and state are bf16 unless the card gives another size. MoE prefill runs at the dense share of peak: <span class="badge assumption">assumption</span>.</li>
+        <li><b>Models bigger than a node</b> run across several nodes, as vLLM deploys them: tensor parallel inside a node, pipeline stages across nodes, each stage holding its share of the layers. Memory adds up over all the instance's GPUs (the weights are held once). A request passes the stages in turn, so its prefill takes as long as on one node holding everything, plus a hop per stage: the network's latency + the hidden states (hidden size × 2 bytes per token) ÷ its bandwidth. Each node loads and sends its own layers' KV, so cache loads and transfers get every node's links, and the instance's nodes pool their CPU memory and disks. The next request enters the first stage as soon as it is free (<span class="badge assumption">assumption</span>: ideal pipelining).</li>
+        <li><b>Fixed-state models</b> (linear or sliding-window attention) resume only where a state was saved: the end of an earlier stored sequence (a conversation's previous turn). A shared system prompt alone gives them no hit. A model without fixed state resumes at any cached block. <span class="badge assumption">assumption</span>: vLLM keeps one state per cached sequence.</li>
+        <li><b>GPU figures</b> come from NVIDIA datasheets. Prefill shares of peak come from InferenceX vLLM runs (H200 for Hopper, B200 for Blackwell); the RTX PRO 6000 has no published prefill result, so its share is fitted on s1. TP efficiency is from H200 and B200 runs, which use NVLink.</li>
+        <li><b>Decode</b> runs on GPUs of its own (disaggregated) in batches of up to 1,024 sequences (vLLM's default <code>max_num_seqs</code> on GPUs with 70+ GiB), using requests ready at each step. The configured maximum, active KV memory and optional speed target limit each batch. Each step reads the weights and the batch's KV at 60% of peak memory bandwidth (Databricks), or is bound by its FLOPs when that takes longer. An MoE step reads the dense part (attention, shared experts, embeddings) and only the routed experts its tokens picked: with k of E experts per token, a batch of b touches 1 − (1 − k/E)<sup>b</sup> of them, assuming even routing (real routers are skewed, so they touch fewer). Expert counts and sizes come from each config.json. One Kimi K3 token reads 16 of 896 experts; a batch of 256 reads nearly all of them. Small-batch MoE decode is not checked against a measurement: no published single-request decode time for these models was found. Under TP, each step also adds a fixed all-reduce time per layer, fitted on InferenceX's TP runs of a dense model (it does not grow with the batch). It is applied as is to MoE models and to data-parallel attention (an assumption): at TP 8 it is 5–6 ms of each step, which is what keeps Kimi K3 below OpenRouter's speed. TTFT includes the KV transfer to the decode GPU and the first decode step. With a <b>decode speed per request</b> set, a new sequence joins a batch only if the estimated step still meets the target. A smaller batch means more decode GPUs and a higher output price. Below the speed even at batch 1, the request runs alone and the page says so. The OpenRouter button fills in the model's p50 throughput from OpenRouter's compare page.</li>
+        <li><b>Speculative decoding</b>: a drafter proposes tokens and the model checks them all in one step, so a step yields several tokens. Checking costs FLOPs and expert reads for every drafted position, but the weights and KV are read once. The drafter costs its layers at the model's size: once for parallel drafters (DFlash, DSpark), once per token for autoregressive ones (MTP, EAGLE-3). So the speed-up is large for small batches and shrinks as the batch grows. Where checking drafts would slow a step down, the drafter is switched off; production drafters shrink their checking as load grows (DSpark). Accepted tokens per step are measured on 4–14B models at temperature 1 on MT-Bench (DSpark paper, Table 1: EAGLE-3 2.66, DFlash 3.11, DSpark 3.72). MTP's 1.875 is DeepSeek-V3's 85–90% acceptance of the second token. On large MoE models these are assumptions; set your own, or use Custom for drafters with no preset. MTP needs the checkpoint's own heads (Qwen3.8, GLM-5.3, MiniMax-M3). EAGLE-3, DFlash and DSpark need a draft model trained for the model; DeepSeek V4.1 Flash ships its DSpark drafter (its three next-token layers, block of 5), used with its own shape. Against measurements: at one request the model is 17% optimistic for DFlash. As the batch grows, measured speed-ups fall gradually from 4–8 requests on, while the model keeps the whole gain until the step turns compute-bound. So at moderate batches the drafter's gain here is an upper bound.</li>
+        <li><b>Expert parallelism</b> (MoE decode): the routed experts spread over more GPUs than one TP instance. Each group of TP GPUs runs its own batch, and each GPU reads the dense part and only its own experts, so a step reads far fewer weights. Every MoE layer then sends each token to its experts and back: FP8 out, BF16 back, as DeepSeek serves. That goes over NVLink inside the NVLink domain (8 GPUs on HGX, 72 on GB200 NVL72) and over InfiniBand beyond it, at DeepEP's measured rates (39–98 GB/s per GPU by EP size). Two-batch overlap (off by default) hides that traffic behind compute; the measured runs sit between the model with and without it, nearer to without. Without stages, a model too big for one node decodes on the expert GPUs. Checked against Kimi K2.5 on GB200 with experts over 16 GPUs and DeepSeek-V3's production deployment over 144 GPUs. Without overlap the model is within about 20% at large batches and 27% too fast at 32 sequences per GPU (see the checks).</li>
+        <li><b>Serving precision</b>: as released, or quantized as most providers serve. FP8: 1 byte per weight, FP8 compute (twice BF16's peak) and an FP8 KV cache. FP4: NVFP4 weights (4 bits plus an FP8 scale per 16 values, 4.5 bits), an FP8 KV cache, prefill at the FP8 rate (InferenceX's DeepSeek-R1 NVFP4 runs on B200 fit it, not the FP4 peak), and decode compute in FP4 on Blackwell (FP8 elsewhere). Weights never grow past what was released, linear-attention state stays bf16, and FP8 prefill reaches the same share of its faster peak as BF16 <span class="badge assumption">assumption</span>. Quality loss from quantization is not modeled.</li>
+        <li><b>Attention across a TP group</b>: data parallel by default (each GPU keeps whole KV for its own requests, as MLA models are served at scale with vLLM's <code>--data-parallel-size</code> and expert parallelism), or tensor parallel, vLLM's default, where a latent (MLA) cache is copied on every GPU. Prefill time is the same either way: <span class="badge assumption">assumption</span>.</li>
+        <li><b>Cache loads</b>: from CPU memory, a fixed latency + bytes ÷ the host link (54–56 GB/s on PCIe 5.0 through vLLM's offloading, py-kvcache). From a lower tier, the tier's latency + bytes ÷ its bandwidth, then the CPU → GPU copy. Bandwidth = the published peak × the share a KV load through vLLM reaches; each variant lists its sources. Values with no source are marked <span class="badge assumption">assumption</span>.</li>
+        <li><b>Cache tiers</b> use eager write-through for complete prompt chunks. CPU memory and bounded local SSDs check their 80% eviction watermark every second and remove 20% of entries in LRU order. Lookup starts with the instance’s GPU, then CPU, local disk, shared storage and peer CPU. Serving settings can give peers priority over shared storage. A hit ends at the first block no tier holds; the rest is recomputed. A cached prefix is always loaded, even when recomputing would be faster, as vLLM v0.34.0 does.</li>
+        <li><b>Software constants</b> (vLLM's overhead per request and per token, attention's efficiency, the CPU-load latency) are not published anywhere; they are fitted on s1 and editable below.</li>
+        <li>GPUs in one node do not share KV caches. NVLink bandwidth is drawn in the diagram but does not enter the numbers. TP above 1 on PCIe-only GPUs (RTX PRO 6000, L40S) uses the NVLink TP efficiency: an assumption.</li>
+        <li><b>Peer nodes</b>: a hit is a block in another node's CPU memory, pulled over the network. It needs 2+ nodes and CPU memory.</li>
+        <li><b>Cost</b>: every GPU is paid for the whole time, busy or not. Prefill GPUs = nodes × GPUs per node; dedicated decode GPUs are sized to peak concurrent attention groups and rounded to whole instances. Pooled estimates charge measured GPU-seconds. Private disks bill provisioned capacity or estimated retained bytes separately on each node, according to the selected product. Object storage is billed on what is written per hour, kept for the retention time, plus any per-GB upload and retrieval fees (S3 Express); AWS presets also charge per PUT, GET and HEAD. CPU memory and the network are part of the VM. GPU prices are Nebius on-demand.</li>
+        <li><b>Cost at 60% busy</b>: at a fixed cluster and load every GPU is paid for the whole time, so a faster tier cuts TTFT but barely the bill. What it buys is headroom: prefill takes less GPU time per request, so the same GPUs serve more requests. The page's "$ per 1,000 requests at 60% busy", the tier lab's sweep, the comparison across models and the tier-mix map (by default; it can show the cost at your load instead) raise or lower the request rate until the prefill GPUs are busy 60% of the time (a few proportional steps, the last few percent closed in proportion: prefill GPUs' $ per request scale with 1 / rate, decode and storage stay per request), then price a request there. The provider comparison loads its reference deployments the same way. TTFT is always at your load, except across models, where both setups get the traffic that keeps GPU + CPU memory alone 60% busy.</li>
+        <li><b>Cost per 1M tokens</b>: the prefill GPUs' cost is split by what their busy time served. Computing uncached tokens (with their attention over the cached part) goes to input; loading cached blocks goes to cached input; the per-request overhead is shared by token count. Idle time is split the same way. Storage goes to cached input, decode GPUs to output. A cached price above the input price means caching costs more than it saves for that setup.</li>
+        <li><b>Large clusters</b> (over 8 nodes) are replayed at 8 nodes with the same load per node, and totals scaled up. With round-robin and random routing, this approximates how often a conversation returns to a node. Disk reads and writes share bandwidth within each node. Object storage, peer traffic and KV handoff share the modeled network interface on the prefill node. A peer read also reserves the source interface. Object storage has no cluster-wide service quota in this model.</li>
+        <li><b>Synthetic conversations</b> start at random (Poisson). Each follow-up waits for the previous reply to finish before its sampled think time starts. Uploaded traces keep their arrival timestamps. Each turn adds a message and its answer to the context. All conversations share one system prompt. The first minutes (warm-up) fill the caches and are left out.</li>
+      </ul>
+
+      <h3>Tier variants</h3>
+      <p class="hint">Edit any value; an edited value is marked like an assumption. "Try it in the trade-off map" picks the candidates the map combines.</p>
+      <div id="variant-families"></div>
+
+      <h3>GPU profiles</h3>
+      <div class="cards" id="gpu-cards"></div>
+
+      <h3>Software constants</h3>
+      <div id="software-card"></div>
+
+      <h3>The s1 reference</h3>
+      <p class="hint">kv-tier-bench stage s1: one RTX PRO 6000 per Nebius VM, vLLM v0.34.0, TP 1, one request at a time. The checks above compare the model with these medians.</p>
+      <p class="hint" id="measured-model"></p>
+      <h4>Median TTFT (s), one request with a cached prefix of <i>tokens</i></h4>
+      <div class="table-wrap"><table id="medians-table"></table></div>
+      <details id="fit-details" class="fold">
+        <summary>What s1's tiers achieved: TTFT<sub>tier</sub> − TTFT<sub>cpu</sub> = L + bytes / BW</summary>
+        <p class="hint">Fitted by relative error with L ≥ 0, against s1's CPU-memory hits. Compare with the variants' published figures: s1's disk read about half its documented 2 GiB/s, and its TCP peer link was held back by a NIXL receive thread.</p>
+        <div class="table-wrap"><table id="fit-table"></table></div>
+        <div class="chart-box"><canvas id="fit-chart" aria-label="Measured TTFT and the fitted model per tier"></canvas></div>
+      </details>
+
+      <h3>Your configuration</h3>
+      <div class="row">
+        <button type="button" id="export-btn">Export JSON</button>
+        <label class="file-btn"><span>Import JSON</span><input type="file" id="import-file" accept=".json,application/json"></label>
+        <button type="button" id="reset-btn">Reset to defaults</button>
+      </div>
+      <p class="status" id="config-status"></p>
+      <p class="error" id="config-error"></p>
+    </details>
+  </section>
+</main>
+<footer>
+  Every figure links to its source in Methods &amp; data. Reference measurements: <a href="https://github.com/d-nyamkhuu/kv-tier-bench">kv-tier-bench</a>
+  stage s1 (<code>results/s1.jsonl</code>, exported by <code>kvtb export-web</code>): 2 × Nebius RTX PRO 6000 VMs, vLLM v0.34.0, TP 1.
+</footer>
+</body>
+</html>

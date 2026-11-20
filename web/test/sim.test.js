@@ -35,18 +35,18 @@ const gib = (bytes) => bytes / GIB;
 
 test("GPU+CPU beats GPU only when prefixes repeat beyond GPU capacity", () => {
   const gpuOnly = simulate(roundRobin, { ...base, gpuGiB: gib(2500), cpuGiB: 0 });
-  const withCpu = simulate(roundRobin, { ...base, gpuGiB: gib(2500), cpuGiB: gib(5000) });
+  const withCpu = simulate(roundRobin, { ...base, gpuGiB: gib(2500), cpuGiB: gib(6000) });
   assert.equal(gpuOnly.share.gpu, 0); // LRU with a cyclic working set larger than the cache: every access misses
   assert.equal(gpuOnly.share.miss, 1);
   assert.ok(withCpu.share.cpu > 0.85, `cpu share ${withCpu.share.cpu}`);
   assert.ok(withCpu.ttft.mean < gpuOnly.ttft.mean / 5);
   // the CPU tier is written through, so it never misses what GPU evicted
-  const bigGpu = simulate(roundRobin, { ...base, gpuGiB: gib(5000), cpuGiB: gib(5000) });
+  const bigGpu = simulate(roundRobin, { ...base, gpuGiB: gib(5000), cpuGiB: gib(6000) });
   assert.equal(bigGpu.share.cpu, 0);
   assert.ok(bigGpu.share.gpu > 0.85);
 });
 
-test("lower tiers take over nearest first: local disk, then peers, then shared storage", () => {
+test("local disk takes priority over shared storage", () => {
   const fs = { family: "fs", bw_gib_s: 1000 / GIB, latency_s: 0.48, capacity_gib: gib(10000) }; // 1000 bytes in 1 s
   const r = simulate(roundRobin, { ...base, gpuGiB: gib(1000), cpuGiB: gib(2000), disk: fs });
   assert.equal(r.share.gpu + r.share.cpu, 0);
@@ -58,6 +58,31 @@ test("lower tiers take over nearest first: local disk, then peers, then shared s
   const both = simulate(roundRobin, { ...base, gpuGiB: gib(1000), cpuGiB: gib(2000), disk: fs, shared: fast });
   assert.deepEqual(both.order, ["gpu", "cpu", "disk", "shared", "miss"]);
   assert.equal(both.share.disk, 0.9);
+  assert.equal(both.firstPayloadReadS.disk, 40 + fs.latency_s);
+  assert.equal(both.firstPayloadReadS.shared, null);
+});
+
+test("first physical SSD read waits for a busy drive even across minute boundaries", () => {
+  const disk = { family: "fs", bw_gib_s: gib(100), latency_s: 0.2 };
+  const requests = [
+    { t: 0, n: 100, hashes: ["a"] },
+    { t: 24, n: 4000, hashes: Array.from({ length: 40 }, (_, i) => "b" + i) },
+    { t: 59, n: 100, hashes: ["a"] },
+  ];
+  const r = simulate({ requests }, { ...base, gpuGiB: 0, cpuGiB: 0, disk, durationMin: 1 });
+  // The second write occupies the drive until 24 + 4.01 prefill + .2 setup + 40 transfer.
+  assert.ok(Math.abs(r.firstPayloadReadS.disk - 68.21) < 1e-8);
+});
+
+test("restored payload includes the prefix checkpoint once and accounts for external copies", () => {
+  const cfg = { ...base, model: { ...TOY, read_fixed_bytes: 40 }, gpuGiB: 0, cpuGiB: 1,
+    externalCopiesPerGpuCopy: 0.5 };
+  const requests = [0, 10].map(t => ({ t, n: 200, hashes: ["a", "b"] }));
+  let bytes;
+  simulate({ requests }, cfg, (req, ttft, blocks, size, loads, wait, transfer, peer, restored) => {
+    if (blocks.cpu) bytes = restored("cpu");
+  });
+  assert.equal(bytes, (2 * 100 + 40) / 2);
 });
 
 test("with the published figures, S3 loads slower than a local NVMe drive, S3 Express in between", async () => {
@@ -74,7 +99,7 @@ test("with the published figures, S3 loads slower than a local NVMe drive, S3 Ex
 
 test("p2p hits come from another node's CPU tier; a shared tier serves every node", () => {
   const conv = { blockTokens: null, requests: [0, 1, 2, 3].map((i) => ({ t: 10 * i, n: 1000, conv: i, hashes: Array.from({ length: 10 }, (_, j) => `x:${j}`) })) };
-  const cfg = { ...base, gpuGiB: gib(5000), cpuGiB: gib(5000), routing: "sticky", cluster: { nodes: 2, gpusPerNode: 1, tp: 1 } };
+  const cfg = { ...base, gpuGiB: gib(5000), cpuGiB: gib(6000), routing: "sticky", cluster: { nodes: 2, gpusPerNode: 1, tp: 1 } };
   const link = { family: "p2p", bw_gib_s: 1, latency_s: 0 };
   const p2p = simulate(conv, { ...cfg, p2p: link });
   assert.equal(p2p.tokens.p2p, 1000); // request 1 (node 1) pulls from node 0; later ones hit locally
@@ -94,7 +119,7 @@ test("a busy instance queues requests, and provisioned GPUs are paid for whether
   assert.equal(two.prefillGpus, 2);
   const slow = { blockTokens: null, requests: [0, 3600].map((t, i) => ({ t, n: 1000, hashes: [`s${i}`] })) };
   const idle = simulate(slow, { ...base, gpuGiB: 0, cpuGiB: 0, cluster: { nodes: 2, gpusPerNode: 4, tp: 1 } });
-  assert.ok(Math.abs(idle.usd.prefill - 8 * 3.6) < 1e-9); // 8 GPUs x 1 h, though they served two requests
+  assert.ok(Math.abs(idle.usd.prefill - 8 * 3.6 * (3600 + 1.01) / 3600) < 1e-9); // 8 GPUs x 1 h, though they served two requests
   assert.ok(idle.utilization < 0.001);
 });
 
@@ -169,11 +194,12 @@ test("disaggregated decode: batched steps read weights once and each sequence's 
   const w = { blockTokens: null, requests: [{ t: 0, n: 1000, out: 11, hashes: Array.from({ length: 10 }, (_, j) => j) }] };
   const link = { family: "p2p", bw_gib_s: 1, latency_s: 0.5 };
   const r = simulate(w, { ...base, model: m, gpuGiB: 0, cpuGiB: 0, decode: { gpu: dgpu, batch: 4 }, transfer: link });
-  const s = decodeStepS(m, dgpu, 4, 1000 + 5.5);
+  const s = decodeStepS(m, dgpu, 1, 1000 + 5.5);
+  assert.equal(r.decodeBatch, 1);
   assert.ok(Math.abs(r.ttft.mean - (0.01 + 1 + 0.5 + 1000 / GIB + s)) < 1e-9); // overhead + recompute 1 s + transfer + first step
   assert.ok(Math.abs(r.e2e.mean - (r.ttft.mean + 10 * s)) < 1e-9);
-  // decode GPUs are provisioned whole: the GPU-seconds the 11 tokens need (a quarter of each step) over the window
-  assert.equal(r.decodeGpus, Math.ceil((11 * s) / 4 / r.windowS));
+  // One ready sequence occupies one decode group.
+  assert.equal(r.decodeGpus, 1);
   assert.ok(Math.abs(r.usd.decode - (r.decodeGpus * 3.6 * r.windowS) / 3600) < 1e-12);
   const warm = simulate({ ...w, requests: [w.requests[0], { ...w.requests[0], t: 100 }] }, { ...base, model: m, gpuGiB: 1, cpuGiB: 0, warmupS: 50 });
   assert.equal(warm.requests, 1);
@@ -210,4 +236,285 @@ test("a model with a fixed state resumes only at a stored snapshot: the end of a
   const withState = simulate(w, { ...big, model: { ...TOY, read_fixed_bytes: 50, state_bytes_per_prefix: 50 } });
   assert.equal(kvOnly.tokens.gpu, 500 + 1000); // request 2 reuses the shared 5 blocks, request 3 all of a
   assert.equal(withState.tokens.gpu, 1000); // request 2 has no snapshot to resume from; request 3 does
+});
+
+test("end-of-minute occupancy includes completed writes and counts physical cache copies once", () => {
+  const requests = [5, 20, 61].map((t, i) => ({
+    t, n: 100, conv: i, hashes: [i === 2 ? "b" : "a"],
+  }));
+  const snapshots = [];
+  simulate({ blockTokens: 100, requests }, {
+    ...base, gpuGiB: gib(100), cpuGiB: gib(200), cluster: { nodes: 2, gpusPerNode: 2, tp: 1 },
+    routing: "sticky", disk: { family: "fs", capacity_gib: gib(200), bw_gib_s: 1 },
+    shared: { family: "obj", shared: true, bw_gib_s: 1 },
+  }, undefined, (i, snapshot) => { snapshots[i] = snapshot; });
+  assert.deepEqual(snapshots[0], {
+    gpu: { usedGiB: gib(200), capacityGiB: gib(400) },
+    cpu: { usedGiB: gib(100), capacityGiB: gib(400) },
+    disk: { usedGiB: gib(100), capacityGiB: gib(400) },
+    shared: { usedGiB: gib(100), capacityGiB: null },
+  });
+  assert.equal(snapshots[1].shared.usedGiB, gib(200));
+  assert.equal(snapshots[1].cpu.usedGiB, gib(200));
+});
+
+test("each block uses the nearest resident copy across all five configured tiers", () => {
+  // Instances 0 and 1 share node A. Instance 2 lives on node B.
+  const visits = [[0, "a"], [0, "a"], [1, "a"], [2, "a"], [0, "b"], [0, "c"],
+    [0, "a"], [0, "b"], [0, "c"], [0, "d"], [2, "e"], [2, "f"], [0, "a"]];
+  const requests = visits.map(([conv, hash], i) => ({ t: i / 100, n: 100, conv, hashes: [hash] }));
+  const cfg = { ...base, software: { ...SW, request_overhead_s: .00001, cpu_load_latency_s: .00001 }, gpu: { ...GPU, tflops_bf16: 100 }, gpuGiB: gib(100), cpuGiB: gib(200), routing: "sticky",
+    cluster: { nodes: 2, gpusPerNode: 2, tp: 1 },
+    disk: { family: "fs", capacity_gib: gib(300), bw_gib_s: 1 },
+    p2p: { family: "p2p", bw_gib_s: 1 },
+    shared: { family: "obj", shared: true, bw_gib_s: 1 } };
+  const servedBy = [];
+  simulate({ requests, blockTokens: 100 }, { ...cfg, peerFirst: true }, (_req, _ttft, hits) => {
+    servedBy.push(Object.keys(hits).find(key => hits[key]) ?? "miss");
+  });
+  assert.deepEqual(servedBy, ["miss", "gpu", "cpu", "p2p", "miss", "miss",
+    "disk", "disk", "disk", "miss", "miss", "miss", "shared"]);
+});
+
+test("the MP controller reclaims 20% of LRU keys at the 80% watermark", () => {
+  const cache = new LRU(100);
+  for (let i = 0; i < 19; i++) cache.put(i, 4);
+  cache.sweep();
+  assert.equal(cache.used, 76);
+  cache.put(19, 4);
+  cache.touch(1);
+  cache.sweep();
+  assert.equal(cache.used, 64);
+  assert.deepEqual(cache.keys(), [...Array.from({ length: 15 }, (_, i) => i + 5), 1]);
+});
+
+test("external admission saves complete prompt chunks and optionally synthetic reply chunks", () => {
+  const run = (saveDecode, gpuGiB = 0) => simulate({ requests: [
+    { t: 0, n: 250, out: 190, conv: 1, sys: 0 }, { t: 1, n: 450, conv: 1, sys: 0 },
+  ] }, { ...base, gpuGiB, cpuGiB: 1, saveDecode });
+  assert.equal(run(false).tokens.cpu, 200);
+  assert.equal(run(true).tokens.cpu, 400);
+  assert.equal(run(false, 1).tokens.gpu, 400);
+});
+
+test("peer-first changes the data source without suppressing S3 metadata probes", () => {
+  const work = { requests: [0, 1, 1].map((conv, t) => ({ t, conv, n: 100, hashes: ["k"] })) };
+  const shared = { family: "obj", bw_gib_s: 1, usd_per_1k_put: .005, usd_per_1k_get: .0004 };
+  const cfg = { ...base, gpuGiB: 0, cpuGiB: 1, routing: "sticky", cluster: { nodes: 2 },
+    p2p: { family: "p2p", bw_gib_s: 1 }, shared, objectRanks: 2 };
+  const stock = simulate(work, cfg);
+  const peer = simulate(work, { ...cfg, peerFirst: true });
+  assert.equal(stock.tokens.shared, 100);
+  assert.equal(peer.tokens.p2p, 100);
+  assert.equal(peer.tokens.cpu, 100);
+  assert.deepEqual(stock.s3Requests, { put: 2, head: 4, get: 2 });
+  assert.deepEqual(peer.s3Requests, { put: 2, head: 4, get: 0 });
+  assert.equal(peer.firstPayloadReadS.shared, null);
+  assert.equal(stock.requestUsd, (.005 * 2 + .0004 * 6) / 1000);
+  assert.equal(stock.usd.storage, stock.requestUsd);
+  const warm = simulate(work, { ...cfg, warmupS: 1 });
+  assert.deepEqual(warm.s3Requests, { put: 0, head: 2, get: 2 });
+  const off = simulate(work, { ...cfg, shared: null });
+  assert.equal(off.requestUsd, 0);
+  assert.deepEqual(off.s3Requests, { put: 0, head: 0, get: 0 });
+});
+
+test("bounded replay charges the trailing window on a prefix hit without saving extra objects", () => {
+  const work = { requests: [{ t: 0, n: 200, hashes: ["a", "b"] }, { t: 5, n: 220, hashes: ["a", "b"] }] };
+  const times = [];
+  const r = simulate(work, { ...base, gpuGiB: 1, model: { ...TOY, prefix_replay_tokens: 128 } },
+    (_req, ttft) => times.push(ttft));
+  assert.equal(r.tokens.gpu, 200);
+  // 128 rebuilt tokens plus 20 new ones at 1 ms/token and 10 ms request overhead.
+  assert.ok(Math.abs(times[1] - .158) < 1e-10);
+});
+
+test("hourly request pricing includes idle time before and after arrivals", () => {
+  const shared = { family: "obj", bw_gib_s: 1, usd_per_1k_put: .005, usd_per_1k_get: .0004 };
+  const r = simulate({ requests: [{ t: 1800, n: 100, hashes: ["one"] }] },
+    { ...base, shared, gpuGiB: 1, cpuGiB: 0, durationMin: 60 });
+  assert.equal(r.windowS, 3600);
+  assert.equal(r.requestUsd * 3600 / r.windowS, .0054 / 1000);
+});
+
+test("round-robin visits each node group before its next replica and charges remote bytes once", () => {
+  const work = { requests: Array.from({ length: 5 }, (_, i) => ({ t: i * 10, conv: 7, n: 100, hashes: ["prefix"] })) };
+  const cfg = { ...base, gpuGiB: 1, cpuGiB: 1, routing: "round-robin", peerFirst: true,
+    cluster: { nodes: 4, pp: 2, gpusPerNode: 2, tp: 1 }, p2p: { family: "p2p", bw_gib_s: 1, latency_s: .01 } };
+  const rows = [];
+  simulate(work, cfg, (_req, ttft, hits, _size, load, _wait, _transfer, peerBytes) => {
+    rows.push({ source: Object.keys(hits).find(k => hits[k]) ?? "miss", peerBytes, ttft, load });
+  });
+  assert.deepEqual(rows.map(r => r.source), ["miss", "p2p", "cpu", "cpu", "gpu"]);
+  assert.deepEqual(rows.map(r => r.peerBytes), [0, 100, 0, 0, 0]);
+  assert.ok(rows[1].load > rows[2].load && rows[1].ttft > rows[2].ttft);
+  const sticky = simulate(work, { ...cfg, routing: "sticky" });
+  assert.equal(sticky.tokens.p2p, 0);
+});
+
+const arrival = (t, conv, hash = "x", out = 0) => ({ t, conv, n: 100, out, hashes: [hash] });
+const twoNodes = { ...base, gpuGiB: 0, cpuGiB: 1, routing: "sticky", cluster: { nodes: 2 } };
+const wire = { family: "p2p", bw_gib_s: gib(100) }; // 1 s per block
+const disk = { family: "fs", bw_gib_s: gib(100), capacity_gib: gib(10000) };
+
+test("a second node can fetch completed KV only, and a private disk never supplies a remote hit", () => {
+  const run = (t, overrides) => simulate({ requests: [arrival(0, 0), arrival(t, 1)] },
+    { ...twoNodes, disk, p2p: wire, ...overrides });
+  assert.equal(run(.000001).tokens.miss, 200);
+  assert.equal(run(.12).tokens.p2p, 100);
+  assert.equal(run(3, { cpuGiB: 0 }).tokens.disk, 0);
+  assert.equal(run(3, { cpuGiB: 0 }).tokens.miss, 200);
+});
+
+test("minute-end snapshots distinguish in-flight prefill, CPU admission and a pending backing write", () => {
+  const snapshots = [];
+  const requests = [arrival(59.95, 0), arrival(119.5, 0, "y")];
+  simulate({ requests }, { ...twoNodes, durationMin: 3, disk }, undefined, (_, s) => snapshots.push(s));
+  assert.deepEqual(snapshots.map(s => s.cpu.usedGiB), [0, gib(200), gib(200)]);
+  assert.deepEqual(snapshots.map(s => s.disk.usedGiB), [0, gib(100), gib(200)]);
+});
+
+test("simultaneous reads serialize on one SSD and run in parallel on different private SSDs", () => {
+  const times = (a, b) => {
+    const reads = [];
+    simulate({ requests: [arrival(0, 0), arrival(0, 2), arrival(5, a), arrival(5, b)] },
+      { ...twoNodes, cpuGiB: 0, cluster: { nodes: 2, gpusPerNode: 2 }, disk },
+      (req, _ttft, k, _B, load) => { if (req.t === 5) { assert.equal(k.disk, 1); reads.push(load); } });
+    return reads.sort((a, b) => a - b);
+  };
+  const same = times(0, 1), separate = times(0, 2);
+  assert.ok(Math.abs(same[1] - same[0] - 1) < 1e-9);
+  assert.ok(Math.abs(separate[1] - separate[0]) < 1e-9);
+  assert.ok(Math.abs(same[0] - separate[0]) < 1e-9);
+});
+
+test("two remote CPU readers compete for their source NIC", () => {
+  const loads = [];
+  const r = simulate({ requests: [arrival(0, 0), arrival(2, 1), arrival(2, 2)] },
+    { ...twoNodes, cluster: { nodes: 3 }, p2p: wire },
+    (_req, _ttft, k, _B, load) => { if (k.p2p) loads.push(load); });
+  assert.equal(r.tokens.p2p, 200);
+  assert.ok(Math.abs(Math.max(...loads) - Math.min(...loads) - 1) < 1e-9);
+});
+
+test("S3 lookup pays one metadata RTT per cold batch, plus data time only for a GET", () => {
+  const shared = { family: "obj", bw_gib_s: gib(200), latency_s: .25, usd_per_1k_get: .0004 };
+  const loads = [];
+  const requests = [0, 1, 2].map((i) => ({ t: i * 5, conv: Math.min(i, 1), n: 200, hashes: ["a","b"] }));
+  const r = simulate({ requests }, { ...twoNodes, cpuGiB: 0, shared },
+    (_req, _ttft, _k, _B, load) => loads.push(load));
+  assert.deepEqual(r.s3Requests, { head: 4, put: 2, get: 4 });
+  assert.equal(r.firstPayloadReadS.shared, 5.5); // first GET payload, after HEAD and GET latency
+  assert.ok(Math.abs(loads[0] - .25) < 1e-9);
+  assert.ok(Math.abs(loads[1] - loads[2] - .25) < 1e-9);
+  assert.ok(Math.abs(loads[2] - 1.26) < 1e-9);
+});
+
+test("stored-byte retention and writes bill every private disk and exclude warm-up admissions", () => {
+  const requests = [arrival(0, 0), arrival(10, 0, "a"), arrival(12, 1, "b")];
+  const r = simulate({ requests }, { ...twoNodes, disk: { ...disk, capacity_gib: null,
+    bill: "stored", usd_per_gib_month: 730, usd_per_gib_written: 1 }, warmupS: 5, retentionH: 1 });
+  // $730/GiB-month at one hour retention gives $1/GiB admitted, plus $1/GiB written.
+  assert.ok(Math.abs(r.usd.storage - 2 * gib(200)) < 1e-15);
+});
+
+test("one request must fit active KV including live state and peak output, independently of prefix budget", () => {
+  const model = { ...TOY, state_bytes_per_prefix: 40 };
+  const request = { requests: [arrival(0, 0, "a", 20)] };
+  const cfg = { ...base, model, physicalKvGiB: gib(140), gpuGiB: 0,
+    decode: { gpu: { mem_bw_tb_s: 1, mbu: 1 }, batch: 8, batchCap: ctx => Math.floor(160 / (ctx + 40)) } };
+  assert.equal(simulate(request, cfg).requests, 1);
+  assert.match(simulate(request, { ...cfg, physicalKvGiB: gib(139) }).error, /prefill/);
+  assert.match(simulate({ requests: [arrival(0, 0, "a", 21)] }, cfg).error, /decode.*batch 1/);
+});
+
+test("only overlapping sequences share decode GPU time", () => {
+  const cfg = { ...twoNodes, model: { ...TOY, weights_bytes: 1e12 },
+    decode: { gpu: { mem_bw_tb_s: 1, mbu: 1, usd_per_hour: 1 }, pooled: true, batch: 1024 } };
+  const run = t => simulate({ requests: [arrival(0, 0, "a", 4), arrival(t, 1, "b", 4)] }, cfg);
+  const apart = run(10), together = run(0), joined = run(.5);
+  assert.equal(apart.decodeBatch, 1);
+  assert.equal(together.decodeBatch, 2);
+  assert.ok(joined.decodeBatch > 1 && joined.decodeBatch < 2);
+  assert.ok(Math.abs(apart.usd.decode / together.usd.decode - 2) < 1e-8);
+});
+
+test("synthetic think time begins after the final token, and trace timestamps remain fixed", () => {
+  const cfg = { ...twoNodes, model: { ...TOY, weights_bytes: 1e12 },
+    decode: { gpu: { mem_bw_tb_s: 1, mbu: 1 }, batch: 4 } };
+  const requests = [arrival(0, 0, "a", 3), { ...arrival(.5, 0, "b", 1), followUp: true }];
+  const collect = w => {
+    const arrivals = [];
+    simulate(w, cfg, req => arrivals.push(req.t));
+    return arrivals.sort((a,b) => a-b);
+  };
+  assert.deepEqual(collect({ requests }), [0, .5]);
+  const generated = collect({ requests, durationS: 10 });
+  assert.ok(Math.abs(generated[1] - (0.11 + 3 + .5)) < 1e-8);
+  assert.deepEqual(collect({ requests, durationS: 3 }), [0]);
+});
+
+test("S3 and disaggregated handoffs queue on the same node interface", () => {
+  const shared = { family: "obj", bw_gib_s: gib(100), usd_per_1k_get: 0 };
+  const requests = [arrival(0, 0), arrival(5, 0), arrival(5, 1)];
+  const cfg = { ...twoNodes, cluster: { nodes: 1, gpusPerNode: 2 }, cpuGiB: 0, shared };
+  const loads = [];
+  simulate({ requests }, cfg, (req, _ttft, k, _B, load) => {
+    if (req.t === 5) { assert.equal(k.shared, 1); loads.push(load); }
+  });
+  assert.ok(Math.abs(loads[1] - loads[0] - 1) < 1e-9);
+  // At 200 ms the other replica's prompt handoff encounters the first
+  // replica's 1 s background PUT, occupying their common NIC since 110 ms.
+  const transfers = [];
+  simulate({ requests: [arrival(0, 0), arrival(.2, 1, "other", 1)] },
+    { ...cfg, transfer: wire, decode: { batch: 16, gpu: { mem_bw_tb_s: 1, mbu: 1 } } },
+    (req, _ttft, _k, _B, _load, _wait, tr) => { if (req.out) transfers.push(tr); });
+  assert.ok(transfers[0] >= 1.8 - 1e-9);
+});
+
+test("an imported reply cannot be read before generation completes", () => {
+  // Request timestamps are supplied externally while synthetic IDs let this
+  // fixture identify the same generated blocks on a later request.
+  const requests = [
+    { t: 0, n: 100, out: 200, conv: 0, sys: 0 },
+    { t: 1, n: 300, out: 0, conv: 0, sys: 0 },
+  ];
+  const cfg = { ...twoNodes, routing: "round-robin", p2p: wire, saveDecode: true,
+    model: { ...TOY, weights_bytes: 1e12 }, decode: { batch: 2, gpu: { mem_bw_tb_s: 1, mbu: 1 } } };
+  assert.equal(simulate({ requests }, cfg).tokens.p2p, 100);
+  assert.equal(simulate({ requests: [requests[0], { ...requests[1], t: 205 }] }, cfg).tokens.p2p, 300);
+});
+
+// Continuous prefill batching on the toy model. A 1 TB/s GPU reads 8 GB of weights in 8 ms per step; the other 2 ms of
+// the 10 ms request overhead delay each request without using the GPU.
+const BATCH = { ...base, model: { ...TOY, weights_bytes: 8e9 }, gpu: { ...GPU, mem_bw_tb_s: 1, mbu: 1 }, gpuGiB: gib(1e6), cpuGiB: 0 };
+const fresh = (times, n) => ({ blockTokens: null, requests: times.map((t, i) => ({ t, n, hashes: Array.from({ length: n / 100 }, (_, j) => `r${i}:${j}`) })) });
+const close = (a, b) => Math.abs(a - b) < 1e-9;
+
+test("a request alone in its prefill step keeps the one-at-a-time TTFT", () => {
+  const w = fresh([0], 1000);
+  const serial = simulate(w, BATCH), batched = simulate(w, { ...BATCH, prefillBatchTokens: 4096 });
+  assert.ok(close(serial.ttft.mean, 1.01) && close(batched.ttft.mean, 1.01), `${serial.ttft.mean} ${batched.ttft.mean}`);
+});
+
+test("batching compute-bound prompts makes each wait for the whole step", () => {
+  const w = fresh([0, 0], 1000);
+  const serial = simulate(w, BATCH), batched = simulate(w, { ...BATCH, prefillBatchTokens: 4096 });
+  // one at a time: 1.01 s, then 1.01 s more; together: both finish after 2 ms + 8 ms + 2 s of compute
+  assert.ok(close(serial.ttft.mean, 1.515), `${serial.ttft.mean}`);
+  assert.ok(close(batched.ttft.p50, 2.01) && close(batched.ttft.mean, 2.01), `${batched.ttft.mean}`);
+});
+
+test("a prompt longer than the budget is split across steps, each paying a weight read", () => {
+  const w = fresh([0], 3000);
+  const batched = simulate(w, { ...BATCH, prefillBatchTokens: 1000 });
+  assert.ok(close(batched.ttft.mean, 3.01 + 2 * 0.008), `${batched.ttft.mean}`);
+});
+
+test("batching short prompts amortises the weight read and drains a queue the serial model cannot", () => {
+  const w = fresh(Array.from({ length: 400 }, (_, i) => i * 0.015), 100); // 0.1 s of compute every 15 ms
+  const short = { ...BATCH, model: { ...BATCH.model, params: 5e7 } }; // 10 ms per 100 tokens
+  const serial = simulate(w, short), batched = simulate(w, { ...short, prefillBatchTokens: 8192 });
+  assert.ok(serial.utilization > 0.99, `${serial.utilization}`); // 20 ms of work every 15 ms: always busy
+  assert.ok(batched.utilization < 1 && batched.ttft.mean < serial.ttft.mean / 5, `${batched.utilization} ${batched.ttft.mean} ${serial.ttft.mean}`);
 });

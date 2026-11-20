@@ -11,20 +11,7 @@
 
 import { fitFor, runScenario } from "./scenario.js";
 
-const median = (xs) => {
-  const s = xs.filter((x) => x != null && Number.isFinite(x)).sort((a, b) => a - b);
-  if (!s.length) return null;
-  const k = s.length;
-  return k % 2 ? s[(k - 1) / 2] : (s[k / 2 - 1] + s[k / 2]) / 2;
-};
-const range = (xs) => {
-  const s = xs.filter((x) => x != null && Number.isFinite(x));
-  return s.length ? { median: median(s), min: Math.min(...s), max: Math.max(...s), n: s.length } : null;
-};
-
-export function providerStats(providers) {
-  return { n: providers.length, input: range(providers.map((p) => p.input)), cached: range(providers.map((p) => p.cached)), output: range(providers.map((p) => p.output)) };
-}
+export { providerStats } from "./openrouter.js";
 
 export const MARKET_INSTANCES = 8;
 
@@ -38,25 +25,26 @@ const growths = (fit) => {
   return out;
 };
 
-// One shape loaded to `util`: the request rate one instance takes (geometric bisection), then 8 instances.
+// Calibrate on the reference cluster so the trial includes cross-node cache misses and transfers.
 function loadShape(c, sim, fit, util, steps) {
-  const at = (rpm, instances) => runScenario({ ...c, sim: { ...sim, tp: fit.tp, pp: fit.pp, gpusPerNode: fit.tp, nodes: fit.pp * instances },
+  const cluster = { ...sim, tp: fit.tp, pp: fit.pp, gpusPerNode: fit.tp, nodes: fit.pp * MARKET_INSTANCES };
+  const at = rpm => runScenario({ ...c, sim: cluster,
     workload: { ...c.workload, durationMin: WINDOW.durationMin, requestsPerMin: rpm } });
-  // bracket from a light-load run: busy share ~ rate x mean prefill time
-  const light = at(1, 1);
-  if (light.error) return { error: light.error };
-  const est = light.prefill > 0 ? (util * 60) / light.prefill : 1;
-  let lo = est / 8, hi = est * 4, found = false;
-  if (at(lo, 1).utilization > util) lo = 0.01; // the estimate was far off: search wide
+  const light = at(MARKET_INSTANCES);
+  if (light.error) return light;
+  const est = light.prefill > 0 ? util * 60 * MARKET_INSTANCES / light.prefill : MARKET_INSTANCES;
+  let lo = est / 8, hi = est * 4;
+  let best = at(lo);
+  if (best.utilization > util) { lo = 0.01; best = null; }
   for (let i = 0; i < steps; i++) {
     const mid = Math.sqrt(lo * hi);
-    const r = at(mid, 1);
-    if (r.error) return { error: r.error };
-    if (r.utilization > util) hi = mid; else { lo = mid; found = true; }
+    const r = at(mid);
+    if (r.error) return r;
+    if (r.utilization > util) hi = mid;
+    else { lo = mid; best = r; }
   }
-  if (!found) return { error: "no load keeps the prefill GPUs under the target" };
-  const r = at(lo * MARKET_INSTANCES, MARKET_INSTANCES);
-  return r.error ? r : { ...r, fit, requestsPerMin: lo * MARKET_INSTANCES };
+  if (!best?.requests) return { error: "no load keeps the prefill GPUs under the target" };
+  return { ...best, fit, requestsPerMin: lo };
 }
 
 // The reference: of the shapes tried, the one with the lowest cost per request, as a provider would pick.
@@ -71,6 +59,7 @@ export function marketRun(c, modelId, { util = 0.6, steps = 8, speed = null } = 
   const sim = {
     ...c.sim, model: modelId, gpu: gpu.id, decodeGpu: priced(decodeGpu) && fitFor(c, modelId, decodeGpu) ? decodeGpu.id : gpu.id,
     warmupMin: WINDOW.warmupMin, decodePooled: true, decodeSpeed: speed ?? null,
+    prefillBatchTokens: null, // the target-busy search assumes one-at-a-time prefill (lab.atBusy)
   };
   let best = null, lastError = null;
   for (const shape of growths(fit)) {

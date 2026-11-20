@@ -91,3 +91,31 @@ test("GPUs saved before nvlink_domain get it from the presets", () => {
   assert.equal(c.gpus.find((g) => g.id === "gb200").nvlink_domain, 72);
   assert.equal(c.gpus.find((g) => g.id === "b200").nvlink_domain, 8);
 });
+
+test("legacy presets acquire MP geometry and request prices while custom rates and capacities survive", () => {
+  const defaults = defaultConfig(S1, VARIANTS, GPUS, SOFTWARE, MODELS);
+  const old = structuredClone(defaults);
+  delete old.sim.peerFirst;
+  delete old.sim.saveDecode;
+  old.sim.simBlockTokens = 512;
+  const m = old.models["deepseek-v4.1-flash"];
+  delete m.kv_layout;
+  delete m.prefix_replay_tokens;
+  m.read_fixed_bytes = 0;
+  m.kv_bytes_per_token = 890;
+  const s3 = old.variants.find(v => v.id === "obj-aws-s3-standard");
+  delete s3.usd_per_1k_put;
+  s3.usd_per_1k_get = .001;
+  s3.capacity_gib = 300;
+  const migrated = importConfig(exportConfig(old), defaults);
+  assert.equal(migrated.sim.peerFirst, false);
+  assert.equal(migrated.sim.saveDecode, false);
+  assert.equal(migrated.sim.simBlockTokens, 512);
+  assert.equal(migrated.models["deepseek-v4.1-flash"].kv_bytes_per_token, 1650);
+  assert.equal(migrated.models["deepseek-v4.1-flash"].prefix_replay_tokens, 128);
+  const current = migrated.variants.find(v => v.id === s3.id);
+  assert.deepEqual([current.usd_per_1k_put, current.usd_per_1k_get, current.capacity_gib], [.005, .001, 300]);
+  m.kv_bytes_per_token = 999;
+  const custom = importConfig(exportConfig(old), defaults).models["deepseek-v4.1-flash"];
+  assert.deepEqual([custom.kv_bytes_per_token, custom.prefix_replay_tokens], [999, 0]);
+});

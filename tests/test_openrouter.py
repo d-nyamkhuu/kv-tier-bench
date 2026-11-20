@@ -17,6 +17,11 @@ def test_summarize_converts_to_per_million_and_drops_free_endpoints():
     assert rows[0]["cached"] is None  # no cache price listed
 
 
+def test_explicit_zero_cached_price_on_a_paid_endpoint():
+    rows = summarize([ep("A", "0.000001", "0.000002", "0")])
+    assert rows[0]["cached"] == 0
+
+
 def test_export_covers_every_mapped_model_with_a_date():
     data = export(lambda _id: [ep("X", "0.000001", "0.000002")], now=datetime(2026, 11, 18, tzinfo=UTC))
     assert data["fetched"] == "2026-11-18"

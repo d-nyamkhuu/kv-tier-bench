@@ -14,7 +14,7 @@ const TIERS = ["gpu", "cpu", "fs", "obj", "p2p"];
 const fitsFor = (m) => Object.fromEntries(["fs", "obj", "p2p"].map((t) => [t, m.tiers[t] ? fitTier(m, t) : null]));
 
 // which slot of the configurator a variant can fill
-export const slotOf = (v) => (v.family === "p2p" ? "p2p" : v.family === "obj" || v.shared ? "shared" : "disk");
+export const slotOf = (v) => (v.family === "p2p" ? "p2p" : v.family === "obj" ? "shared" : "disk");
 
 let ctx; // { cfg(), changed(opts), s1, defaults, replaceCfg(c), storage }
 let fitChart = null;
@@ -56,7 +56,7 @@ function marketHint() {
     `Each model runs on your settings (${g?.usd_per_hour != null ? g.name : "B200, as your GPU has no price"}, ${c.sim.precision && c.sim.precision !== "released" ? `served in ${c.sim.precision.toUpperCase()}` : "served as released"}, tiers, serving, workload shape) with ${MARKET_INSTANCES} instances of the cheapest of three sizes (the fewest GPUs that hold it, twice, four times), `,
     "loaded until the prefill GPUs are busy 60% of the time, with decode GPUs sized to that load. A provider runs near capacity and pools decode across clusters; an idle or rounded-up cluster would overstate the cost. ",
     `Speculative decoding and expert parallelism follow your serving settings (${SPEC_NAME(c.sim.spec)}; experts ${c.sim.decodeEp ? `over ${c.sim.decodeEp} GPUs` : "in the TP instance"}). `,
-    `Decode runs the largest batch that holds each model's p50 speed on OpenRouter (as of ${Object.values(data.models).find((m) => m.speed)?.speed.as_of ?? "–"}), so the speeds match by construction and the prices show what that speed costs; a model without one fills the batch.`);
+    `Decode batches concurrent requests using each model's p50 speed on OpenRouter (as of ${Object.values(data.models).find((m) => m.speed)?.speed.as_of ?? "–"}), as its throughput target. With no target, arrival times and KV memory determine batch size.`);
 }
 
 function runMarket() {
@@ -194,6 +194,9 @@ function variantCard(v, fits) {
   }
   fields.push(numField("Latency (ms)", v, "latency_s", { scale: 1000, assumption: isA("latency_s"), edited, onchange: rerender }));
   if (v.family !== "p2p") { // a p2p tier is the peers' CPU memory: no capacity or storage price of its own
+    if (v.family === "obj" && v.usd_per_1k_put != null) fields.push(
+      numField("$ / 1,000 PUT", v, "usd_per_1k_put", { edited, onchange: rerender }),
+      numField("$ / 1,000 GET or HEAD", v, "usd_per_1k_get", { edited, onchange: rerender }));
     fields.push(
       numField("Capacity (GiB, empty = unbounded)", v, "capacity_gib", { assumption: isA("capacity_gib"), placeholder: "unbounded", edited, onchange: rerender }),
       numField("$ / GiB-month", v, "usd_per_gib_month", { assumption: isA("usd_per_gib_month"), placeholder: "no price", edited, onchange: rerender }),
@@ -204,9 +207,6 @@ function variantCard(v, fits) {
           el("option", { value: "stored", text: "bytes stored", selected: v.bill !== "provisioned" }),
           el("option", { value: "provisioned", text: "provisioned capacity", selected: v.bill === "provisioned" }))),
     );
-    if (v.family === "fs") fields.push(el("label", { class: "field check" },
-      el("input", { type: "checkbox", checked: !!v.shared, onchange: (ev) => { const was = c.sim.candidates[slotOf(v)]?.includes(v.id); v.shared = ev.target.checked; if (c.sim.disk === v.id) c.sim.disk = null; if (c.sim.shared === v.id) c.sim.shared = null; setCandidate(v, was); rerender(); } }),
-      el("span", { text: "One copy for the whole cluster" })));
   }
   fields.push(numField(v.family === "p2p" ? "$ / hour per node" : "$ / hour", v, "usd_per_hour", { assumption: isA("usd_per_hour"), placeholder: "0", edited, onchange: rerender }));
   const slot = slotOf(v);

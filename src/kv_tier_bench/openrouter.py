@@ -64,7 +64,7 @@ def _per_million(pricing: dict, key: str) -> float | None:
     if v in (None, ""):
         return None
     x = float(v) * 1e6
-    return float(f"{x:.6g}") if x > 0 else None
+    return float(f"{x:.6g}") if x >= 0 else None
 
 
 def summarize(endpoints: list[dict]) -> list[dict]:
@@ -79,7 +79,7 @@ def summarize(endpoints: list[dict]) -> list[dict]:
             "cached": _per_million(p, "input_cache_read"),
             "output": _per_million(p, "completion"),
         }
-        if row["input"] is None or row["output"] is None:  # free tiers and incomplete listings
+        if row["input"] is None or row["output"] is None or (row["input"] == row["output"] == 0):
             continue
         out.append(row)
     return sorted(out, key=lambda r: (r["input"], r["output"]))

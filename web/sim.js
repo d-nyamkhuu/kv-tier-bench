@@ -1,11 +1,13 @@
-// Cache simulator: replays requests one at a time through LRU tiers and charges each request's TTFT from model.js.
+// Cache simulator: replays timestamped events through LRU tiers and charges each request's TTFT from model.js.
 // DOM-free, so `node --test` covers it.
 //
 // Tiers: each instance's GPU, its node's CPU memory, then optional ones: a local disk per node, peer nodes' CPU memory
-// over the network, and shared storage for the whole cluster. As in vLLM's tiered offloading, every tier is written
-// through and evicts on its own (LRU).
+// over the network, and shared storage for the whole cluster. Newly admitted chunks write through to configured backing stores.
+// Host and bounded native filesystem caches use LMCache MP's periodic LRU controller.
 
-import { decodeStep, GIB, timing } from "./model.js";
+import { Events } from "./events.js";
+import { decodePool } from "./decode.js";
+import { decodeStep, GIB, perSeqBytes, timing, variantBandwidth } from "./model.js";
 
 // Byte-bounded LRU: a doubly linked list (oldest at head) indexed by a Map, so every operation is O(1).
 export class LRU {
@@ -21,6 +23,16 @@ export class LRU {
     this.onEvict = hooks.onEvict;
   }
   has(id) { return this.map.has(id); }
+  bytes(id) { return this.map.get(id)?.bytes ?? 0; }
+  touch(id) {
+    const n = this.map.get(id);
+    if (n && n !== this.tail) { this.#unlink(n); this.#append(n); }
+  }
+  sweep() {
+    if (!this.head || this.used < 0.8 * this.cap) return;
+    const count = Math.max(1, Math.floor(this.map.size * 0.2));
+    for (let i = 0; i < count; i++) this.#evictOldest();
+  }
   keys() { const out = []; for (let n = this.head; n; n = n.next) out.push(n.id); return out; } // oldest first
   #unlink(n) {
     if (n.prev) n.prev.next = n.next; else this.head = n.next;
@@ -38,7 +50,7 @@ export class LRU {
     let n = this.map.get(id);
     if (n) {
       this.#unlink(n);
-      if (bytes > n.bytes) { this.used += bytes - n.bytes; n.bytes = bytes; }
+      if (bytes > n.bytes) { this.added += bytes - n.bytes; this.used += bytes - n.bytes; n.bytes = bytes; }
     } else {
       n = { id, bytes, prev: null, next: null };
       this.map.set(id, n);
@@ -47,14 +59,15 @@ export class LRU {
       this.onAdd?.(id);
     }
     this.#append(n);
-    while (this.used > this.cap && this.head) {
-      const old = this.head;
-      this.#unlink(old);
-      this.map.delete(old.id);
-      this.used -= old.bytes;
-      this.evictions++;
-      this.onEvict?.(old.id);
-    }
+    while (this.used > this.cap && this.head) this.#evictOldest();
+  }
+  #evictOldest() {
+    const old = this.head;
+    this.#unlink(old);
+    this.map.delete(old.id);
+    this.used -= old.bytes;
+    this.evictions++;
+    this.onEvict?.(old.id);
   }
 }
 
@@ -74,29 +87,62 @@ export function rng(seed = 1) { // mulberry32
 // Conversations. `followUpShare` of requests continue an existing conversation; the rest start a new one. New
 // conversations arrive as a Poisson process at requestsPerMin x (1 - followUpShare); after each turn a conversation
 // continues with probability followUpShare, after an exponential pause of mean thinkTimeS, so in steady state that
-// share of requests are follow-ups. Turn k sends the shared system prompt, every earlier message and answer, and the
+// share of requests are follow-ups. Turn k sends the system prompt, every earlier message and answer, and the
 // new message: system + (k-1) x (input + output) + input tokens. A conversation ends at maxContextTokens.
+// Optional realism, each off by default:
+//   lengthSpread: coefficient of variation of each message and reply length (lognormal with the set mean; 0 = fixed),
+//   systemPrompts: distinct system prompts of the same length, chosen per conversation with Zipf(1) popularity,
+//   arrivalPattern: "steady" (Poisson) or "bursty" (new conversations at 2x the mean rate for 2 minutes of every 6,
+//     0.5x for the other 4, the same hourly volume).
+// Those draws come from a second random stream, so the default workload is identical with or without them.
 export function synthetic(p) {
   const r = rng(p.seed ?? 1);
+  const extra = rng((p.seed ?? 1) + 7919);
   const exp = (mean) => -Math.log(1 - r()) * mean;
   const share = Math.min(Math.max(p.followUpShare, 0), 0.99);
   const newPerS = (p.requestsPerMin * (1 - share)) / 60;
   const end = p.durationMin * 60;
   const maxCtx = p.maxContextTokens ?? Infinity;
+  const cv = Math.max(0, p.lengthSpread ?? 0);
+  const sigma = Math.sqrt(Math.log(1 + cv * cv));
+  const length = (mean) => {
+    if (!cv) return mean;
+    const normal = Math.sqrt(-2 * Math.log(1 - extra())) * Math.cos(2 * Math.PI * extra());
+    return Math.max(1, Math.round(mean * Math.exp(sigma * normal - (sigma * sigma) / 2)));
+  };
+  const prompts = Math.max(1, Math.round(p.systemPrompts ?? 1));
+  const weights = Array.from({ length: prompts }, (_, i) => 1 / (i + 1));
+  const total = weights.reduce((a, b) => a + b, 0);
+  let acc = 0;
+  const cdf = weights.map((w) => (acc += w / total));
+  const pickPrompt = () => {
+    if (prompts === 1) return 0;
+    const u = extra();
+    let lo = 0, hi = prompts - 1;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (cdf[mid] < u) lo = mid + 1; else hi = mid; }
+    return lo;
+  };
+  const bursty = p.arrivalPattern === "bursty";
+  const peak = bursty ? 2 : 1;
+  const level = (t) => (t % 360 < 120 ? 2 : 0.5);
   const requests = [];
   let conv = 0;
-  for (let start = exp(1 / newPerS); start < end; start += exp(1 / newPerS), conv++) {
-    let t = start;
+  for (let start = exp(1 / (newPerS * peak)); start < end; start += exp(1 / (newPerS * peak)), conv++) {
+    if (bursty && extra() * peak >= level(start)) continue; // thinning to the burst profile
+    const sysId = pickPrompt();
+    let t = start, history = 0;
     for (let k = 1; ; k++) {
-      const n = p.systemTokens + (k - 1) * (p.inputTokens + p.outputTokens) + p.inputTokens;
-      if (n + p.outputTokens > maxCtx) break;
-      requests.push({ t, n, out: p.outputTokens, conv, sys: p.systemTokens, followUp: k > 1 });
+      const input = length(p.inputTokens), out = length(p.outputTokens);
+      const n = p.systemTokens + history + input;
+      if (n + out > maxCtx) break;
+      requests.push({ t, n, out, conv, sys: p.systemTokens, sysId, followUp: k > 1 });
+      history += input + out;
       t += exp(p.thinkTimeS);
       if (r() >= share || t >= end) break;
     }
   }
   requests.sort((a, b) => a.t - b.t);
-  return { name: "synthetic", blockTokens: null, requests };
+  return { name: "synthetic", durationS: end, blockTokens: null, requests };
 }
 
 // Mooncake-style JSONL: {"timestamp": ms, "input_length": n, "output_length": m, "hash_ids": [...]}, one hash per
@@ -119,7 +165,8 @@ function blocksOf(req, B) {
   if (req.hashes) return req.hashes.slice(0, nb);
   const sysBlocks = Math.floor(req.sys / B);
   const ids = new Array(nb);
-  for (let j = 0; j < nb; j++) ids[j] = j < sysBlocks ? `s${j}` : `c${req.conv}:${j}`;
+  const sys = req.sysId ? `s${req.sysId}:` : "s";
+  for (let j = 0; j < nb; j++) ids[j] = j < sysBlocks ? sys + j : `c${req.conv}:${j}`;
   return ids;
 }
 
@@ -142,25 +189,29 @@ export function idealHitShare(workload, blockTokens) {
 const pct = (sorted, q) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
 
 // One replay of a workload through a cluster. cfg:
-//   model (architecture, already withTp), gpu, software (presets.SOFTWARE), routing: "random" | "sticky", seed, warmupS,
+//   model (architecture, already withTp), gpu, software (presets.SOFTWARE), routing: "round-robin" | "random" | "sticky", seed, warmupS,
 //   cluster: {nodes, gpusPerNode, tp, pp}: nodes x gpusPerNode / (tp x pp) prefill instances, each spanning pp nodes
 //     (pipeline stages, joined by `stageLink`), each one request at a time (FIFO; with pp > 1 the next request enters
 //     the first stage when the current one leaves it: ideal pipelining). pp nodes form one cache group: their CPU
 //     memories, disks and links serve the instance's layers side by side, so capacities add up,
 //   gpuGiB (KV per instance), cpuGiB (per node, 0 = none),
 //   disk: fs variant per node | null, p2p: network variant | null (a hit = a block in another node's CPU tier),
-//   shared: object storage / shared filesystem variant for the whole cluster | null,
+//   shared: object storage variant for the whole cluster | null,
 //   decode: {gpu, batch, batchCap(ctx), pooled?, speed?, spec?, ep?, overlap?} | null: disaggregated, batched
-//     decode on GPUs of its own (same TP); speed (tokens/s per request): the batch is the largest that keeps each
-//     request at least this fast, as a provider holding a per-user speed runs it (none: as large as max batch and
-//     memory allow); spec: speculative decoding (a token takes step / accepted tokens); ep: experts spread over ep
+//     decode on GPUs of its own (same TP); speed (tokens/s per request): the speed target limits the number of ready
+//     requests admitted to a batch alongside the memory and sequence limits; spec: speculative decoding (a token takes step / accepted tokens); ep: experts spread over ep
 //     GPUs (decode then needs no pipeline stages), batch per attention group of tp GPUs (model.decodeStep),
 //   transfer: network variant for the prefill -> decode KV | null, simBlockTokens,
+//   prefillBatchTokens: continuous batching of prefill, vLLM's max_num_batched_tokens (null or 0: one request at a time).
+//     Each step takes waiting requests first come, first served up to this many new tokens, splitting the last one
+//     (chunked prefill), and finishes them together. A step costs one read of the weights (at the GPU's mbu, capped
+//     at software.request_overhead_s) plus the FLOPs and per-token overhead of its tokens; the rest of the
+//     calibrated per-request overhead delays each request without occupying the GPU. A request alone in its step
+//     therefore keeps the one-at-a-time TTFT exactly. Cache loads run while other requests compute.
 //   costScale: real nodes / simulated nodes (a large cluster is replayed at <= 8 nodes with its per-node load).
-// Every tier is written through and evicts on its own (LRU). Lookup per block, nearest first: own GPU, own node's CPU,
-// local disk, peer nodes, shared storage; a prefix hit ends at the first block no tier holds.
+// Lookup checks the local GPU, CPU and disk, then shared storage and remote CPU in the selected order.
 // Statistics leave out requests that arrive in the first `warmupS` seconds; those still fill the caches.
-export function simulate(workload, cfg) {
+export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
   const m = cfg.model;
   const cl = { nodes: 1, gpusPerNode: 1, tp: 1, pp: 1, ...cfg.cluster };
   const pp = cl.pp;
@@ -170,34 +221,62 @@ export function simulate(workload, cfg) {
   const decodeOpts = cfg.decode ? { spec: cfg.decode.spec ?? null, ep: decodeEp, overlap: !!cfg.decode.overlap } : null;
   const B = workload.blockTokens ?? Math.max(m.block_size, Math.ceil((cfg.simBlockTokens ?? 0) / m.block_size) * m.block_size);
   const blockBytes = B * m.kv_bytes_per_token;
+  const backingScale = cfg.externalCopiesPerGpuCopy ?? 1;
+  const backingBlock = blockBytes * backingScale;
   const perNode = Math.max(1, Math.floor(cl.gpusPerNode / cl.tp));
   const gib = (x) => (x == null ? null : x * GIB);
 
-  // A model with a fixed per-prefix state (linear attention) can only resume where a state snapshot was stored: the end
-  // of an earlier stored sequence. vLLM keeps one snapshot per cached sequence, so a hit is cut back to the deepest
-  // snapshot it reaches; a model without state can resume at any block.
-  const snapAt = m.read_fixed_bytes > 0 ? new Set() : null;
+  const externalState = m.read_fixed_bytes * backingScale;
+  const s3 = cfg.shared?.usd_per_1k_put != null || cfg.shared?.usd_per_1k_get != null;
+  const ranks = cfg.objectRanks ?? 1;
+  const operations = { put: 0, get: 0, head: 0 };
+  let diskReadBytes = 0, sharedReadBytes = 0, sharedWriteBytes = 0;
   const holders = new Map(); // block -> number of nodes whose CPU tier holds it (p2p lookups)
   const hook = { onAdd: (k) => holders.set(k, (holders.get(k) ?? 0) + 1), onEvict: (k) => { const c = holders.get(k) - 1; if (c) holders.set(k, c); else holders.delete(k); } };
   // one entry per cache group of pp nodes (a node when pp = 1)
   const nodes = Array.from({ length: Math.max(1, Math.floor(cl.nodes / pp)) }, () => ({
+    diskLane: { free: 0 }, nic: { free: 0 }, diskWritten: 0,
+    knownObjects: s3 ? new Set() : null,
+    knownWindows: s3 && externalState ? new Set() : null,
     cpu: new LRU(gib((cfg.cpuGiB ?? 0) * pp), cfg.p2p ? hook : {}),
     disk: cfg.disk ? new LRU(gib(cfg.disk.capacity_gib == null ? null : cfg.disk.capacity_gib * pp)) : null,
   }));
-  const inst = nodes.flatMap((node, ni) => Array.from({ length: perNode }, () => ({ node: ni, gpu: new LRU(gib(cfg.gpuGiB)), freeAt: 0 })));
+  const inst = nodes.flatMap((node, ni) => Array.from({ length: perNode }, () => ({ node: ni, gpu: new LRU(gib(cfg.gpuGiB)), running: false, queue: [], head: 0, waiting: [], stepping: false })));
   const shared = cfg.shared ? new LRU(gib(cfg.shared.capacity_gib)) : null;
 
+  // Occupancy counts physical copies (each instance GPU and each node-group CPU/disk)
+  // and counts the cluster-wide shared cache once. Only the timeline requests snapshots.
+  const pools = observeMinuteEnd ? {
+    gpu: inst.map(instance => instance.gpu), cpu: nodes.map(node => node.cpu),
+    ...(cfg.disk ? { disk: nodes.map(node => node.disk) } : {}), ...(shared ? { shared: [shared] } : {}),
+  } : null;
+
   // optional tiers, nearest first
+  const peerTier = cfg.p2p && { key: "p2p", v: cfg.p2p, has: id => holders.has(id) };
+  const sharedTier = shared && { key: "shared", v: cfg.shared, has: id => shared.has(id) };
   const lower = [
     cfg.disk && { key: "disk", v: cfg.disk, has: (id, n) => n.disk.has(id) },
-    cfg.p2p && { key: "p2p", v: cfg.p2p, has: (id) => holders.has(id) }, // own node's CPU was checked first
-    shared && { key: "shared", v: cfg.shared, has: (id) => shared.has(id) },
+    ...(cfg.peerFirst ? [peerTier, sharedTier] : [sharedTier, peerTier]),
   ].filter(Boolean);
-  for (const t of lower) t.load = T.loadFor(t.v);
   const loadCpu = T.cpuLoad;
   const xfer = T.transferFor(cfg.decode ? cfg.transfer : null);
   const dec = cfg.decode;
   const r = rng(cfg.seed ?? 7);
+  const batchTokens = cfg.prefillBatchTokens > 0 ? cfg.prefillBatchTokens : null;
+  const weightRead = cfg.gpu.mem_bw_tb_s && cfg.gpu.mbu ? m.weights_bytes / cl.tp / (cfg.gpu.mem_bw_tb_s * 1e12 * cfg.gpu.mbu) : 0;
+  const stepFloor = Math.min(weightRead, cfg.software.request_overhead_s);
+  const requestDelay = cfg.software.request_overhead_s - stepFloor;
+
+  function route(req, index) {
+    if (cfg.routing === "round-robin") {
+      // Visit each independent node group before using its next local replica.
+      const group = index % nodes.length;
+      const replica = Math.floor(index / nodes.length) % perNode;
+      return inst[group * perNode + replica];
+    }
+    if (cfg.routing === "sticky" && req.conv != null) return inst[req.conv % inst.length];
+    return inst[Math.floor(r() * inst.length)];
+  }
 
   const keys = ["gpu", "cpu", ...lower.map((t) => t.key), "miss"];
   const tokens = Object.fromEntries(keys.map((k) => [k, 0]));
@@ -207,13 +286,101 @@ export function simulate(workload, cfg) {
   let busyUncached = 0, busyCached = 0, cachedTokens = 0; // prefill time by what it served, for the price sheet
   let busyLoads = 0; // of busyCached: loading blocks (the rest is the cached tokens' share of vLLM's overhead)
   const reqs = workload.requests;
-  const t0 = reqs.length ? reqs[0].t + (cfg.warmupS ?? 0) : 0;
-  let sharedAddedAtT0 = null, diskAddedAtT0 = null;
-  const diskAdded = () => nodes.reduce((a, n) => a + (n.disk?.added ?? 0), 0);
+  const startTime = cfg.durationMin != null || workload.durationS != null ? 0 : reqs[0]?.t ?? 0;
+  const t0 = startTime + (cfg.warmupS ?? 0);
+  let firstGpuEvictionS = null, firstDiskEvictionS = null;
+  const firstPayloadReadS = { disk: null, shared: null };
+  let sharedStored = 0, lastCompletion = t0;
+  const events = new Events();
+  const durationS = cfg.durationMin != null ? cfg.durationMin * 60 : workload.durationS;
+  const nextTurn = new Map();
+  const lastTurn = new Map();
+  let routingIndex = 0;
+  class CapacityError extends Error {
+    constructor(tokens, message) { super(message); this.tokens = tokens; }
+  }
 
-  for (const req of reqs) {
-    if (sharedAddedAtT0 == null && req.t >= t0) { sharedAddedAtT0 = shared ? shared.added : 0; diskAddedAtT0 = diskAdded(); }
-    const here = cfg.routing === "sticky" && req.conv != null ? inst[req.conv % inst.length] : inst[Math.floor(r() * inst.length)];
+  // A single FIFO payload lane for each private disk and each node's NIC. A peer
+  // transfer occupies both endpoints concurrently. Independent disks run in parallel.
+  function reserve(time, seconds, lanes) {
+    const end = Math.max(time, ...lanes.map(lane => lane.free)) + seconds;
+    for (const lane of lanes) lane.free = end;
+    return end;
+  }
+
+  const profile = (batch, ctx) => {
+    const model = dec.model ?? m;
+    const plain = decodeStep(model, dec.gpu, batch, ctx, cl.tp, { ...decodeOpts, spec: null });
+    const spec = decodeOpts.spec ? decodeStep(model, dec.gpu, batch, ctx, cl.tp, decodeOpts) : plain;
+    const best = (spec.step + stepHops) / spec.tokens < plain.step + stepHops ? spec : plain;
+    const step = best.step + stepHops;
+    return { step, perToken: step / best.tokens, tokens: best.tokens, plain: plain.step + stepHops };
+  };
+  const pool = dec && decodePool(events, dec, profile);
+
+  let lastPoll = 0;
+  function advance(time) {
+    // The LMCache controller polls each second. Once all pools are below
+    // watermark, jumping over a long idle interval has no further effect.
+    const end = Math.floor(time);
+    while (lastPoll < end) {
+      lastPoll++;
+      let evicted = false;
+      for (const n of nodes) {
+        const before = n.cpu.evictions + (n.disk?.evictions ?? 0);
+        n.cpu.sweep();
+        n.disk?.sweep();
+        if (firstDiskEvictionS == null && n.disk?.evictions) firstDiskEvictionS = lastPoll;
+        evicted ||= before !== n.cpu.evictions + (n.disk?.evictions ?? 0);
+      }
+      if (!evicted) { lastPoll = end; break; }
+    }
+  }
+
+  // Continuous prefill batching on one instance: a step starts when the previous one leaves the first pipeline stage.
+  function enqueue(here, job, now) {
+    here.waiting.push(job);
+    // Priority 3 lets requests ready at the same instant join this step, as one scheduler pass would.
+    if (!here.stepping) { here.stepping = true; events.at(now, 3, later => runStep(here, later)); }
+  }
+  function runStep(here, now) {
+    let budget = batchTokens, tokens = 0, work = 0;
+    const finishing = [];
+    while (here.waiting.length && budget > 0) {
+      const job = here.waiting[0];
+      const take = Math.min(Math.max(1, job.n - job.pos), budget);
+      job.first ??= now;
+      work += T.flops(Math.min(job.n, job.pos + take)) - T.flops(Math.min(job.n, job.pos));
+      job.pos += take; budget -= take; tokens += take;
+      if (job.pos < job.n) break; // the rest of this prompt goes in the next step
+      here.waiting.shift();
+      work += job.perToken;
+      finishing.push(job);
+    }
+    const seconds = stepFloor + work + T.hops(tokens);
+    if (now >= t0) busy += seconds / pp;
+    for (const job of finishing) events.at(now + seconds, 0, () => job.done(job.first, now + seconds));
+    events.at(now + seconds / pp, 3, later => {
+      if (here.waiting.length) runStep(here, later);
+      else here.stepping = false;
+    });
+  }
+
+  function arrive(template, time) {
+    const req = time === template.t ? template : { ...template, t: time };
+    const peak = req.n + (req.out ?? 0);
+    if (cfg.physicalKvGiB != null && perSeqBytes(m, dec ? req.n : peak) > cfg.physicalKvGiB * GIB)
+      throw new CapacityError(dec ? req.n : peak, `A ${dec ? req.n : peak}-token sequence exceeds the prefill instance's ${cfg.physicalKvGiB.toFixed(2)} GiB of active KV memory. Reduce the context or choose a larger GPU layout.`);
+    if (dec?.batchCap && dec.batchCap(peak) < 1)
+      throw new CapacityError(peak, `A ${peak}-token sequence exceeds the decode instance's KV memory at batch 1. Reduce the context or choose a larger decode GPU layout.`);
+    const here = route(req, routingIndex++);
+    const begin = now => serve(req, template, here, now);
+    if (batchTokens) begin(time); // the batch scheduler queues it after its cache loads
+    else if (here.running) here.queue.push(begin);
+    else { here.running = true; begin(time); }
+  }
+
+  function serve(req, template, here, start) {
     const node = nodes[here.node];
     const ids = blocksOf(req, B);
     const k = Object.fromEntries(keys.map((kk) => [kk, 0]));
@@ -225,75 +392,290 @@ export function simulate(workload, cfg) {
       if (!t) break;
       where.push(t.key);
     }
-    if (snapAt) { let j = where.length; while (j > 0 && !snapAt.has(ids[j - 1])) j--; where.length = j; }
-    for (const w of where) k[w]++;
-    const h = (ids.length && k.gpu + k.cpu + lower.reduce((a, t) => a + k[t.key], 0)) * B;
-    const last = where[where.length - 1]; // the tier that holds the hit's last block, and with it the state
-    const loads = loadCpu(k.cpu * B, last === "cpu") + lower.reduce((a, t) => a + t.load(k[t.key] * B, last === t.key), 0);
-    const prefill = T.ttft(req.n, h, loads);
-    const start = Math.max(req.t, here.freeAt);
-    here.freeAt = start + prefill / pp;
-    if (req.t >= t0) {
-      const out = req.out ?? 0;
-      const ctx = req.n + out / 2;
-      const most = dec ? Math.max(1, Math.min(dec.batch, dec.batchCap ? dec.batchCap(ctx) : dec.batch)) : 1;
-      // time per output token at a batch: one step (plus pipeline hops) over the tokens it yields per sequence. A
-      // drafter that would slow the step down (a large batch is compute-bound, and checking drafts multiplies the
-      // FLOPs) is switched off, as production drafters shrink their checking with load (the DSpark paper's budget
-      // "decreases smoothly with load"); off or on is a simplification of that
-      const run = (b) => {
-        const plain = decodeStep(m, dec.gpu, b, ctx, cl.tp, { ...decodeOpts, spec: null });
-        const r = decodeOpts.spec ? decodeStep(m, dec.gpu, b, ctx, cl.tp, decodeOpts) : plain;
-        const best = (r.step + stepHops) / r.tokens < plain.step + stepHops ? r : plain;
-        return { step: best.step + stepHops, perToken: (best.step + stepHops) / best.tokens, tokens: best.tokens, plain: plain.step + stepHops };
-      };
-      const perTokenAt = (b) => run(b).perToken;
-      let batch = most;
-      if (dec?.speed > 0 && perTokenAt(most) > 1 / dec.speed) {
-        // a token's time grows with the batch: bisect for the largest batch at the speed; batch 1 when even that is slower
-        let lo = 1, hi = most;
-        if (perTokenAt(1) > 1 / dec.speed) { hi = 1; slowRequests++; }
-        while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (perTokenAt(mid) <= 1 / dec.speed) lo = mid; else hi = mid; }
-        batch = hi === 1 ? 1 : lo;
+    // A stateful prefix can only resume at a checkpoint still resident in a
+    // usable tier. A nearer tier may have the global KV without the window.
+    const localPools = { gpu: here.gpu, cpu: node.cpu, disk: node.disk, shared };
+    if (m.read_fixed_bytes) {
+      while (where.length) {
+        const id = ids[where.length - 1];
+        const endpoint = keys.find(key => key === "p2p"
+          ? holders.has(id) && nodes.some(n => n !== node && n.cpu.bytes(id) > backingBlock)
+          : localPools[key]?.bytes(id) > (key === "gpu" ? blockBytes : backingBlock));
+        if (endpoint) { where[where.length - 1] = endpoint; break; }
+        where.pop();
       }
-      const at = dec ? run(batch) : { step: 0, perToken: 0, tokens: 1 };
-      const step = at.step, perToken = at.perToken;
-      if (dec) {
-        batches.push(batch); accepted.push(at.tokens);
-        if (decodeOpts.spec?.draft) speedups.push(at.plain / perToken);
-      }
-      const tr = xfer(req.n);
-      const ttft = start - req.t + prefill + tr + step;
-      ttfts.push(ttft); waits.push(start - req.t); prefills.push(prefill); transfers.push(tr);
-      e2es.push(ttft + Math.max(0, out - 1) * perToken);
-      if (dec) steps.push(perToken);
-      busy += prefill / pp;
-      // overhead by token share; recompute (with its attention over the cached part) to uncached, loads to cached
-      const over = T.overhead(req.n), hh = Math.min(h, req.n);
-      busyCached += loads + (over * hh) / req.n;
-      busyLoads += loads;
-      busyUncached += prefill - loads - (over * hh) / req.n;
-      cachedTokens += hh;
-      decodeGpuSeconds += ((out * perToken) / batch) * cl.tp; // the ep / tp groups of an EP instance each run a batch
-      promptTokens += req.n;
-      outputTokens += out;
-      for (const kk of keys) if (kk !== "miss") tokens[kk] += k[kk] * B;
-      tokens.miss += req.n - h;
-      counted++;
     }
-    // write through the prompt and, for synthetic conversations, the answer generated after it (vLLM caches both),
-    // last block first, so a prefix's first blocks (the most shared) are evicted last
-    const stored = req.hashes ? ids : blocksOf({ ...req, n: req.n + (req.out ?? 0) }, B);
-    const tiers = [here.gpu, node.cpu, node.disk, shared].filter(Boolean);
-    if (snapAt && stored.length) snapAt.add(stored[stored.length - 1]);
-    for (let j = stored.length - 1; j >= 0; j--) {
-      const bytes = blockBytes + (j === stored.length - 1 ? m.read_fixed_bytes : 0);
-      for (const tier of tiers) tier.put(stored[j], bytes);
+    // MP touches a batch in reverse so an earlier prefix survives its tail.
+    const peerBytes = new Map();
+    for (let j = where.length - 1; j >= 0; j--) {
+      const key = where[j];
+      k[key]++;
+      if (key === "p2p") {
+        const owner = nodes.find(n => n !== node && n.cpu.bytes(ids[j]) >=
+          (j === where.length - 1 && m.read_fixed_bytes ? backingBlock + externalState : backingBlock));
+        owner.cpu.touch(ids[j]);
+        peerBytes.set(owner, (peerBytes.get(owner) ?? 0) + backingBlock +
+          (j === where.length - 1 ? externalState : 0));
+      } else localPools[key].touch(ids[j]);
+    }
+    const h = where.length * B;
+    const last = where.at(-1);
+    // A GPU hit reuses resident KV in place and restores zero bytes.
+    const readBytes = key => key === "gpu" ? 0 : k[key] * backingBlock + (last === key ? externalState : 0);
+    const measured = req.t >= t0;
+    if (measured) {
+      if (node.disk) diskReadBytes += readBytes("disk");
+      if (shared) sharedReadBytes += readBytes("shared");
+      if (s3) operations.get += ranks * (k.shared + Number(last === "shared" && !!m.read_fixed_bytes));
+    }
+    // S3 size metadata is local to each adapter. A successful HEAD or PUT
+    // primes it. L2 probes can accompany a disk/peer hit and a prefix miss.
+    let headNeeded = false;
+    const metadata = [];
+    if (s3) {
+      for (let j = 0; j < ids.length; j++) {
+        const id = ids[j];
+        if (!here.gpu.has(id) && !node.cpu.has(id) && !node.knownObjects.has(id)) {
+          headNeeded = true;
+          if (measured) operations.head += ranks;
+          if (shared.has(id)) metadata.push([node.knownObjects, id]);
+        }
+        if (node.knownWindows && (j === ids.length - 1 || j === where.length - 1) &&
+            here.gpu.bytes(id) <= blockBytes && node.cpu.bytes(id) <= backingBlock && !node.knownWindows.has(id)) {
+          headNeeded = true;
+          if (measured) operations.head += ranks;
+          if (shared.bytes(id) > backingBlock) metadata.push([node.knownWindows, id]);
+        }
+      }
+    }
+    // Bounded replay restores global KV and recomputes the hit's trailing
+    // window. Tier counts describe the global KV source even for those tokens.
+    const usable = Math.max(0, h - (m.prefix_replay_tokens ?? 0));
+    const out = req.out ?? 0;
+    const phases = [];
+    if (k.cpu) phases.push({ host: loadCpu(k.cpu * B, last === "cpu", readBytes("cpu")) });
+    for (const tier of lower) {
+      if (!k[tier.key]) continue;
+      const bytes = readBytes(tier.key);
+      const bw = variantBandwidth(tier.v) * GIB * pp;
+      const payloads = tier.key === "p2p"
+        ? [...peerBytes].map(([owner, size]) => ({ seconds: size / bw, lanes: [owner.nic, node.nic] }))
+        : [{ seconds: bytes / bw, lanes: [tier.key === "disk" ? node.diskLane : node.nic] }];
+      phases.push({ tier: tier.key, latency: tier.v.latency_s ?? 0, payloads, host: loadCpu(k[tier.key] * B, last === tier.key, bytes) });
+    }
+    const afterHead = start + (headNeeded ? cfg.shared.latency_s ?? 0 : 0);
+    const loadPhase = (index, time) => {
+      if (index === phases.length) { prefillAt(time); return; }
+      const phase = phases[index];
+      events.at(time + (phase.latency ?? 0), 1, ready => {
+        const move = (part, time) => {
+          const payload = phase.payloads?.[part];
+          if (!payload) {
+            events.at(time + phase.host, 1, now => loadPhase(index + 1, now));
+            return;
+          }
+          if (measured && Object.hasOwn(firstPayloadReadS, phase.tier)) {
+            const begin = Math.max(time, ...payload.lanes.map(lane => lane.free));
+            firstPayloadReadS[phase.tier] = Math.min(firstPayloadReadS[phase.tier] ?? Infinity, begin);
+          }
+          const end = reserve(time, payload.seconds, payload.lanes);
+          events.at(end, 1, now => move(part + 1, now));
+        };
+        move(0, ready);
+      });
+    };
+    events.at(afterHead, 1, now => {
+      for (const [known, id] of metadata) known.add(id);
+      loadPhase(0, now);
+    });
+
+    // The one-at-a-time compute, used for the price sheet's split of prefill time in either mode.
+    const isolated = T.ttft(req.n, usable, 0);
+    let loads = 0, compute = 0, prefill = 0, end = 0, waited = 0;
+    function prefillAt(ready) {
+      loads = ready - start;
+      if (batchTokens) {
+        const job = { pos: usable, n: req.n, perToken: cfg.software.per_token_overhead_s * req.n, first: null,
+          done: (first, finish) => { waited = first - ready - requestDelay; prefilled(ready, finish); } };
+        events.at(ready + requestDelay, 2, now => enqueue(here, job, now));
+        return;
+      }
+      waited = start - req.t;
+      events.at(ready + isolated / pp, 2, now => {
+        if (here.head < here.queue.length) {
+          const next = here.queue[here.head];
+          here.queue[here.head++] = null;
+          if (here.head === here.queue.length) { here.queue = []; here.head = 0; }
+          next(now);
+        } else here.running = false;
+      });
+      prefilled(ready, ready + isolated);
+    }
+
+    function prefilled(ready, finish) {
+      compute = finish - ready;
+      prefill = loads + compute;
+      end = finish;
+      events.at(end, 0, now => publish(0, ids.length, now));
+      events.at(end, 1, now => {
+        const transfer = out > 0 ? xfer(req.n) : 0;
+        if (transfer) {
+          const latency = cfg.transfer.latency_s ?? 0;
+          events.at(now + latency, 1, ready => {
+            const done = reserve(ready, transfer - latency, [node.nic]);
+            events.at(done, 1, beginDecode);
+          });
+        } else beginDecode(now);
+      });
+
+      function beginDecode(time) {
+        if (dec && out > 0) {
+          pool.submit(time, { measured, left: out, ctx: req.n + out / 2, peak: req.n + out,
+            done: (finish, task) => complete(time, task.first, finish, task) });
+        } else {
+          // Prefill-only mode reports prefill TTFT. Where a GPU decode profile
+          // exists, estimate the local reply duration for dependent turns.
+          const localStep = !dec && out && cfg.gpu.mem_bw_tb_s && cfg.gpu.mbu
+            ? decodeStep(m, cfg.gpu, 1, req.n + out / 2, cl.tp).step + stepHops : 0;
+          const finish = time + out * localStep;
+          events.at(finish, 0, () => complete(time, time, finish, null));
+        }
+      }
+
+      function complete(decodeStart, first, finish, task) {
+        publish(ids.length, allIds.length, finish);
+        const next = nextTurn.get(template);
+        if (next) {
+          const time = finish + (next.t - template.t);
+          if (time < durationS) events.at(time, 2, now => arrive(next, now));
+        }
+        if (!measured) return;
+        lastCompletion = Math.max(lastCompletion, finish);
+        const tr = decodeStart - end, ttft = first - req.t;
+        observeRequest?.(req, ttft, k, B, loads, waited, tr, k.p2p ? readBytes("p2p") : 0,
+          readBytes);
+        ttfts.push(ttft); waits.push(waited); prefills.push(prefill); transfers.push(tr);
+        e2es.push(finish - req.t);
+        if (task) {
+          steps.push(task.decodeSeconds / out);
+          batches.push(task.batchSteps / task.steps);
+          accepted.push(task.accepted / task.steps);
+          if (decodeOpts.spec?.draft) speedups.push(task.plain / task.decodeSeconds);
+          if (dec.speed && profile(1, task.ctx).perToken > 1 / dec.speed) slowRequests++;
+          decodeGpuSeconds += task.gpuSeconds * cl.tp;
+        }
+        if (!batchTokens) busy += loads + isolated / pp;
+        const over = T.overhead(req.n), hh = Math.min(h, req.n);
+        const rebuild = usable < h ? isolated - T.ttft(req.n, h, 0) : 0;
+        busyCached += loads + rebuild + (over * hh) / req.n;
+        busyLoads += loads;
+        busyUncached += isolated - rebuild - (over * hh) / req.n;
+        cachedTokens += hh;
+        promptTokens += req.n; outputTokens += out;
+        for (const kk of keys) if (kk !== "miss") tokens[kk] += k[kk] * B;
+        tokens.miss += req.n - h;
+        counted++;
+      }
+    }
+    // A disaggregated prefill worker never generates the reply. A trace
+    // supplies only prompt hashes, so it cannot identify generated chunks.
+    const allIds = req.hashes || (dec && !cfg.saveDecode) ? ids : blocksOf({ ...req, n: req.n + (req.out ?? 0) }, B);
+    const gpuCount = dec ? ids.length : allIds.length;
+    const externalCount = cfg.saveDecode ? allIds.length : ids.length;
+    function publish(from, to, time) {
+      const writes = [];
+      let writeBytes = 0;
+      for (let j = to - 1; j >= from; j--) {
+        const id = allIds[j];
+        const checkpoint = j === ids.length - 1 || j === where.length - 1;
+        if (j < gpuCount) here.gpu.put(id, blockBytes + (checkpoint || j === gpuCount - 1 ? m.read_fixed_bytes : 0));
+        if (j >= externalCount) continue;
+        const state = checkpoint || j === externalCount - 1 ? externalState : 0;
+        const bytes = backingBlock + state;
+        if (j < where.length) {
+          // Default MP prefetch retains an L2 hit in L1. A GPU hit alone
+          // doesn't refresh disk recency or create a redundant S3 write.
+          if (where[j] !== "gpu" && where[j] !== "cpu") node.cpu.put(id, bytes);
+          continue;
+        }
+        // A recomputed suffix may still have global KV in L1, particularly
+        // when a stateful prefix lacks a usable window checkpoint.
+        const prior = node.cpu.bytes(id);
+        if (prior >= bytes) continue;
+        node.cpu.put(id, bytes);
+        if (node.disk || shared) {
+          writes.push({ id, bytes, state, prior });
+          writeBytes += bytes - prior;
+        }
+      }
+      if (firstGpuEvictionS == null && here.gpu.evictions) firstGpuEvictionS = time;
+      if (!writes.length) return;
+
+      // The cache batch becomes readable on each backing tier after its own
+      // asynchronous write. Foreground reads and background writes use the same lane.
+      const writeTo = (variant, lane, commit) => {
+        events.at(time + (variant.latency_s ?? 0), 1, ready => {
+          const done = reserve(ready, writeBytes / (variantBandwidth(variant) * GIB * pp), [lane]);
+          events.at(done, 0, commit);
+        });
+      };
+      if (node.disk) writeTo(cfg.disk, node.diskLane, done => {
+        const before = node.disk.added;
+        for (const { id, bytes } of writes) node.disk.put(id, bytes);
+        if (measured) node.diskWritten += node.disk.added - before;
+        if (firstDiskEvictionS == null && node.disk.evictions) firstDiskEvictionS = done;
+      });
+      if (shared) writeTo(cfg.shared, node.nic, () => {
+        const before = shared.added;
+        for (const { id, bytes, state, prior } of writes) {
+          shared.put(id, bytes);
+          node.knownObjects?.add(id);
+          if (state) node.knownWindows?.add(id);
+          if (measured && s3) operations.put += ranks * (Number(!prior) + Number(!!state));
+        }
+        if (measured) {
+          sharedWriteBytes += writeBytes;
+          sharedStored += shared.added - before;
+        }
+      });
     }
   }
 
+  for (const req of reqs) {
+    if (durationS != null && req.t >= durationS) continue;
+    if (workload.durationS != null && req.followUp && lastTurn.has(req.conv))
+      nextTurn.set(lastTurn.get(req.conv), req);
+    else events.at(req.t, 2, time => arrive(req, time));
+    if (workload.durationS != null) lastTurn.set(req.conv, req);
+  }
+  if (observeMinuteEnd) {
+    const end = durationS != null ? Math.ceil(durationS / 60) : Math.floor((reqs.at(-1)?.t ?? 0) / 60) + 1;
+    for (let bucket = Math.floor(startTime / 60); bucket < end; bucket++) {
+      events.at((bucket + 1) * 60, 1, () => {
+        const snapshot = {};
+        for (const [key, copies] of Object.entries(pools)) {
+          const capacity = copies.reduce((sum, cache) => sum + cache.cap, 0);
+          if (capacity === 0) continue;
+          snapshot[key] = {
+            usedGiB: copies.reduce((sum, cache) => sum + cache.used, 0) / GIB,
+            capacityGiB: Number.isFinite(capacity) ? capacity / GIB : null,
+          };
+        }
+        observeMinuteEnd(bucket, snapshot);
+      });
+    }
+  }
+
+  if (durationS != null) events.at(durationS, 1, () => {});
+  try { events.drain(advance); }
+  catch (error) {
+    if (error instanceof CapacityError) return { error: error.message, requiredContext: error.tokens };
+    if (error instanceof RangeError) return { error: error.message };
+    throw error;
+  }
   const scaleUp = cfg.costScale ?? 1;
-  const windowS = counted ? Math.max(1, reqs[reqs.length - 1].t - t0) : 0;
+  const windowS = durationS != null ? Math.max(0, durationS - t0)
+    : counted ? Math.max(1, lastCompletion - t0) : 0;
   const windowH = windowS / 3600;
   const realNodes = cl.nodes * scaleUp;
   const prefillGpus = realNodes * cl.gpusPerNode;
@@ -303,39 +685,48 @@ export function simulate(workload, cfg) {
   // (decode.pooled: sized to the load in GPU fractions, as a provider pooling many clusters' decode would)
   const decodeNeed = (decodeGpuSeconds * scaleUp) / Math.max(windowS, 1);
   const decodeWidth = decodeEp ?? cl.tp * pp; // whole decode instances
-  const decodeGpus = !dec ? 0 : dec.pooled ? decodeNeed : Math.ceil(decodeNeed / decodeWidth) * decodeWidth;
+  const decodeGpus = !dec ? 0 : dec.pooled ? decodeNeed : Math.ceil(pool.peakGroups * scaleUp * cl.tp / decodeWidth) * decodeWidth;
   const prefillUsd = prefillGpus * usdH(cfg.gpu) * windowH;
   const decodeUsd = decodeGpus * usdH(dec?.gpu) * windowH;
-  const storageOf = (v, lru, copies) => {
+  const storageOf = (v, writtenBytes, copies, scale) => {
     if (!v) return { storage: 0, fixed: 0 };
     const price = v.usd_per_gib_month ?? 0;
     let gibHeld;
     if (v.bill === "provisioned" && v.capacity_gib != null) gibHeld = v.capacity_gib * copies;
     else { // bytes stored: what is written per hour, kept for the retention time (capped by capacity)
-      const writtenGiB = ((lru.added - (lru === shared ? sharedAddedAtT0 ?? 0 : 0)) / GIB) * scaleUp;
+      const writtenGiB = writtenBytes / GIB * scale;
       gibHeld = (writtenGiB / Math.max(windowH, 1e-9)) * (cfg.retentionH ?? 24);
       if (v.capacity_gib != null) gibHeld = Math.min(gibHeld, v.capacity_gib * copies);
     }
     return { storage: gibHeld * price * (windowH / 730), fixed: (v.usd_per_hour ?? 0) * copies * windowH };
   };
   // per-GB fees (S3 Express): what was written after the warm-up, and what was read
-  const fees = (v, writtenBytes, readTokens) => (v ? ((v.usd_per_gib_written ?? 0) * writtenBytes + (v.usd_per_gib_read ?? 0) * readTokens * m.kv_bytes_per_token) / GIB * scaleUp : 0);
-  const diskCost = cfg.disk ? storageOf(cfg.disk, nodes[0].disk, realNodes) : { storage: 0, fixed: 0 };
-  diskCost.storage += fees(cfg.disk, diskAdded() - (diskAddedAtT0 ?? 0), tokens.disk ?? 0);
-  const sharedCost = storageOf(cfg.shared, shared, 1);
-  sharedCost.storage += fees(cfg.shared, shared ? shared.added - (sharedAddedAtT0 ?? 0) : 0, tokens.shared ?? 0);
+  const fees = (v, writtenBytes, readBytes) => (v ? ((v.usd_per_gib_written ?? 0) * writtenBytes + (v.usd_per_gib_read ?? 0) * readBytes) / GIB * scaleUp : 0);
+  const diskCost = { storage: 0, fixed: 0 };
+  for (const node of nodes) {
+    const cost = storageOf(cfg.disk, node.diskWritten, pp * scaleUp, scaleUp);
+    diskCost.storage += cost.storage;
+    diskCost.fixed += cost.fixed;
+  }
+  diskCost.storage += fees(cfg.disk, nodes.reduce((sum, n) => sum + n.diskWritten, 0), diskReadBytes);
+  const sharedCost = storageOf(cfg.shared, sharedStored, 1, scaleUp);
+  sharedCost.storage += fees(cfg.shared, sharedWriteBytes, sharedReadBytes);
+  const requestUsd = ((cfg.shared?.usd_per_1k_put ?? 0) * operations.put +
+    (cfg.shared?.usd_per_1k_get ?? 0) * (operations.head + operations.get)) * scaleUp / 1000;
+  sharedCost.storage += requestUsd;
   const p2pFixed = cfg.p2p ? (cfg.p2p.usd_per_hour ?? 0) * realNodes * windowH : 0;
   const storageUsd = diskCost.storage + sharedCost.storage;
   const fixedUsd = diskCost.fixed + sharedCost.fixed + p2pFixed;
   const total = prefillUsd + decodeUsd + storageUsd + fixedUsd;
   const stats = (xs) => {
     const so = [...xs].sort((a, b) => a - b);
-    return { mean: xs.reduce((a, b) => a + b, 0) / (xs.length || 1), p50: pct(so, 0.5), p90: pct(so, 0.9) };
+    return { mean: xs.reduce((a, b) => a + b, 0) / (xs.length || 1), p50: pct(so, 0.5), p90: pct(so, 0.9), p99: pct(so, 0.99) };
   };
   const share = Object.fromEntries(Object.entries(tokens).map(([kk, v]) => [kk, promptTokens ? v / promptTokens : 0]));
   const priced = usdH(cfg.gpu) > 0 && (!dec || usdH(dec.gpu) > 0) && [cfg.disk, cfg.shared].every((v) => !v || v.usd_per_gib_month != null);
   return {
-    requests: counted, promptTokens, outputTokens, tokens, share, order: keys, blockTokens: B, windowS,
+    s3Requests: Object.fromEntries(Object.entries(operations).map(([k, v]) => [k, v * scaleUp])), requestUsd,
+    requests: counted, promptTokens, outputTokens, tokens, share, order: keys, blockTokens: B, windowS, firstPayloadReadS,
     ttft: stats(ttfts), e2e: stats(e2es), wait: stats(waits).mean, prefill: stats(prefills).mean, transfer: stats(transfers).mean,
     tpot: steps.length ? stats(steps).mean : null,
     // decode batch per request (mean), and the share of requests below the speed target even at batch 1
@@ -362,6 +753,8 @@ export function simulate(workload, cfg) {
       }).map(([k, v]) => [k, (v / scaleUp / tok.cachedInput) * 1e6])) : null;
       return { usd, tokens: tok, input: per1M("input"), cachedInput: per1M("cachedInput"), output: per1M("output"), cachedParts: parts };
     })(),
+    firstGpuEvictionS: durationS != null && firstGpuEvictionS >= durationS ? null : firstGpuEvictionS,
+    firstDiskEvictionS: durationS != null && firstDiskEvictionS >= durationS ? null : firstDiskEvictionS,
     evictions: { gpu: inst.reduce((a, i) => a + i.gpu.evictions, 0), cpu: nodes.reduce((a, n) => a + n.cpu.evictions, 0) },
   };
 }

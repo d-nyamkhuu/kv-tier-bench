@@ -90,8 +90,10 @@ export function renderDiagram(s, { vertical = false } = {}) {
   const rx = vertical ? W / 2 - 70 : 165, ry = vertical ? 86 : H / 2 - 26;
   svg += box(ux, uy, 120, 56, "dg-users", "load", s.followUp == null ? "Requests replayed from a trace." : `${s.rate} requests per minute, ${pct(s.followUp)} follow-ups.`,
     `<circle cx="${ux + 24}" cy="${uy + 21}" r="7" class="dg-icon"/><path class="dg-icon" d="M${ux + 12} ${uy + 44} q12 -16 24 0"/>` + text(ux + 44, uy + 25, "Users", "dg-title") + text(ux + 44, uy + 42, s.followUp == null ? "trace" : `${s.rate}/min`, "dg-sub"));
-  svg += box(rx, ry, 140, 52, "dg-router", "routing", `Router: ${s.routing === "sticky" ? "keeps a conversation on one GPU instance (prefix-aware)" : "random instance per request"}.`,
-    text(rx + 70, ry + 22, "Router", "dg-title", "middle") + text(rx + 70, ry + 39, s.routing === "sticky" ? "sticky by conversation" : "random", "dg-sub", "middle"));
+  const routing = { "round-robin": "round-robin by node", sticky: "sticky by conversation", random: "random per request" };
+  const routeLabel = routing[s.routing] ?? routing.random;
+  svg += box(rx, ry, 140, 52, "dg-router", "routing", `Request routing · ${routeLabel}`,
+    text(rx + 70, ry + 22, "Router", "dg-title", "middle") + text(rx + 70, ry + 39, routeLabel, "dg-sub", "middle"));
   svg += vertical ? flow(`M${W / 2} ${uy + 56} V${ry}`, 1, "dg-req", "requests") : flow(`M${ux + 120} ${uy + 28} H${rx}`, 1, "dg-req", "requests");
 
   // router -> nodes

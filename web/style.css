@@ -458,3 +458,7 @@ footer { color: var(--muted); font-size: var(--fs-xs); padding: var(--sp-2) var(
   .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .served-legend { grid-template-columns: minmax(0, 1fr); }
 }
+
+.input-rates { display: flex; gap: 4px 16px; flex-wrap: wrap; margin: 0; }
+.input-rates strong { font-variant-numeric: tabular-nums; }
+.price-source { color: var(--text-2); font-size: var(--fs-xs); margin: 4px 0 var(--sp-3); }
