@@ -245,9 +245,10 @@ async function selectWorkloadSource() {
   }
   const loadRev = ++revision;
   worker?.terminate();
+  showComparisonProgress(null);
   $("results").setAttribute("aria-busy", "true");
-  showProgress(0);
-  $("status").textContent = "Downloading Mooncake trace…";
+  $("status").hidden = true;
+  showProgress(0, "Downloading trace…", meta.name);
   const note = $("trace-note");
   note.textContent = `Fetching ${meta.name}…`;
   note.hidden = false;
@@ -295,9 +296,25 @@ $("scenario-buttons").append(...SCENARIOS.map(s => el("button", {
   type: "button", "data-id": s.id, "aria-pressed": "false", text: s.name, onclick: () => useSettings(s.settings),
 })));
 
+function showComparisonProgress(progress) {
+  const overlay = $("comparison-overlay"), bar = $("comparison-progress");
+  if (!progress) {
+    overlay.hidden = true;
+    return;
+  }
+  overlay.hidden = false;
+  const { done = 0, total = 0, sub = "Replaying each storage tier…" } = progress;
+  $("comparison-overlay-label").textContent = "Comparing cache tiers…";
+  $("comparison-overlay-pct").textContent = total > 0 ? `${done} / ${total}` : "";
+  $("comparison-overlay-sub").textContent = sub;
+  const fraction = total > 0 ? done / total : 0;
+  bar.classList.toggle("indeterminate", fraction <= 0);
+  bar.firstElementChild.style.width = fraction > 0 ? Math.round(fraction * 100) + "%" : "";
+}
+
 function requestComparison() {
   if (!comparisonVisible || !comparisonLayout) return;
-  $("comparison-status").classList.add("busy");
+  showComparisonProgress({ done: 0, total: 0, sub: "Replaying each storage tier…" });
   $("comparison-status").textContent = "Comparing cache tiers…";
   worker.postMessage({ id: revision, kind: "comparison", config, layout: comparisonLayout,
     budgetFraction: sliders.get("gpu-budget").value() / 100, trace: activeTrace });
@@ -324,30 +341,42 @@ function renderComparison(rows, progress = null) {
   )));
   $("tier-bars").hidden = !rows.length;
   if (progress) {
-    $("comparison-status").classList.add("busy");
+    const latest = rows.at(-1)?.name;
+    showComparisonProgress({
+      done: progress.done, total: progress.total,
+      sub: latest ? `Finished ${latest}…` : "Replaying each storage tier…",
+    });
     $("comparison-status").textContent = `Comparing cache tiers… ${progress.done} of ${progress.total}`;
   } else {
-    $("comparison-status").classList.remove("busy");
+    showComparisonProgress(null);
     const cpuNote = config?.sim?.cpuGiB > 0 ? " (local CPU stays on above peer, SSD and S3)" : "";
     $("comparison-status").textContent = `Each row tests one tier below GPU memory${cpuNote}. Prices: Nebius on-demand (GPU, RAM, SSD), AWS US East (S3).`;
   }
 }
 
-// The bar under the results header: indeterminate until the worker reports its first minute, hidden when done.
-function showProgress(fraction) {
-  const bar = $("progress");
+function replaySubtitle() {
+  if (!config) return "Loading benchmark presets…";
+  const modelName = config.models[config.sim.model]?.name ?? config.sim.model;
+  if (activeTrace) return `${modelName} · ${activeTrace.requests.length.toLocaleString("en-US")} trace requests`;
+  const hrs = Number($("hours").value) || DEFAULT_SETTINGS.hours;
+  return `${modelName} · ${hrs === 1 ? "1 hour" : hrs + " hours"} of traffic`;
+}
+
+// Centered progress overlay: indeterminate until the worker reports its first minute, hidden when done.
+function showProgress(fraction, label = null, sub = null) {
+  const overlay = $("sim-overlay"), bar = $("progress");
   if (fraction == null) {
-    bar.hidden = true;
-    $("status").classList.remove("busy");
+    overlay.hidden = true;
     return;
   }
-  bar.hidden = false;
-  $("status").classList.add("busy");
+  overlay.hidden = false;
+  if (label != null) $("sim-overlay-label").textContent = label;
+  if (sub != null) $("sim-overlay-sub").textContent = sub;
   bar.classList.toggle("indeterminate", fraction <= 0);
   const percent = Math.round(fraction * 100);
   bar.firstElementChild.style.width = fraction > 0 ? percent + "%" : "";
   if (fraction > 0) bar.setAttribute("aria-valuenow", String(percent)); else bar.removeAttribute("aria-valuenow");
-  $("status").textContent = fraction > 0 ? `Simulating… ${percent}%` : "Simulating…";
+  $("sim-overlay-pct").textContent = fraction > 0 ? `${percent}%` : "";
 }
 
 function runWorker(id) {
@@ -357,7 +386,7 @@ function runWorker(id) {
     if (data.kind === "progress") { showProgress(data.fraction); return; }
     if (data.kind === "comparison-progress") { renderComparison(data.rows, { done: data.done, total: data.total }); return; }
     if (data.kind === "comparison") {
-      $("comparison-status").classList.remove("busy");
+      showComparisonProgress(null);
       if (data.error) $("comparison-status").textContent = data.error;
       else renderComparison(data.result);
     } else if (data.error) failed(data.error);
@@ -369,6 +398,7 @@ function runWorker(id) {
   };
   worker.onerror = () => {
     if (id !== revision) return;
+    showComparisonProgress(null);
     if ($("results").getAttribute("aria-busy") === "true") failed("Could not run the replay worker.");
     else $("comparison-status").textContent = "Could not compare these tiers.";
   };
@@ -392,14 +422,15 @@ function schedule() {
   if ($("workload-source").value === "upload" && !activeTrace) return;
   worker?.terminate();
   comparisonLayout = null;
+  showComparisonProgress(null);
   $("tier-bars").hidden = true;
-  $("comparison-status").classList.remove("busy");
   $("comparison-status").textContent = "Waiting for replay…";
   const id = ++revision;
   clearTimeout(timer);
   $("results").setAttribute("aria-busy", "true");
+  $("status").hidden = true;
   $("status").className = "";
-  showProgress(0);
+  showProgress(0, "Simulating…", replaySubtitle());
   timer = setTimeout(() => runWorker(id), 120);
 }
 
@@ -550,6 +581,7 @@ function render(result) {
   $("cpu-note").hidden = !cpuNote;
   $("cpu-note").textContent = cpuNote ?? "";
   showProgress(null);
+  $("status").hidden = true;
   $("status").textContent = "";
   $("results").setAttribute("aria-busy", "false");
 }
@@ -559,6 +591,7 @@ function failed(message) {
   lastResult = null;
   $("download-csv").disabled = true;
   $("results").classList.add("failed");
+  showComparisonProgress(null);
   $("comparison-status").textContent = "Comparison unavailable for this setup.";
   $("tier-bars").hidden = true;
   $("ttft").textContent = "—";
@@ -571,6 +604,7 @@ function failed(message) {
   for (const id of ["bar", "legend", "run-facts", "ttft-stats", "cost-stats", "cost-detail", "ttft-detail", "ttft-change", "cost-change", "cluster-summary"]) $(id).replaceChildren();
   $("layout").textContent = message;
   showProgress(null);
+  $("status").hidden = false;
   $("status").className = "error";
   $("status").textContent = "Simulation unavailable. " + message;
   $("results").setAttribute("aria-busy", "false");
