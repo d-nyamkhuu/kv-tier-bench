@@ -4,12 +4,12 @@ import { fitFor } from "./scenario.js";
 // The simulator page's settings as plain data: defaults, scenarios, the URL hash and the replay config.
 // DOM-free; simulator.js and the tests use it.
 
-// Serving defaults applied whenever a model is chosen: FP8 for models released in BF16 (what providers serve; it halves
-// the weights and often the GPUs per instance, so less KV is copied across TP ranks and sent to decode), and RDMA
-// between nodes. Over TCP at 400 Gbit/s (about 18 GiB/s in practice) the prefill-to-decode KV transfers of long chats
-// saturate the link and TTFT climbs without bound.
+// Serving defaults applied whenever a model is chosen: FP8 whenever the checkpoint's KV cache is wider than 1 byte per
+// value (what providers serve; it halves KV footprint and BF16 weights, often reducing GPUs per instance and network KV
+// transfers), and RDMA between nodes. Over TCP at 400 Gbit/s (about 18 GiB/s in practice) the prefill-to-decode KV
+// transfers of long chats with dense KV saturate the link and TTFT climbs without bound.
 export const DEFAULT_LINK = "p2p-ib-ndr";
-export const modelDefaults = model => ({ precision: (model?.compute_dtype ?? "bf16") === "bf16" ? "fp8" : "released", interconnect: DEFAULT_LINK });
+export const modelDefaults = model => ({ precision: (model?.kv_dtype_bytes ?? 2) > 1 ? "fp8" : "released", interconnect: DEFAULT_LINK });
 const forModel = settings => ({ ...settings, ...modelDefaults(MODELS[settings.model]) });
 
 // The default is typical chat traffic, where about 60% of prompt tokens can come from cache (DeepSeek's API served
@@ -21,8 +21,9 @@ const forModel = settings => ({ ...settings, ...modelDefaults(MODELS[settings.mo
 export const DEFAULT_SETTINGS = Object.freeze({
   model: "minimax-m3", precision: "fp8", gpu: "b200", nodes: 2, gpusPerNode: 8, interconnect: "p2p-ib-ndr",
   rate: 480, turns: 1.5, ownPrompt: 50, pause: 6, pattern: "steady", routing: "round-robin",
-  cpu: 768, disk: "fs-nvme-gen5", diskSize: 1536, lookup: "peer", backing: "obj-aws-s3-standard",
+  cpu: 768, disk: "fs-nvme-gen5", diskSize: 1536, lookup: "peer", backing: "obj-aws-s3-standard", s3Size: 8192, s3Ttl: 360,
   start: "warm", hours: 2, spread: "moderate", prompts: 10, batch: 8192, priceAt: "0.6",
+  spec: "none", decodeEp: 0, decodeSpeed: 0, decodeOverlap: "off",
   admission: "prompt", prefix: 6000, input: 800, output: 400, gpuBudget: 100, rewrite: 0, lifetime: 0, minCache: 0,
 });
 
@@ -32,7 +33,7 @@ export const WARMUP_MIN = 20;
 
 // Each scenario is a complete set of settings, so choosing one never leaves a hidden value behind. All run large
 // models on two B200 nodes, with CPU and SSD tiers sized past the GPU cache on their node where they should serve hits.
-const LIGHT = { ...DEFAULT_SETTINGS, rate: 120, cpu: 128, disk: "", diskSize: 8, lookup: "stock" };
+const LIGHT = { ...DEFAULT_SETTINGS, rate: 120, cpu: 128, disk: "", lookup: "stock" };
 export const SCENARIOS = [
   {
     id: "tiers", name: "Every tier in use",
@@ -77,7 +78,7 @@ export function fitCluster(config, settings) {
   return fits(nodes, gpusPerNode) ? { nodes, gpusPerNode } : { nodes: Math.max(nodes, need.pp), gpusPerNode: 8 };
 }
 
-const NUMERIC = new Set(["nodes", "gpusPerNode", "hours", "rate", "turns", "ownPrompt", "rewrite", "lifetime", "minCache", "pause", "cpu", "diskSize", "prompts", "batch", "prefix", "input", "output", "gpuBudget"]);
+const NUMERIC = new Set(["nodes", "gpusPerNode", "hours", "rate", "turns", "ownPrompt", "rewrite", "lifetime", "minCache", "pause", "cpu", "diskSize", "s3Size", "s3Ttl", "decodeEp", "decodeSpeed", "prompts", "batch", "prefix", "input", "output", "gpuBudget"]);
 const KEYS = Object.keys(DEFAULT_SETTINGS);
 
 // The price basis changes only how tokens are priced, so it does not make a scenario custom.
@@ -85,7 +86,7 @@ export const sameSettings = (a, b) => KEYS.every(key => key === "priceAt" || a[k
 export const scenarioFor = settings => SCENARIOS.find(s => sameSettings(s.settings, settings)) ?? null;
 
 // Only the settings that differ from the defaults go into the hash, so a default page keeps a clean URL.
-// diskSize null (the whole drive) is written as "full".
+// diskSize / s3Size null (whole drive / uncapped bucket) is written as "full".
 export function encodeSettings(settings) {
   const params = new URLSearchParams();
   for (const key of KEYS) {
@@ -102,7 +103,7 @@ export function decodeSettings(hash) {
   for (const key of KEYS) {
     if (!params.has(key)) continue;
     const text = params.get(key);
-    if (key === "diskSize" && text === "full") settings.diskSize = null;
+    if ((key === "diskSize" || key === "s3Size") && text === "full") settings[key] = null;
     else if (NUMERIC.has(key)) {
       const value = Number(text);
       if (text !== "" && Number.isFinite(value)) settings[key] = value;
@@ -121,32 +122,44 @@ export function applySettings(config, settings) {
     durationMin: 60 * (settings.hours || 1) + warmupMin, lengthSpread: LENGTH_SPREAD[settings.spread] ?? 0,
     systemPrompts: settings.prompts, ownPromptShare: (settings.ownPrompt ?? 0) / 100, rewriteShare: (settings.rewrite ?? 0) / 100, arrivalPattern: settings.pattern === "bursty" ? "bursty" : "steady",
   });
+  const s3Hours = settings.backing && settings.s3Ttl > 0 ? settings.s3Ttl / 60 : null;
   Object.assign(config.sim, {
     model: settings.model, precision: settings.precision, gpu: settings.gpu, decodeGpu: settings.gpu,
     nodes: settings.nodes, gpusPerNode: settings.gpusPerNode, routing: settings.routing,
     peerFirst: settings.lookup === "peer", saveDecode: settings.admission === "reply",
     p2p: settings.interconnect, stageLink: settings.interconnect, transfer: settings.interconnect,
-    cpuGiB: settings.cpu, shared: settings.backing || null, disk: settings.disk || null,
-    diskCapacityGiB: settings.diskSize, warmupMin, cacheLifetimeS: settings.lifetime > 0 ? settings.lifetime * 60 : null,
-    retentionH: settings.lifetime > 0 ? settings.lifetime / 60 : (settings.hours || 1),
+    cpuGiB: settings.cpu, shared: settings.backing || null,
+    sharedCapacityGiB: settings.backing ? settings.s3Size : null,
+    sharedLifetimeS: s3Hours != null ? s3Hours * 3600 : null,
+    disk: settings.disk || null, diskCapacityGiB: settings.disk ? settings.diskSize : null,
+    spec: settings.spec || "none", decodeEp: settings.decodeEp > 0 ? settings.decodeEp : null,
+    decodeSpeed: settings.decodeSpeed > 0 ? settings.decodeSpeed : null, decodeOverlap: settings.decodeOverlap === "on",
+    warmupMin, cacheLifetimeS: settings.lifetime > 0 ? settings.lifetime * 60 : null,
+    retentionH: settings.lifetime > 0 ? settings.lifetime / 60 : s3Hours,
     minCacheTokens: settings.minCache || 0, prefillBatchTokens: settings.batch > 0 ? settings.batch : null,
   });
   return settings.gpuBudget / 100;
 }
 
 // A note when CPU memory cannot serve hits, or null. Every computed chunk is copied to GPU and CPU memory as it is
-// computed (LMCache's write-through store), and both evict least recently used first, so a CPU tier no larger than the
-// GPU cache holds only chunks the GPU still has. Shown only once the GPU cache evicts: before that, nothing needs CPU.
+// computed (LMCache's write-through store), and both evict least recently used first, so on a single-replica node (or
+// under sticky routing) a CPU tier no larger than the GPU cache holds only chunks the GPU still has. With multiple
+// replicas per node under round-robin/random routing, shared node CPU memory serves cross-replica hits once larger than
+// one replica's GPU cache. Shown only once the GPU cache evicts and CPU serves under 2% of tokens.
 export const CPU_SLIDER_MAX_GIB = 2048; // DGX B200 ships with 2 TB of system memory
 export function cpuSizingNote(settings, result) {
   if (!(settings.cpu > 0) || result.firstEviction == null || !(result.gpuGiB > 0)) return null;
-  const gpuPerNode = (result.gpuGiB * (result.instances ?? 1)) / settings.nodes;
-  if (settings.cpu > gpuPerNode) return null;
-  const gib = x => (x >= 10 ? Math.round(x).toLocaleString("en-US") : x.toFixed(1)) + " GiB";
   const share = result.share?.cpu ?? 0;
+  if (share >= 0.02) return null;
+  const instances = result.instances ?? 1;
+  const multiReplicaShared = settings.routing !== "sticky" && instances > settings.nodes;
+  const gpuRef = multiReplicaShared ? result.gpuGiB : (result.gpuGiB * instances) / settings.nodes;
+  if (settings.cpu > gpuRef) return null;
+  const gib = x => (x >= 10 ? Math.round(x).toLocaleString("en-US") : x.toFixed(1)) + " GiB";
   const served = share > 0 && share < 0.001 ? "under 0.1%" : (share * 100).toFixed(1) + "%";
-  const target = 1.5 * gpuPerNode;
-  return `CPU memory is no larger than the GPU cache (${gib(gpuPerNode)} per node), so it served only ${served} of tokens.`
+  const target = 1.5 * gpuRef;
+  const scope = multiReplicaShared ? "per instance" : "per node";
+  return `CPU memory is no larger than the GPU cache (${gib(gpuRef)} ${scope}), so it served only ${served} of tokens.`
     + (target <= CPU_SLIDER_MAX_GIB ? ` Try ${gib(target)} or more.` : "");
 }
 
@@ -174,17 +187,23 @@ export function risingTtft(result) {
 // so pricing an idle cluster overstates the price (the advanced lab priced at 60% busy). priceAt "actual" keeps the
 // replay's own load; cache-tier costs do not scale.
 export const PRICE_TARGETS = { actual: "This replay's load", "0.4": "40% prefill busy", "0.6": "60% prefill busy", "0.8": "80% prefill busy" };
-export function pricesAt(prices, utilization, priceAt) {
+export function pricesAt(prices, utilization, priceAt, decodeUtilization = null) {
   if (!prices) return null;
   const target = Number(priceAt);
-  if (!(target > 0) || !(utilization > 0)) return { input: prices.input, cachedInput: prices.cachedInput, target: null, utilization };
+  const hasOut = prices.output !== undefined;
+  if (!(target > 0) || !(utilization > 0)) {
+    return { input: prices.input, cachedInput: prices.cachedInput, ...(hasOut ? { output: prices.output } : {}), target: null, utilization };
+  }
   const scale = utilization / target;
   // Fixed hourly costs (prefill GPUs and provisioned SSDs) scale with utilization; usage-billed S3 does not.
   const scaled = (prices.cachedPrefill ?? 0) + (prices.cachedFixed ?? 0);
   const variable = (prices.cachedInput ?? 0) - scaled;
+  // Decode is auto-sized to peak concurrent groups; only discount idle group capacity when below target busy share.
+  const decScale = decodeUtilization > 0 && decodeUtilization < target ? decodeUtilization / target : 1;
   return {
     input: prices.input == null ? null : prices.input * scale,
     cachedInput: prices.cachedInput == null ? null : scaled * scale + variable,
+    ...(hasOut ? { output: prices.output == null ? null : prices.output * decScale } : {}),
     target, utilization,
   };
 }

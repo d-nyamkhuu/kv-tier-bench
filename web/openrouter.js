@@ -36,17 +36,22 @@ const ratio = (ours, theirs) => {
   const r = ours / theirs;
   return (r >= 10 ? r.toFixed(0) : r.toFixed(1)) + "×";
 };
-export function showTokenPrices(host, snapshot, modelId, simulated) {
+export function showTokenPrices(host, snapshot, modelId, simulated, decodeNote = "") {
   const model = snapshot?.models?.[modelId];
   const stats = model?.providers?.length ? providerStats(model.providers) : null;
-  const kinds = [["input", "input", "Input"], ["cachedInput", "cached", "Cached input"]];
+  const showOutput = simulated?.output != null || stats?.output != null;
+  const kinds = [
+    ["input", "input", "Input"],
+    ["cachedInput", "cached", "Cached input"],
+    ...(showOutput ? [["output", "output", "Output"]] : []),
+  ];
   if (!simulated && !stats) {
     host.textContent = snapshot ? "No prices: this GPU has no listed price and OpenRouter lists no endpoints for this model." : "Waiting for the replay…";
     return;
   }
   const row = (label, cells, cls = "") => el("tr", { class: cls }, el("th", { scope: "row", text: label }), ...cells);
   const rows = [];
-  const pct = x => Math.round(x * 100) + "%";
+  const pct = x => (x > 0 && x < 0.005 ? "<1%" : Math.round(x * 100) + "%");
   const label = simulated?.target ? `This setup at ${pct(simulated.target)} busy` : "This setup at its replay load";
   if (simulated) rows.push(row(label, kinds.map(([ours]) => el("td", { class: "price", text: money(simulated[ours]) })), "ours"));
   if (stats) {
@@ -61,10 +66,11 @@ export function showTokenPrices(host, snapshot, modelId, simulated) {
     el("table", { class: "price-table" },
       el("thead", {}, el("tr", {}, ...["", ...kinds.map(k => k[2])].map(t => el("th", { scope: "col", text: t })))),
       el("tbody", {}, ...rows)),
-    el("p", { class: "price-source" }, "USD per 1M input tokens",
+    el("p", { class: "price-source" }, "USD per 1M tokens",
       simulated?.utilization > 0
-        ? ` · replay prefill GPUs ${pct(simulated.utilization)} busy` + (simulated.target && simulated.utilization > simulated.target ? ` (above ${pct(simulated.target)} target)` : "")
+        ? ` · prefill ${pct(simulated.utilization)} busy` + (simulated.target && simulated.utilization > simulated.target ? ` (above ${pct(simulated.target)} target)` : "")
         : "",
+      decodeNote ? ` · ${decodeNote}` : "",
       ...(stats ? [` · OpenRouter: ${stats.n} endpoints, ranges under the medians · `, el("a", { href: model.url, target: "_blank", rel: "noopener", text: "providers" }), " · " + snapshot.fetched]
         : [" · OpenRouter lists no endpoints for this model"])),
   );

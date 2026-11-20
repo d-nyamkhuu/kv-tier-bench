@@ -558,3 +558,40 @@ test("batching short prompts amortises the weight read and drains a queue the se
   assert.ok(serial.utilization > 0.99, `${serial.utilization}`); // 20 ms of work every 15 ms: always busy
   assert.ok(batched.utilization < 1 && batched.ttft.mean < serial.ttft.mean / 5, `${batched.utilization} ${batched.ttft.mean} ${serial.ttft.mean}`);
 });
+
+test("per-GPU RDMA fabrics give each replica on a node its own independent NIC rail group", () => {
+  const ib = { family: "p2p", bw_gib_s: gib(100), rdma: true, per_gpu: true };
+  const roce = { family: "p2p", bw_gib_s: gib(100), rdma: true, per_gpu: false };
+  const run = transfer => {
+    const trs = [];
+    simulate({ requests: [arrival(0, 0, "a", 1), arrival(0, 1, "b", 1)] },
+      { ...twoNodes, cluster: { nodes: 1, gpusPerNode: 2, tp: 1 }, cpuGiB: 0, transfer,
+        decode: { batch: 16, gpu: { mem_bw_tb_s: 1, mbu: 1 } } },
+      (_req, _ttft, _k, _B, _load, _wait, tr) => trs.push(tr));
+    return trs.sort((a, b) => a - b);
+  };
+  const perGpu = run(ib), sharedNic = run(roce);
+  assert.ok(close(perGpu[0], 1) && close(perGpu[1], 1), `per-GPU IB runs in parallel: ${perGpu}`);
+  assert.ok(close(sharedNic[0], 1) && close(sharedNic[1], 2), `shared RoCE serializes: ${sharedNic}`);
+});
+
+test("S3 bucket size limit and S3-only object retention bound occupancy and storage cost independently", () => {
+  const capped = { family: "obj", bw_gib_s: 1, shared: true, bill: "stored", capacity_gib: gib(200), usd_per_gib_month: 730 };
+  const requests = [0, 5, 10].map((t, i) => ({ t, conv: i, n: 100, hashes: [`k${i}`] }));
+  let snap;
+  const rCap = simulate({ requests }, { ...base, gpuGiB: 0, cpuGiB: 0, shared: capped, retentionH: 10, durationMin: 1 },
+    undefined, (_, s) => { snap = s; });
+  assert.equal(snap.shared.usedGiB, gib(200));
+  assert.equal(rCap.evictions.shared, 1);
+  assert.ok(rCap.firstSharedEvictionS > 10);
+  // 10h retention of 300B/min would exceed 200B, so bucket capacity_gib caps billed GiB at 200B -> 200B/GiB * (1/60 h).
+  assert.ok(close(rCap.usd.storage, gib(200) * (1 / 60)));
+
+  // S3-only TTL expires objects from S3 while local GPU cache retains them.
+  const uncapped = { family: "obj", bw_gib_s: 1, shared: true, bill: "stored", usd_per_gib_month: 730 };
+  const rTtl = simulate({ requests: [{ t: 0, conv: 0, n: 100, hashes: ["keep"] }, { t: 30, conv: 0, n: 100, hashes: ["keep"] }] },
+    { ...base, routing: "sticky", gpuGiB: 1, cpuGiB: 0, shared: uncapped, sharedLifetimeS: 10, retentionH: null, durationMin: 1 },
+    undefined, (_, s) => { snap = s; });
+  assert.equal(rTtl.tokens.gpu, 100); // GPU still had it at t=30
+  assert.equal(snap.shared.usedGiB, 0); // S3 expired it after 10s
+});

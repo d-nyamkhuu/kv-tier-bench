@@ -15,10 +15,11 @@ const config = () => defaultConfig(s1, VARIANTS, GPUS, SOFTWARE, MODELS);
 
 test("default settings encode to an empty hash and round-trip through the URL", () => {
   assert.equal(encodeSettings(DEFAULT_SETTINGS), "");
-  const custom = { ...DEFAULT_SETTINGS, rate: 300, disk: "fs-nvme-gen4", diskSize: null, backing: "" };
+  const custom = { ...DEFAULT_SETTINGS, rate: 300, disk: "fs-nvme-gen4", diskSize: null, s3Size: null, s3Ttl: 60 };
   const hash = encodeSettings(custom);
   assert.deepEqual(decodeSettings("#" + hash), custom);
   assert.match(hash, /diskSize=full/);
+  assert.match(hash, /s3Size=full/);
 });
 
 test("decoding ignores unknown keys and malformed numbers", () => {
@@ -102,10 +103,14 @@ test("turns per chat, warm-up and the workload options reach the replay config",
   assert.equal(c.workload.lengthSpread, 1.5);
   assert.equal(c.workload.systemPrompts, 10);
   assert.equal(c.workload.arrivalPattern, "bursty");
-  applySettings(c, { ...DEFAULT_SETTINGS, hours: 1, start: "cold", spread: "fixed" });
+  applySettings(c, { ...DEFAULT_SETTINGS, hours: 1, start: "cold", spread: "fixed", spec: "mtp", decodeEp: 16, decodeSpeed: 80, decodeOverlap: "on" });
   assert.equal(c.sim.warmupMin, 0);
   assert.equal(c.workload.durationMin, 60);
   assert.equal(c.workload.lengthSpread, 0);
+  assert.equal(c.sim.spec, "mtp");
+  assert.equal(c.sim.decodeEp, 16);
+  assert.equal(c.sim.decodeSpeed, 80);
+  assert.equal(c.sim.decodeOverlap, true);
 });
 
 const base = { requestsPerMin: 600, followUpShare: 0.8, systemTokens: 6000, inputTokens: 800, outputTokens: 400, thinkTimeS: 300, durationMin: 60, seed: 3 };
@@ -164,6 +169,9 @@ test("the CPU note appears when CPU memory is no larger than the GPU cache and t
   assert.equal(cpuSizingNote({ ...kimi, cpu: 384 }, result), null); // larger than the GPU cache serves hits
   assert.equal(cpuSizingNote({ ...kimi, cpu: 0 }, result), null);
   assert.equal(cpuSizingNote(kimi, { ...result, firstEviction: null }), null); // the GPU never filled
+  // Multiple replicas per node under round-robin share one node CPU cache and serve cross-replica hits: no false warning.
+  const multi = { ...DEFAULT_SETTINGS, model: "qwen3.8-27b", gpu: "gb200", nodes: 2, gpusPerNode: 8, routing: "round-robin", cpu: 768 };
+  assert.equal(cpuSizingNote(multi, { firstEviction: 960, gpuGiB: 146, instances: 16, share: { cpu: 0.297 } }), null);
 });
 
 test("a replay reports progress by simulated minute, rising and below 1", () => {
@@ -200,6 +208,8 @@ test("prices scale prefill GPUs and provisioned tiers to the chosen busy share, 
   const withSsd = pricesAt({ input: 2, cachedInput: 0.5, cachedPrefill: 0.3, cachedFixed: 0.1 }, 0.15, "0.6");
   assert.ok(Math.abs(withSsd.cachedInput - ((0.3 + 0.1) * 0.25 + 0.1)) < 1e-12, "provisioned SSD scales with utilization too");
   assert.deepEqual(pricesAt(prices, 0.15, "actual"), { input: 2, cachedInput: 0.5, target: null, utilization: 0.15 });
+  const withOut = pricesAt({ input: 2, cachedInput: 0.5, cachedPrefill: 0.4, output: 4 }, 0.15, "0.6", 0.3);
+  assert.ok(Math.abs(withOut.output - 2) < 1e-12, "output scales from 30% decode busy to 60% target");
   assert.equal(pricesAt(null, 0.15, "0.6"), null);
 });
 
@@ -219,9 +229,12 @@ test("SWA and hybrid models hit shared system prompts under fixed lengths, and w
   assert.ok(rAmple.share.gpu > 0.55 && (rAmple.share.shared ?? 0) === 0, JSON.stringify(rAmple.share));
 });
 
-test("each model's serving defaults: FP8 when released in BF16, RDMA between nodes", () => {
+test("each model's serving defaults: FP8 whenever KV cache exceeds 1 byte/value, RDMA between nodes", () => {
   const c = config();
   assert.deepEqual(modelDefaults(c.models["minimax-m3"]), { precision: "fp8", interconnect: "p2p-ib-ndr" });
+  assert.equal(modelDefaults(c.models["kimi-k3"]).precision, "fp8");
+  assert.equal(modelDefaults(c.models["mistral-large-4"]).precision, "fp8");
+  assert.equal(modelDefaults(c.models["glm-5.3"]).precision, "fp8");
   assert.equal(modelDefaults(c.models["deepseek-v4.1-flash"]).precision, "released");
   for (const s of SCENARIOS) assert.equal(s.settings.interconnect, "p2p-ib-ndr", s.id);
 });
@@ -229,10 +242,11 @@ test("each model's serving defaults: FP8 when released in BF16, RDMA between nod
 test("every scenario value is a stop on its slider, so the page shows the scenario exactly", () => {
   const src = readFileSync(new URL("../simulator.js", import.meta.url), "utf8");
   const stops = name => JSON.parse(src.match(new RegExp(`const ${name} = (\\[[^\\]]*\\])`))[1].replace("CPU_SLIDER_MAX_GIB", "2048"));
-  const cpu = stops("cpuSizes"), disk = stops("diskSizes");
+  const cpu = stops("cpuSizes"), disk = stops("diskSizes"), s3 = stops("s3Sizes");
   for (const s of SCENARIOS) {
     assert.ok(cpu.includes(s.settings.cpu), `${s.id} CPU ${s.settings.cpu}`);
     assert.ok(disk.includes(s.settings.diskSize), `${s.id} SSD ${s.settings.diskSize}`);
+    assert.ok(s3.includes(s.settings.s3Size), `${s.id} S3 ${s.settings.s3Size}`);
   }
 });
 

@@ -269,18 +269,36 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
   const hook = { onAdd: (k) => holders.set(k, (holders.get(k) ?? 0) + 1), onEvict: (k) => { const c = holders.get(k) - 1; if (c) holders.set(k, c); else holders.delete(k); } };
   // one entry per cache group of pp nodes (a node when pp = 1).
   // Full-duplex lanes: frontend Ethernet (S3 and TCP links) is separate from dedicated RDMA rails (IB/RoCE).
+  // Per-GPU RDMA fabrics (InfiniBand) expose one independent tp-NIC rail group per prefill replica on the node.
   const nodes = Array.from({ length: Math.max(1, Math.floor(cl.nodes / pp)) }, () => ({
-    diskLane: { free: 0 }, ethTx: { free: 0 }, ethRx: { free: 0 }, rdmaTx: { free: 0 }, rdmaRx: { free: 0 }, diskWritten: 0,
+    diskLane: { free: 0 }, ethTx: { free: 0 }, ethRx: { free: 0 }, rdmaTx: { free: 0 }, rdmaRx: { free: 0 },
+    rdmaTxRails: Array.from({ length: perNode }, () => ({ free: 0 })),
+    rdmaRxRails: Array.from({ length: perNode }, () => ({ free: 0 })),
+    diskWritten: 0,
     knownObjects: s3 ? new Set() : null,
     knownWindows: s3 && externalState ? new Set() : null,
     cpu: new LRU(gib((cfg.cpuGiB ?? 0) * pp), cfg.p2p ? hook : {}),
     disk: cfg.disk ? new LRU(gib(cfg.disk.capacity_gib == null ? null : cfg.disk.capacity_gib * pp)) : null,
   }));
-  const txLane = (node, v) => (v?.rdma ? node.rdmaTx : node.ethTx);
-  const rxLane = (node, v) => (v?.rdma ? node.rdmaRx : node.ethRx);
+  const earliest = (lanes) => lanes.reduce((best, l) => (l.free < best.free ? l : best));
+  const txLane = (node, v, replica = null) => !v?.rdma ? node.ethTx : !v.per_gpu ? node.rdmaTx
+    : replica != null ? node.rdmaTxRails[replica] : earliest(node.rdmaTxRails);
+  const rxLane = (node, v, replica = null) => !v?.rdma ? node.ethRx : !v.per_gpu ? node.rdmaRx
+    : replica != null ? node.rdmaRxRails[replica] : earliest(node.rdmaRxRails);
   const linkRails = (v) => (v?.per_gpu ? cl.tp : 1);
-  const inst = nodes.flatMap((node, ni) => Array.from({ length: perNode }, () => ({ node: ni, gpu: new LRU(gib(cfg.gpuGiB)), running: false, queue: [], head: 0, waiting: [], stepping: false })));
-  const shared = cfg.shared ? new LRU(gib(cfg.shared.capacity_gib)) : null;
+  const inst = nodes.flatMap((node, ni) => Array.from({ length: perNode }, (_, replica) => ({
+    node: ni, replica, gpu: new LRU(gib(cfg.gpuGiB)), running: false, queue: [], head: 0, waiting: [], stepping: false,
+  })));
+  const sharedLifetime = cfg.sharedLifetimeS > 0 ? cfg.sharedLifetimeS : null;
+  const sharedLastUse = sharedLifetime ? new Map() : null;
+  const touchShared = (id, now) => { if (!sharedLifetime) return; sharedLastUse.delete(id); sharedLastUse.set(id, now); };
+  const sharedExpired = (id, now) => now - (sharedLastUse.get(id) ?? -Infinity) > sharedLifetime;
+  const shared = cfg.shared ? new LRU(gib(cfg.shared.capacity_gib), {
+    onEvict: (id) => {
+      for (const n of nodes) { n.knownObjects?.delete(id); n.knownWindows?.delete(id); }
+      sharedLastUse?.delete(id);
+    },
+  }) : null;
 
   // Occupancy counts physical copies (each instance GPU and each node-group CPU/disk)
   // and counts the cluster-wide shared cache once. Only the timeline requests snapshots.
@@ -326,11 +344,16 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
   const reqs = workload.requests;
   const startTime = cfg.durationMin != null || workload.durationS != null ? 0 : reqs[0]?.t ?? 0;
   const t0 = startTime + (cfg.warmupS ?? 0);
-  let firstGpuEvictionS = null, firstDiskEvictionS = null;
+  let firstGpuEvictionS = null, firstDiskEvictionS = null, firstSharedEvictionS = null;
   const firstPayloadReadS = { disk: null, shared: null };
-  let sharedStored = 0, lastCompletion = t0;
+  let sharedStored = 0, sharedArea = 0, sharedLastT = t0, lastCompletion = t0;
   const events = new Events();
   const durationS = cfg.durationMin != null ? cfg.durationMin * 60 : workload.durationS;
+  const noteShared = (now) => {
+    if (!shared || now <= t0) return;
+    const clamped = durationS != null ? Math.min(now, durationS) : now;
+    if (clamped > sharedLastT) { sharedArea += shared.used * (clamped - sharedLastT); sharedLastT = clamped; }
+  };
   const nextTurn = new Map();
   const lastTurn = new Map();
   let routingIndex = 0;
@@ -362,8 +385,9 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
   const lastUse = lifetime ? new Map() : null;
   const touchUse = (id, now) => { if (!lifetime) return; lastUse.delete(id); lastUse.set(id, now); };
   const expired = (id, now) => now - (lastUse.get(id) ?? -Infinity) > lifetime;
-  let lastExpiry = 0;
+  let lastExpiry = 0, lastSharedExpiry = 0;
   function expireAll(now) {
+    noteShared(now);
     for (const [id, ts] of lastUse) {
       if (now - ts <= lifetime) break;
       lastUse.delete(id);
@@ -372,10 +396,18 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
       shared?.delete(id);
     }
   }
+  function expireShared(now) {
+    noteShared(now);
+    for (const [id, ts] of sharedLastUse) {
+      if (now - ts <= sharedLifetime) break;
+      shared.delete(id);
+    }
+  }
 
   let lastPoll = 0;
   function advance(time) {
     if (lifetime && time - lastExpiry >= 1) { lastExpiry = time; expireAll(time); }
+    if (shared && sharedLifetime && time - lastSharedExpiry >= 1) { lastSharedExpiry = time; expireShared(time); }
     // The LMCache controller polls each second. Once all pools are below
     // watermark, jumping over a long idle interval has no further effect.
     const end = Math.floor(time);
@@ -443,6 +475,7 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
     const where = [];
     for (const id of ids) {
       if (lifetime && expired(id, start)) break;
+      if (shared && sharedLifetime && sharedExpired(id, start)) { noteShared(start); shared.delete(id); }
       if (here.gpu.has(id)) { where.push("gpu"); continue; }
       if (node.cpu.has(id)) { where.push("cpu"); continue; }
       const t = lower.find((tt) => tt.has(id, node));
@@ -473,7 +506,10 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
         owner.cpu.touch(ids[j]);
         peerBytes.set(owner, (peerBytes.get(owner) ?? 0) + backingBlock +
           (j === where.length - 1 ? externalState : 0));
-      } else localPools[key].touch(ids[j]);
+      } else {
+        localPools[key].touch(ids[j]);
+        if (key === "shared") touchShared(ids[j], start);
+      }
     }
     const h = where.length * B;
     const last = where.at(-1);
@@ -517,7 +553,7 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
       const bytes = readBytes(tier.key);
       const bw = variantBandwidth(tier.v) * GIB * pp * linkRails(tier.v);
       const payloads = tier.key === "p2p"
-        ? [...peerBytes].map(([owner, size]) => ({ seconds: size / bw, lanes: [txLane(owner, tier.v), rxLane(node, tier.v)] }))
+        ? [...peerBytes].map(([owner, size]) => ({ seconds: size / bw, lanes: [txLane(owner, tier.v), rxLane(node, tier.v, here.replica)] }))
         : [{ seconds: bytes / bw, lanes: [tier.key === "disk" ? node.diskLane : node.ethRx] }];
       phases.push({ tier: tier.key, latency: tier.v.latency_s ?? 0, payloads, host: loadCpu(k[tier.key] * B, last === tier.key, bytes) });
     }
@@ -580,7 +616,7 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
         if (transfer) {
           const latency = cfg.transfer.latency_s ?? 0;
           events.at(now + latency, 1, ready => {
-            const done = reserve(ready, transfer - latency, [txLane(node, cfg.transfer)]);
+            const done = reserve(ready, transfer - latency, [txLane(node, cfg.transfer, here.replica)]);
             events.at(done, 1, beginDecode);
           });
         } else beginDecode(now);
@@ -692,14 +728,17 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
         if (measured) node.diskWritten += node.disk.added - before;
         if (firstDiskEvictionS == null && node.disk.evictions) firstDiskEvictionS = done;
       });
-      if (shared) writeTo(cfg.shared, node.ethTx, () => {
+      if (shared) writeTo(cfg.shared, node.ethTx, done => {
+        noteShared(done);
         const before = shared.added;
         for (const { id, bytes, state, prior } of writes) {
           shared.put(id, bytes);
+          touchShared(id, done);
           node.knownObjects?.add(id);
           if (state) node.knownWindows?.add(id);
           if (measured && s3) operations.put += ranks * (Number(!prior) + Number(!!state));
         }
+        if (firstSharedEvictionS == null && shared.evictions) firstSharedEvictionS = done;
         if (measured) {
           sharedWriteBytes += writeBytes;
           sharedStored += shared.added - before;
@@ -743,6 +782,7 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
   const scaleUp = cfg.costScale ?? 1;
   const windowS = durationS != null ? Math.max(0, durationS - t0)
     : counted ? Math.max(1, lastCompletion - t0) : 0;
+  noteShared(t0 + windowS);
   const windowH = windowS / 3600;
   const realNodes = cl.nodes * scaleUp;
   const prefillGpus = realNodes * cl.gpusPerNode;
@@ -755,15 +795,19 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
   const decodeGpus = !dec ? 0 : dec.pooled ? decodeNeed : Math.ceil(pool.peakGroups * scaleUp * cl.tp / decodeWidth) * decodeWidth;
   const prefillUsd = prefillGpus * usdH(cfg.gpu) * windowH;
   const decodeUsd = decodeGpus * usdH(dec?.gpu) * windowH;
-  const effRetentionH = lifetime ? Math.min(cfg.retentionH ?? Infinity, lifetime / 3600) : (cfg.retentionH ?? Math.max(windowH, 1));
-  const storageOf = (v, writtenBytes, copies, scale) => {
+  const baseHoldH = lifetime ? Math.min(cfg.retentionH ?? Infinity, lifetime / 3600) : cfg.retentionH;
+  const storageOf = (v, writtenBytes, copies, scale, holdH = baseHoldH, avgUsedBytes = null) => {
     if (!v) return { storage: 0, fixed: 0, provisioned: 0 };
     const price = v.usd_per_gib_month ?? 0;
     let gibHeld, isProvisioned = false;
     if (v.bill === "provisioned" && v.capacity_gib != null) { gibHeld = v.capacity_gib * copies; isProvisioned = true; }
-    else { // bytes stored: what is written per hour, kept for the effective retention time (capped by capacity)
+    else if (holdH == null && avgUsedBytes != null) {
+      gibHeld = (avgUsedBytes / GIB) * scale;
+      if (v.capacity_gib != null) gibHeld = Math.min(gibHeld, v.capacity_gib * copies);
+    } else { // bytes stored: what is written per hour, kept for the effective retention time (capped by capacity)
+      const effH = holdH ?? Math.max(windowH, 1);
       const writtenGiB = writtenBytes / GIB * scale;
-      gibHeld = (writtenGiB / Math.max(windowH, 1e-9)) * effRetentionH;
+      gibHeld = (writtenGiB / Math.max(windowH, 1e-9)) * effH;
       if (v.capacity_gib != null) gibHeld = Math.min(gibHeld, v.capacity_gib * copies);
     }
     const storage = gibHeld * price * (windowH / 730);
@@ -779,7 +823,8 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
     diskCost.provisioned += cost.provisioned;
   }
   diskCost.storage += fees(cfg.disk, nodes.reduce((sum, n) => sum + n.diskWritten, 0), diskReadBytes);
-  const sharedCost = storageOf(cfg.shared, sharedStored, 1, scaleUp);
+  const sharedHoldH = sharedLifetime ? Math.min(baseHoldH ?? Infinity, sharedLifetime / 3600) : baseHoldH;
+  const sharedCost = storageOf(cfg.shared, sharedStored, 1, scaleUp, sharedHoldH, windowS > 0 ? sharedArea / windowS : 0);
   sharedCost.storage += fees(cfg.shared, sharedWriteBytes, sharedReadBytes);
   const requestUsd = ((cfg.shared?.usd_per_1k_put ?? 0) * operations.put +
     (cfg.shared?.usd_per_1k_get ?? 0) * (operations.head + operations.get)) * scaleUp / 1000;
@@ -806,6 +851,7 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
     // switched off)
     acceptedTokens: accepted.length ? stats(accepted).mean : null, specSpeedup: speedups.length ? stats(speedups).mean : null,
     utilization: windowS ? busy / windowS / inst.length : 0, // above 1, requests queue without bound
+    decodeUtilization: decodeGpus > 0 && windowS > 0 ? Math.min(1, decodeNeed / decodeGpus) : 0,
     instances: inst.length * scaleUp, prefillGpus, decodeGpus, priced,
     usd: { prefill: prefillUsd, decode: decodeUsd, storage: storageUsd, fixed: fixedUsd, total },
     usdPer1kRequests: counted ? ((total / scaleUp / counted) * 1e3) : 0,
@@ -830,6 +876,7 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
     })(),
     firstGpuEvictionS: durationS != null && firstGpuEvictionS >= durationS ? null : firstGpuEvictionS,
     firstDiskEvictionS: durationS != null && firstDiskEvictionS >= durationS ? null : firstDiskEvictionS,
-    evictions: { gpu: inst.reduce((a, i) => a + i.gpu.evictions, 0), cpu: nodes.reduce((a, n) => a + n.cpu.evictions, 0) },
+    firstSharedEvictionS: durationS != null && firstSharedEvictionS >= durationS ? null : firstSharedEvictionS,
+    evictions: { gpu: inst.reduce((a, i) => a + i.gpu.evictions, 0), cpu: nodes.reduce((a, n) => a + n.cpu.evictions, 0), ...(shared ? { shared: shared.evictions } : {}) },
   };
 }

@@ -116,7 +116,7 @@ export function checks(s1, c) {
       add({
         group: "s1", what: `Prefix of ${n.toLocaleString()} tokens from ${S1_TIER_NAME[tier]}`, unit: "s", published: measured, predicted: T.ttft(n, n, T.loadFor(v)(k)), calibrated: false, source: S1,
         note: `Model: "${v.name}" at ${variantBandwidth(v).toFixed(2)} GiB/s + ${Math.round((v.latency_s ?? 0) * 1000)} ms. s1 measured ${fit.bw_gib_s.toFixed(2)} GiB/s + ${Math.round(fit.latency_s * 1000)} ms.` +
-          (tier === "p2p" ? " s1's NIXL transfer was held back by one receive thread; the model assumes none." : ""),
+          (tier === "p2p" ? " s1's tuned 32-agent NIXL transfer outruns the generic 39% UCCL TCP figure." : ""),
       });
     }
   }

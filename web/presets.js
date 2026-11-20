@@ -432,7 +432,7 @@ const MODEL_SPECS = {
     spec: {
       num_layers: 78, hidden_size: 6144, total_params: 744e9, active_params: 40e9, weights_bytes: 755632050320, compute_dtype: "fp8", block_size: 64, experts: moe({ layers: 75, routed: 256, per_token: 8, width: 6144, inter: 2048 }),
       layers: [
-        { type: "mla", count: 21, q_heads: 64, latent: 512, rope: 64, qk_dim: 192 + 64, v_dim: 256, topk: 2048, index_heads: 32, index_dim: 128, index_bytes: INDEX_BYTES },
+        { type: "mla", count: 21, q_heads: 64, latent: 512, rope: 64, qk_dim: 192 + 64, v_dim: 256, topk: 2048, index_heads: 32, index_dim: 128, index_bytes: INDEX_BYTES, index_fp8: true },
         { type: "mla", count: 57, q_heads: 64, latent: 512, rope: 64, qk_dim: 192 + 64, v_dim: 256, topk: 2048 },
       ],
     },
@@ -447,7 +447,7 @@ const MODEL_SPECS = {
       num_layers: 45, hidden_size: 4096, total_params: 320e9, active_params: 18e9, weights_bytes: 328337455672, compute_dtype: "fp8", block_size: 64, experts: moe({ layers: 42, routed: 288, per_token: 8, width: 4096, inter: 2048 }),
       layers: [
         { type: "linear", count: 34, state_bytes: gdnStateBytes({ k_heads: 64, v_heads: 64, k_dim: 128, v_dim: 128, conv: 4 }) },
-        { type: "mla", count: 11, q_heads: 64, latent: 512, rope: 0, qk_dim: 256, v_dim: 256, topk: 2048, index_heads: 32, index_dim: 128, index_bytes: INDEX_BYTES },
+        { type: "mla", count: 11, q_heads: 64, latent: 512, rope: 0, qk_dim: 256, v_dim: 256, topk: 2048, index_heads: 32, index_dim: 128, index_bytes: INDEX_BYTES, index_fp8: true },
       ],
     },
     sources: [expertSrc("zai-org/GLM-5.3-Flash", '"n_routed_experts": 288, "num_experts_per_tok": 8, "moe_intermediate_size": 2048, "first_k_dense_replace": 3'), cfgSrc("zai-org/GLM-5.3-Flash"), filesSrc("zai-org/GLM-5.3-Flash", 328337455672),
@@ -485,9 +485,9 @@ const MODEL_SPECS = {
     spec: {
       num_layers: 72, hidden_size: 6144, total_params: 1e12, active_params: 52e9, weights_bytes: 1060554587912, compute_dtype: "fp8", block_size: 64, experts: moe({ layers: 71, routed: 128, per_token: 4, width: 6144, inter: 6144 }),
       layers: [
-        { type: "mla", count: 35, q_heads: 64, latent: 512, rope: 64, qk_dim: 128, v_dim: 128, topk: 2048, index_heads: 32, index_dim: 128, index_bytes: INDEX_BYTES },
+        { type: "mla", count: 35, q_heads: 64, latent: 512, rope: 64, qk_dim: 128, v_dim: 128, topk: 2048, index_heads: 32, index_dim: 128, index_bytes: INDEX_BYTES, index_fp8: true },
         { type: "mla", count: 28, q_heads: 64, latent: 512, rope: 64, qk_dim: 128, v_dim: 128, topk: 2048 },
-        { type: "mla", stores: false, count: 9, q_heads: 64, latent: 512, rope: 64, qk_dim: 128, v_dim: 128, topk: 2048, index_heads: 32, index_dim: 128, index_bytes: INDEX_BYTES },
+        { type: "mla", stores: false, count: 9, q_heads: 64, latent: 512, rope: 64, qk_dim: 128, v_dim: 128, topk: 2048, index_heads: 32, index_dim: 128, index_bytes: INDEX_BYTES, index_fp8: true },
       ],
     },
     sources: [expertSrc("mistralai/Mistral-Large-4-1T-A52B", '"n_routed_experts": 128, "num_experts_per_tok": 4, "moe_intermediate_size": 6144, "first_k_dense_replace": 1'), cfgSrc("mistralai/Mistral-Large-4-1T-A52B"), filesSrc("mistralai/Mistral-Large-4-1T-A52B", 1060554587912),

@@ -108,6 +108,11 @@ test("serving precision: FP8 halves bf16 weights and KV, FP4 is 4.5 bits a weigh
   assert.ok(l40s.prefill_mfu < 0.7, `L40S prefill MFU should not borrow RTX's 0.878: ${l40s.prefill_mfu}`);
   const kimi = MODELS["kimi-k3"]; // linear-attention state stays bf16
   assert.equal(withPrecision(kimi, "fp8").read_fixed_bytes, kimi.read_fixed_bytes);
+  // GLM-5.3 and Mistral Large 4 ship FP8 sparse-indexer keys (132 B/layer): switching KV to FP8 halves MLA latent KV only, not INDEX_BYTES
+  const glm = MODELS["glm-5.3"];
+  assert.equal(withPrecision(glm, "fp8").kv_bytes_per_token, 78 * (512 + 64) * 1 + 21 * 132);
+  const mistral = MODELS["mistral-large-4"];
+  assert.equal(withPrecision(mistral, "fp8").kv_bytes_per_token, 63 * (512 + 64) * 1 + 44 * 132);
   // FP4 computes at FP4 on Blackwell, at FP8 where there are no FP4 tensor cores
   assert.equal(peakTflops(f4, { tflops_bf16: 1, tflops_fp8: 2, tflops_fp4: 4 }), 4);
   assert.equal(peakTflops(f4, { tflops_bf16: 1, tflops_fp8: 2, tflops_fp4: null }), 2);

@@ -79,6 +79,8 @@ export function validate(c) {
   if (sim.gpusPerNode % sim.tp) errs.push("sim.tp must divide sim.gpusPerNode");
   if (sim.gpuBudgetFraction != null && !(num(sim.gpuBudgetFraction) && sim.gpuBudgetFraction > 0 && sim.gpuBudgetFraction <= 1)) errs.push("sim.gpuBudgetFraction must be greater than 0 and at most 1");
   if (sim.diskCapacityGiB != null && !(num(sim.diskCapacityGiB) && sim.diskCapacityGiB > 0)) errs.push("sim.diskCapacityGiB must be a positive number");
+  if (sim.sharedCapacityGiB != null && !(num(sim.sharedCapacityGiB) && sim.sharedCapacityGiB > 0)) errs.push("sim.sharedCapacityGiB must be a positive number");
+  if (sim.sharedLifetimeS != null && !(num(sim.sharedLifetimeS) && sim.sharedLifetimeS > 0)) errs.push("sim.sharedLifetimeS must be a positive number of seconds, or null");
   if (sim.prefillBatchTokens != null && !(Number.isInteger(sim.prefillBatchTokens) && sim.prefillBatchTokens >= 1)) errs.push("sim.prefillBatchTokens must be a whole number of tokens, or empty for one request at a time");
   for (const key of ["peerFirst", "saveDecode"]) if (sim[key] != null && typeof sim[key] !== "boolean") errs.push(`sim.${key} must be a boolean`);
   if (sim.precision != null && !["released", "fp8", "fp4"].includes(sim.precision)) errs.push('sim.precision must be "released", "fp8" or "fp4"');

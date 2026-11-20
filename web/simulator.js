@@ -1,19 +1,23 @@
 import { defaultConfig } from "./config.js";
-import { GPUS, MODELS, SOFTWARE, VARIANTS } from "./presets.js";
+import { GPUS, MODELS, MOONCAKE_TRACES, SOFTWARE, SPEC_METHODS, VARIANTS } from "./presets.js";
 import { PRECISION_LABELS } from "./model.js";
 import { loadOpenRouterPrices, showTokenPrices } from "./openrouter.js";
 import { tierStyles, timeline } from "./replay-chart.js";
 import { minutesCsv } from "./replay.js";
+import { parseTrace } from "./sim.js";
 import {
   applySettings, CPU_SLIDER_MAX_GIB, cpuSizingNote, decodeSettings, modelDefaults, pricesAt, risingTtft, DEFAULT_SETTINGS, encodeSettings, fitCluster, SCENARIOS, scenarioFor, usdPerHour,
 } from "./sim-settings.js";
 import { $, el, gibf, pctf, secs } from "./ui.js";
+import { renderActiveSources, renderValidationChecks } from "./validation.js";
 
 const controls = $("controls"), backing = $("backing");
 const plot = timeline();
 let market;
-let showPrices = () => {}, simulatedPrices = null; // the token-price table, set up in start()
+let showPrices = () => {}, simulatedPrices = null, lastDecodeSummary = ""; // the token-price table, set up in start()
 let config, worker, revision = 0, timer;
+let activeTrace = null, uploadedTraceText = null, uploadedTraceName = "";
+const traceCache = new Map();
 let comparisonVisible = false, comparisonLayout = null, lastResult = null;
 // `shown` is the result on screen. `baseline` is the result before the change in progress: a slider drag
 // counts as one change from press to release.
@@ -54,14 +58,16 @@ function slider(group, key, label, { min, max, step, stops, units }) {
 }
 
 const cpuSizes = [0, 8, 16, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, CPU_SLIDER_MAX_GIB];
-// Powers of two give small working sets room on the slider. The final stop uses the drive preset.
+// Powers of two give small working sets room on the slider. The final stop uses the drive preset / uncapped bucket.
 const diskSizes = [0.25, 0.5, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 768, 1024, 1536, 2048, null];
+const s3Sizes = [16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, null];
 slider("workload-controls", "rate", "Target request rate", { min: 10, max: 600, step: 10, units: " req/min" });
 slider("workload-controls", "turns", "Average turns per chat", { stops: [1, 1.5, 2, 3, 4, 5, 6, 8, 10, 15, 20], units: v => v === 1 ? "1 · no follow-ups" : v + " turns" });
 slider("workload-controls", "ownPrompt", "Chats with their own system prompt", { min: 0, max: 100, step: 10, units: "%" });
 slider("workload-controls", "pause", "Think time after reply", { min: 1, max: 30, step: 1, units: " min" });
 slider("cache-controls", "cpu", "CPU cache per node", { stops: cpuSizes, units: v => v === 0 ? "Off" : gibf(v) });
 slider("disk-controls", "disk-size", "SSD capacity per node", { stops: diskSizes, units: v => v == null ? "Full drive" : gibf(v) });
+slider("s3-size-host", "s3-size", "S3 bucket limit", { stops: s3Sizes, units: v => v == null ? "Uncapped" : gibf(v) });
 slider("detail-controls", "rewrite", "Follow-ups that rewrite history", { min: 0, max: 50, step: 5, units: "%" });
 slider("detail-controls", "prompts", "Shared system prompts (apps or tenants)", { stops: [1, 2, 5, 10, 20, 50, 100, 1000], units: v => v === 1 ? "1 · shared by all" : String(v) });
 slider("detail-controls", "prefix", "System prompt length", { min: 0, max: 16000, step: 100, units: " tokens" });
@@ -77,7 +83,8 @@ const FIELDS = {
   model: ["model"], precision: ["precision"], gpu: ["gpu"], nodes: ["nodes", "count"], gpusPerNode: ["gpus-per-node", "count"],
   interconnect: ["interconnect"], rate: ["rate", "slider"], turns: ["turns", "slider"], ownPrompt: ["ownPrompt", "slider"], rewrite: ["rewrite", "slider"], lifetime: ["lifetime", "count"], minCache: ["min-cache", "count"], pause: ["pause", "slider"],
   pattern: ["pattern"], routing: ["routing"], hours: ["hours", "count"], priceAt: ["price-at"], cpu: ["cpu", "slider"], disk: ["disk"], diskSize: ["disk-size", "slider"],
-  lookup: ["lookup-policy"], backing: ["backing"], start: ["start"], spread: ["spread"], prompts: ["prompts", "slider"], batch: ["batch", "slider"],
+  lookup: ["lookup-policy"], backing: ["backing"], s3Size: ["s3-size", "slider"], s3Ttl: ["s3-ttl", "count"], start: ["start"], spread: ["spread"], prompts: ["prompts", "slider"], batch: ["batch", "slider"],
+  spec: ["spec"], decodeEp: ["decode-ep", "count"], decodeSpeed: ["decode-speed", "count"], decodeOverlap: ["decode-overlap"],
   admission: ["cache-admission"], prefix: ["prefix", "slider"], input: ["input", "slider"],
   output: ["output", "slider"], gpuBudget: ["gpu-budget", "slider"],
 };
@@ -105,9 +112,14 @@ function writeSettings(settings) {
 }
 
 function showScenario(settings) {
-  const active = scenarioFor(settings);
+  const isTrace = $("workload-source").value !== "synthetic";
+  const active = isTrace ? null : scenarioFor(settings);
   for (const button of $("scenario-buttons").children) button.setAttribute("aria-pressed", String(button.dataset.id === active?.id));
   const note = $("scenario-note");
+  if (isTrace) {
+    note.textContent = "Replaying trace traffic.";
+    return;
+  }
   if (!active) {
     note.textContent = "Custom settings.";
     return;
@@ -170,9 +182,102 @@ function refit(id) {
   showFit(switched + `Raised to ${fit.nodes} node${fit.nodes === 1 ? "" : "s"} × ${fit.gpusPerNode} GPUs, the smallest cluster that holds ${config.models[settings.model].name} on ${gpu.name}.`);
 }
 
+const EXTRA_KEYS = ["start", "spread", "rewrite", "minCache", "prompts", "batch", "prefix", "input", "output", "gpuBudget", "admission", "lookup"];
+const DEPLOY_KEYS = ["model", "precision", "gpu", "nodes", "gpusPerNode", "interconnect"];
+const DECODE_KEYS = ["spec", "decodeEp", "decodeSpeed", "decodeOverlap"];
+
+function syncWorkloadMode() {
+  const mode = $("workload-source").value;
+  const syntheticMode = mode === "synthetic";
+  $("synthetic-controls").hidden = !syntheticMode;
+  $("synthetic-extra").hidden = !syntheticMode;
+  $("trace-upload").hidden = mode !== "upload";
+  if (syntheticMode) $("trace-note").hidden = true;
+}
+
+function showTraceMeta(trace, meta = null) {
+  const note = $("trace-note");
+  const spanMin = trace.requests.length ? Math.max(1, Math.round((trace.requests.at(-1).t - trace.requests[0].t) / 60)) : 0;
+  note.replaceChildren(
+    `${trace.requests.length.toLocaleString("en-US")} requests · ~${spanMin} min · ${trace.blockTokens}-token blocks`,
+    ...(meta?.url ? [" · ", el("a", { href: meta.url, target: "_blank", rel: "noopener", text: "raw JSONL" })] : []));
+  note.hidden = false;
+}
+
+async function selectWorkloadSource() {
+  const mode = $("workload-source").value;
+  syncWorkloadMode();
+  if (mode === "synthetic") {
+    activeTrace = null;
+    showScenario(readSettings());
+    schedule();
+    return;
+  }
+  if (mode === "upload") {
+    if (uploadedTraceText != null) {
+      try {
+        activeTrace = parseTrace(uploadedTraceText, Number($("trace-block").value), uploadedTraceName || "uploaded-trace");
+        showTraceMeta(activeTrace);
+        showScenario(readSettings());
+        schedule();
+      } catch (err) {
+        activeTrace = null;
+        failed(`Invalid trace file: ${err.message}`);
+      }
+    } else {
+      activeTrace = null;
+      const note = $("trace-note");
+      note.textContent = "Choose a JSONL or JSON trace file with {timestamp, input_length, output_length, hash_ids}.";
+      note.hidden = false;
+      showScenario(readSettings());
+    }
+    return;
+  }
+  const index = Number(mode.split(":")[1]);
+  const meta = MOONCAKE_TRACES[index];
+  if (!meta) return;
+  if (traceCache.has(index)) {
+    activeTrace = traceCache.get(index);
+    showTraceMeta(activeTrace, meta);
+    showScenario(readSettings());
+    schedule();
+    return;
+  }
+  const loadRev = ++revision;
+  worker?.terminate();
+  $("results").setAttribute("aria-busy", "true");
+  showProgress(0);
+  $("status").textContent = "Downloading Mooncake trace…";
+  const note = $("trace-note");
+  note.textContent = `Fetching ${meta.name}…`;
+  note.hidden = false;
+  try {
+    const resp = await fetch(meta.url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const text = await resp.text();
+    const parsed = parseTrace(text, meta.blockTokens, meta.name);
+    traceCache.set(index, parsed);
+    if (loadRev !== revision) return;
+    activeTrace = parsed;
+    showTraceMeta(parsed, meta);
+    showScenario(readSettings());
+    schedule();
+  } catch (err) {
+    if (loadRev !== revision) return;
+    activeTrace = null;
+    note.textContent = `Could not download trace (${err.message}). Upload a local JSONL file instead.`;
+    failed(`Could not fetch Mooncake trace (${err.message}).`);
+  }
+}
+
 function useSettings(settings) {
   ownCluster = null;
   showFit();
+  if ($("workload-source").value !== "synthetic") {
+    $("workload-source").value = "synthetic";
+    activeTrace = null;
+    syncWorkloadMode();
+  }
   const before = readSettings();
   baseline = shown;
   editing = false;
@@ -180,7 +285,8 @@ function useSettings(settings) {
   const after = readSettings();
   const changed = Object.keys(FIELDS).filter(key => before[key] !== after[key]);
   // A changed setting inside a closed section would otherwise be invisible.
-  if (changed.some(key => ["start", "spread", "rewrite", "minCache", "prompts", "batch", "prefix", "input", "output", "gpuBudget", "admission", "lookup"].includes(key))) $("detail-controls").closest("details").open = true;
+  if (changed.some(key => EXTRA_KEYS.includes(key))) $("detail-controls").closest("details").open = true;
+  if (changed.some(key => DECODE_KEYS.includes(key))) $("decode-details").open = true;
   showScenario(after);
   schedule();
 }
@@ -191,9 +297,10 @@ $("scenario-buttons").append(...SCENARIOS.map(s => el("button", {
 
 function requestComparison() {
   if (!comparisonVisible || !comparisonLayout) return;
+  $("comparison-status").classList.add("busy");
   $("comparison-status").textContent = "Comparing cache tiers…";
   worker.postMessage({ id: revision, kind: "comparison", config, layout: comparisonLayout,
-    budgetFraction: sliders.get("gpu-budget").value() / 100 });
+    budgetFraction: sliders.get("gpu-budget").value() / 100, trace: activeTrace });
   comparisonLayout = null;
 }
 
@@ -202,20 +309,28 @@ new IntersectionObserver(([entry]) => {
   requestComparison();
 }, { rootMargin: "200px" }).observe($("tier-comparison"));
 
-function renderComparison(rows) {
+function renderComparison(rows, progress = null) {
   const maxTime = Math.max(0, ...rows.map(row => row.median ?? 0));
   const share = row => row.requests ? Math.round(row.readers / row.requests * 100) : 0;
   const money = x => "$" + +x.toPrecision(3);
   $("tier-bars").tBodies[0].replaceChildren(...rows.map(row => el("tr", {},
     el("th", { scope: "row", text: row.name }),
     row.median == null ? el("td", { class: "compare-note", text: row.error }) : el("td", {},
-      el("span", { text: secs(row.median) }), el("small", { text: ` · ${share(row)}% of requests` }),
+      el("span", { text: secs(row.median) }),
+      el("small", { text: ` · ${share(row)}% of requests` + (row.mean != null ? ` · ${secs(row.mean)} avg overall` : "") }),
       el("div", { class: "compare-track", "aria-hidden": "true" }, el("i", { style: `width:${maxTime ? row.median / maxTime * 100 : 0}%` }))),
     row.rate == null ? el("td", { class: "compare-note", text: row.billing })
       : el("td", {}, el("span", { class: "price", text: money(row.rate) }), el("small", { class: "billing", text: row.billing })),
   )));
-  $("tier-bars").hidden = false;
-  $("comparison-status").textContent = "Each row adds one tier below GPU memory. Prices: Nebius on-demand (GPU, RAM, SSD), AWS US East (S3).";
+  $("tier-bars").hidden = !rows.length;
+  if (progress) {
+    $("comparison-status").classList.add("busy");
+    $("comparison-status").textContent = `Comparing cache tiers… ${progress.done} of ${progress.total}`;
+  } else {
+    $("comparison-status").classList.remove("busy");
+    const cpuNote = config?.sim?.cpuGiB > 0 ? " (local CPU stays on above peer, SSD and S3)" : "";
+    $("comparison-status").textContent = `Each row tests one tier below GPU memory${cpuNote}. Prices: Nebius on-demand (GPU, RAM, SSD), AWS US East (S3).`;
+  }
 }
 
 // The bar under the results header: indeterminate until the worker reports its first minute, hidden when done.
@@ -240,7 +355,9 @@ function runWorker(id) {
   worker.onmessage = ({ data }) => {
     if (data.id !== revision) return;
     if (data.kind === "progress") { showProgress(data.fraction); return; }
+    if (data.kind === "comparison-progress") { renderComparison(data.rows, { done: data.done, total: data.total }); return; }
     if (data.kind === "comparison") {
+      $("comparison-status").classList.remove("busy");
       if (data.error) $("comparison-status").textContent = data.error;
       else renderComparison(data.result);
     } else if (data.error) failed(data.error);
@@ -255,34 +372,54 @@ function runWorker(id) {
     if ($("results").getAttribute("aria-busy") === "true") failed("Could not run the replay worker.");
     else $("comparison-status").textContent = "Could not compare these tiers.";
   };
-  worker.postMessage({ id, config, budgetFraction: sliders.get("gpu-budget").value() / 100 });
+  worker.postMessage({ id, config, budgetFraction: sliders.get("gpu-budget").value() / 100, trace: activeTrace });
 }
 
 function schedule() {
   $("disk-controls").hidden = !$("disk").value;
   $("disk-size").disabled = !$("disk").value;
+  $("s3-controls").hidden = !backing.value;
+  $("s3-size").disabled = !backing.value;
+  $("s3-ttl").disabled = !backing.value;
+  $("decode-overlap").disabled = Number($("decode-ep").value) === 0;
   for (const { refresh } of sliders.values()) refresh();
   if (!config || !$("model").value) return;
+  const settings = readSettings();
+  applySettings(config, settings);
+  renderActiveSources($("active-sources"), config);
+  const hash = encodeSettings(settings);
+  history.replaceState(null, "", hash ? "#" + hash : location.pathname + location.search);
+  if ($("workload-source").value === "upload" && !activeTrace) return;
   worker?.terminate();
   comparisonLayout = null;
   $("tier-bars").hidden = true;
+  $("comparison-status").classList.remove("busy");
   $("comparison-status").textContent = "Waiting for replay…";
   const id = ++revision;
   clearTimeout(timer);
-  const settings = readSettings();
-  applySettings(config, settings);
-  const hash = encodeSettings(settings);
-  history.replaceState(null, "", hash ? "#" + hash : location.pathname + location.search);
   $("results").setAttribute("aria-busy", "true");
   $("status").className = "";
   showProgress(0);
   timer = setTimeout(() => runWorker(id), 120);
 }
 
+$("trace-file").addEventListener("change", async event => {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  uploadedTraceName = file.name;
+  uploadedTraceText = await file.text();
+  selectWorkloadSource();
+});
+
 controls.addEventListener("input", event => {
+  if (event.target.id === "trace-file") return;
+  if (event.target.id === "workload-source" || event.target.id === "trace-block") {
+    selectWorkloadSource();
+    return;
+  }
   if (event.target.id === "price-at") {
     const settings = readSettings();
-    if (lastResult) showPrices(pricesAt(lastResult.tokenPrices, lastResult.utilization, settings.priceAt));
+    if (lastResult) showPrices(pricesAt(lastResult.tokenPrices, lastResult.utilization, settings.priceAt, lastResult.decodeUtilization), lastDecodeSummary);
     const hash = encodeSettings(settings);
     history.replaceState(null, "", hash ? "#" + hash : location.pathname + location.search);
     showScenario(settings);
@@ -313,9 +450,12 @@ function changeText(delta, same, amount) {
 }
 
 // The page prices the input side only: prefill GPUs and cache tiers. Decode GPUs are simulated (they set reply timing)
-// but their cost belongs to output tokens, so it is left out. A GPU without a listed price counts as zero.
+// but their cost belongs to output tokens, so it is left out. When a GPU has no listed price, total hourly cost is null.
 const prefillGpuCost = result => result.gpuCostPerHour == null ? null : result.prefillCostPerHour;
-const hourlyCost = result => (prefillGpuCost(result) ?? 0) + result.costPerHour;
+const hourlyCost = result => {
+  const gpus = prefillGpuCost(result);
+  return gpus == null ? null : gpus + result.costPerHour;
+};
 
 // A row of labelled figures under a headline metric.
 function stats(id, pairs) {
@@ -325,12 +465,15 @@ function stats(id, pairs) {
 function render(result) {
   const settings = readSettings();
   $("results").classList.remove("failed");
+  const totalHourly = hourlyCost(result);
   if (baseline) {
-    const latency = result.mean - baseline.mean, cost = hourlyCost(result) - baseline.hourly;
+    const latency = result.mean - baseline.mean;
     $("ttft-change").textContent = changeText(latency, 0.0005, secs(Math.abs(latency)));
-    $("cost-change").textContent = changeText(cost, 0.0005, usdPerHour(Math.abs(cost)) + "/h");
+    $("cost-change").textContent = totalHourly != null && baseline.hourly != null
+      ? changeText(totalHourly - baseline.hourly, 0.0005, usdPerHour(Math.abs(totalHourly - baseline.hourly)) + "/h")
+      : "";
   } else $("ttft-change").textContent = $("cost-change").textContent = "";
-  shown = { mean: result.mean, hourly: hourlyCost(result) };
+  shown = { mean: result.mean, hourly: totalHourly };
   lastResult = result;
   $("download-csv").disabled = false;
   $("ttft").textContent = secs(result.mean);
@@ -344,14 +487,29 @@ function render(result) {
   $("trend-note").hidden = !trend;
   $("trend-note").textContent = trend ? `Still rising at the end (${secs(trend.from)} → ${secs(trend.to)}): ${causes[trend.cause]}.` : "";
   const gpus = prefillGpuCost(result), cache = result.costPerHour;
-  $("cost").textContent = usdPerHour(hourlyCost(result)) + " / h";
+  $("cost").textContent = totalHourly == null ? "Unpriced" : usdPerHour(totalHourly) + " / h";
   stats("cost-stats", [["Prefill GPUs", gpus == null ? "unpriced" : usdPerHour(gpus) + "/h"], ["Cache tiers", usdPerHour(cache) + "/h"]]);
+  const tokPerS = result.tpot > 0 ? Math.round(1 / result.tpot) : null;
   $("cost-detail").textContent = gpus == null
     ? `${$("gpu").selectedOptions[0].text} has no listed price, so GPUs are left out`
-    : `${result.prefillGpus} prefill GPUs at on-demand prices · ${result.decodeGpus} decode GPU${result.decodeGpus === 1 ? "" : "s"} (${usdPerHour(result.decodeCostPerHour)}/h) simulated for output timing and excluded`;
-  showPrices(pricesAt(result.tokenPrices, result.utilization, settings.priceAt));
-  const { tp, pp } = result.layout;
+    : `${result.prefillGpus} prefill GPUs at on-demand prices · ${result.decodeGpus} decode GPU${result.decodeGpus === 1 ? "" : "s"} (${usdPerHour(result.decodeCostPerHour)}/h) priced under Output tokens`;
+  lastDecodeSummary = tokPerS
+    ? `decode ${tokPerS} tok/s per user` + (result.decodeUtilization > 0 ? ` (${pctf(result.decodeUtilization, 0)} busy)` : "")
+    : "";
+  showPrices(pricesAt(result.tokenPrices, result.utilization, settings.priceAt, result.decodeUtilization), lastDecodeSummary);
   const sim = config.sim;
+  const decodeNote = $("decode-note");
+  if (result.specUnavailable) {
+    decodeNote.textContent = `${config.models[sim.model].name} ships no ${result.specUnavailable} head; running standard decode.`;
+    decodeNote.hidden = false;
+  } else if (tokPerS) {
+    const parts = [`${tokPerS} tok/s per user (${secs(result.tpot)}/tok · avg batch ${Math.round(result.decodeBatch ?? 1)})`];
+    if (result.specSpeedup > 1.01) parts.push(`${result.specSpeedup.toFixed(2)}× speculative speedup (${result.acceptedTokens.toFixed(2)} tok/step)`);
+    if (result.decodeEp) parts.push(`EP${result.decodeEp}`);
+    decodeNote.textContent = parts.join(" · ");
+    decodeNote.hidden = false;
+  } else decodeNote.hidden = true;
+  const { tp, pp } = result.layout;
   $("cluster-summary").textContent = `${config.models[sim.model].name} · ${PRECISION_LABELS[sim.precision]} · ${sim.nodes} nodes × ${sim.gpusPerNode} ${$("gpu").selectedOptions[0].text}`;
   $("layout").textContent = `${result.instances} prefill ${result.instances === 1 ? "instance" : "instances"} · ${tp} GPU${tp === 1 ? "" : "s"} per stage · ${pp} pipeline stage${pp === 1 ? "" : "s"} per instance`;
   kvPerInstanceGiB = result.gpuGiB / (settings.gpuBudget / 100);
@@ -375,8 +533,10 @@ function render(result) {
   const filled = result.firstEviction == null ? "GPU cache never full"
     : result.firstEviction < 0 ? "GPU cache full during warm-up" : `GPU cache full from minute ${Math.floor(result.firstEviction / 60) + 1}`;
   const hit = 1 - (result.share?.miss ?? 0);
+  const rateFact = activeTrace ? `${realized.toLocaleString("en-US")} req/min from trace` : `${realized.toLocaleString("en-US")} of ${settings.rate} req/min served`;
   $("run-facts").replaceChildren(...[`${pctf(hit, 0)} of prompt tokens from cache`, filled, `Prefill busy ${pctf(result.utilization, 0)}`,
-    `${realized.toLocaleString("en-US")} of ${settings.rate} req/min served`,
+    ...(tokPerS ? [`Decode ${tokPerS} tok/s`] : []),
+    rateFact,
     ...(sim.shared ? [`S3 requests ${usdPerHour(result.requestCostPerHour)}/h`] : [])].map(text => el("li", { text })));
   const cpuNote = cpuSizingNote(settings, result);
   $("cpu-note").hidden = !cpuNote;
@@ -398,7 +558,8 @@ function failed(message) {
   plot(null);
   $("cpu-note").hidden = true;
   $("trend-note").hidden = true;
-  showPrices(null);
+  $("decode-note").hidden = true;
+  showPrices(null, "");
   for (const id of ["bar", "legend", "run-facts", "ttft-stats", "cost-stats", "cost-detail", "ttft-detail", "ttft-change", "cost-change", "cluster-summary"]) $(id).replaceChildren();
   $("layout").textContent = message;
   showProgress(null);
@@ -410,7 +571,8 @@ function failed(message) {
 async function start() {
   const response = await fetch("./data/s1.json");
   if (!response.ok) throw new Error("Could not load benchmark data.");
-  config = defaultConfig(await response.json(), VARIANTS, GPUS, SOFTWARE, MODELS);
+  const s1Data = await response.json();
+  config = defaultConfig(s1Data, VARIANTS, GPUS, SOFTWARE, MODELS);
   const options = (id, pairs) => $(id).replaceChildren(...pairs.map(([value, label]) => new Option(label, value)));
   options("model", Object.entries(config.models).map(([id, m]) => [id, m.name]));
   options("precision", Object.entries(PRECISION_LABELS));
@@ -419,12 +581,24 @@ async function start() {
   options("nodes", counts(64));
   options("gpus-per-node", counts(8));
   options("interconnect", VARIANTS.filter(v => v.family === "p2p").map(v => [v.id, v.name]));
+  options("spec", SPEC_METHODS.filter(s => s.id !== "custom").map(s => [s.id, s.name]));
+  renderValidationChecks($("validation-checks"), s1Data, config);
   const priceHost = $("openrouter-input-prices");
-  showPrices = simulated => { simulatedPrices = simulated; showTokenPrices(priceHost, market, $("model").value, simulated); };
+  showPrices = (simulated, decodeSummary = lastDecodeSummary) => {
+    simulatedPrices = simulated;
+    showTokenPrices(priceHost, market, $("model").value, simulated, decodeSummary);
+  };
   loadOpenRouterPrices().then(snapshot => { market = snapshot; showPrices(simulatedPrices); });
   const initial = decodeSettings(location.hash);
   writeSettings(initial);
-  showScenario(readSettings());
+  syncWorkloadMode();
+  const current = readSettings();
+  if (location.hash) {
+    if (DEPLOY_KEYS.some(key => current[key] !== DEFAULT_SETTINGS[key])) document.querySelector("details.deployment").open = true;
+    if (EXTRA_KEYS.some(key => current[key] !== DEFAULT_SETTINGS[key])) $("detail-controls").closest("details").open = true;
+    if (DECODE_KEYS.some(key => current[key] !== DEFAULT_SETTINGS[key])) $("decode-details").open = true;
+  }
+  showScenario(current);
   schedule();
 }
 start().catch(error => failed(error.message));

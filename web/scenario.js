@@ -24,6 +24,10 @@ export function specFor(sim, model) {
 // Expert-parallel decode width for a model: a multiple of tp above it, for MoE models; null = the TP instance.
 export const epFor = (sim, model, tp) => (sim.decodeEp > tp && sim.decodeEp % tp === 0 && model.expert_share > 0 ? sim.decodeEp : null);
 
+// Dense non-MLA models cannot shard weights via data-parallel + expert-parallel attention across TP GPUs.
+const effectiveAttention = (rawModel, tp, requested) =>
+  tp > 1 && !(rawModel?.expert_share > 0) && !rawModel?.spec?.layers?.some((g) => g.type === "mla") ? "tp" : (requested ?? "tp");
+
 // The setup a scenario runs: tier choices may be overridden (the trade-off sweep does) without touching the config.
 // Returns {error} when the model does not fit the GPU.
 export function buildRun(c, over = {}, trace = null, maxSimNodes = MAX_SIM_NODES) {
@@ -31,14 +35,16 @@ export function buildRun(c, over = {}, trace = null, maxSimNodes = MAX_SIM_NODES
   const gpu = byId(c.gpus, sim.gpu) ?? c.gpus[0];
   const tp = sim.tp, pp = sim.pp ?? 1;
   const sw = c.software;
-  const m = served(c.models[sim.model], { gpu, precision: sim.precision, tp, attention: sim.attention ?? "tp" });
+  const rawModel = c.models[sim.model];
+  const attention = effectiveAttention(rawModel, tp, sim.attention);
+  const m = served(rawModel, { gpu, precision: sim.precision, tp, attention });
   const where = pp > 1 ? `TP=${tp} across ${pp} nodes` : `TP=${tp}`;
   if (sim.nodes % pp) return { error: `${sim.nodes} nodes do not split into instances of ${pp} nodes` };
   const kv = gpuKvGiB(m, gpu, sw, tp, pp);
   if (kv <= 0) return { error: `${sim.model} does not fit ${gpu.name} at ${where}` };
   const decodeGpu = byId(c.gpus, sim.decodeGpu) ?? gpu;
-  const decodeModel = decodeGpu.id === gpu.id ? m : served(c.models[sim.model], {
-    gpu: decodeGpu, precision: sim.precision, tp, attention: sim.attention ?? "tp",
+  const decodeModel = decodeGpu.id === gpu.id ? m : served(rawModel, {
+    gpu: decodeGpu, precision: sim.precision, tp, attention,
   });
   if (sim.decode && m.kv_layout === "deepseek-v41" && m.kv_bytes_per_token !== decodeModel.kv_bytes_per_token)
     return { error: "DeepSeek V4.1 requires matching KV record formats on the prefill and decode GPUs." };
@@ -47,8 +53,8 @@ export function buildRun(c, over = {}, trace = null, maxSimNodes = MAX_SIM_NODES
     return { error: `${sim.model} does not fit the decode GPU ${decodeGpu.name} at ${ep ? `TP=${tp}, experts over ${ep} GPUs` : where}` };
   const sp = sim.decode ? specFor(sim, c.models[sim.model]) : { spec: null };
   // whole instances: a multiple of pp nodes
-  const simNodes = trace ? sim.nodes : Math.min(sim.nodes, Math.max(pp, Math.floor(maxSimNodes / pp) * pp));
-  const w = trace ?? synthetic({ ...c.workload, requestsPerMin: (c.workload.requestsPerMin * simNodes) / sim.nodes });
+  const simNodes = trace && !trace.syntheticScaled ? sim.nodes : Math.min(sim.nodes, Math.max(pp, Math.floor(maxSimNodes / pp) * pp));
+  const w = trace ? (trace.syntheticScaled ? trace.workload : trace) : synthetic({ ...c.workload, requestsPerMin: (c.workload.requestsPerMin * simNodes) / sim.nodes });
   const disk = byId(c.variants, sim.disk);
   const shared = byId(c.variants, sim.shared);
   if (shared && shared.family !== "obj")
@@ -60,14 +66,15 @@ export function buildRun(c, over = {}, trace = null, maxSimNodes = MAX_SIM_NODES
     stageLink: pp > 1 ? byId(c.variants, sim.stageLink) : null,
     physicalKvGiB: kv, gpuGiB: gpuBudget, cpuGiB: sim.cpuGiB,
     disk: disk && sim.diskCapacityGiB != null ? { ...disk, capacity_gib: sim.diskCapacityGiB } : disk,
-    p2p: simNodes > pp && sim.cpuGiB > 0 ? byId(c.variants, sim.p2p) : null, shared,
-    durationMin: trace ? undefined : c.workload.durationMin, routing: sim.routing, peerFirst: sim.peerFirst, saveDecode: sim.saveDecode,
+    p2p: simNodes > pp && sim.cpuGiB > 0 ? byId(c.variants, sim.p2p) : null,
+    shared: shared && sim.sharedCapacityGiB != null ? { ...shared, capacity_gib: sim.sharedCapacityGiB } : shared,
+    durationMin: trace && !trace.syntheticScaled ? undefined : c.workload.durationMin, routing: sim.routing, peerFirst: sim.peerFirst, saveDecode: sim.saveDecode,
     // The v0.5.7 MLA-only connector stores one copy per pipeline stage.
     // Each TP rank still consumes GPU memory for its own replicated KV.
-    externalCopiesPerGpuCopy: m.kv_layout === "deepseek-v41" && sim.attention === "tp" ? 1 / tp : 1,
-    objectRanks: (sim.attention === "dp" || m.kv_layout === "deepseek-v41" ? 1 : tp) * pp,
+    externalCopiesPerGpuCopy: m.kv_layout === "deepseek-v41" && attention === "tp" ? 1 / tp : 1,
+    objectRanks: (attention === "dp" || m.kv_layout === "deepseek-v41" ? 1 : tp) * pp,
     seed: 7, warmupS: (sim.warmupMin ?? 0) * 60, retentionH: sim.retentionH, simBlockTokens: sim.simBlockTokens,
-    prefillBatchTokens: sim.prefillBatchTokens ?? null, cacheLifetimeS: sim.cacheLifetimeS ?? null, minCacheTokens: sim.minCacheTokens ?? 0,
+    prefillBatchTokens: sim.prefillBatchTokens ?? null, cacheLifetimeS: sim.cacheLifetimeS ?? null, sharedLifetimeS: sim.sharedLifetimeS ?? null, minCacheTokens: sim.minCacheTokens ?? 0,
     decode: sim.decode ? {
       model: decodeModel, gpu: decodeGpu, batch: sim.decodeBatch, pooled: !!sim.decodePooled, speed: sim.decodeSpeed ?? null,
       spec: sp.spec, ep, overlap: !!sim.decodeOverlap,
@@ -81,11 +88,12 @@ export function buildRun(c, over = {}, trace = null, maxSimNodes = MAX_SIM_NODES
 // The fewest nodes per instance (pipeline stages), then the smallest TP, that hold `modelId` on `gpu` (TP 8 when it
 // spans nodes). With a fixed inventory, consider only layouts that divide those nodes and GPUs evenly.
 export function fitFor(c, modelId, gpu, attention = c.sim.attention ?? "tp", precision = c.sim.precision, inventory = null, context = 0) {
+  const rawModel = c.models[modelId];
   for (let pp = 1; pp <= 8; pp++) for (const tp of [1, 2, 4, 8]) {
     if (inventory) {
       if (inventory.nodes % pp || inventory.gpusPerNode % tp) continue;
     } else if (pp > 1 && tp !== 8) continue;
-    const model = served(c.models[modelId], { gpu, precision, tp, attention });
+    const model = served(rawModel, { gpu, precision, tp, attention: effectiveAttention(rawModel, tp, attention) });
     const available = gpuKvGiB(model, gpu, c.software, tp, pp) * GIB;
     if (available > 0 && (!context || perSeqBytes(model, context) <= available)) return { tp, pp };
   }

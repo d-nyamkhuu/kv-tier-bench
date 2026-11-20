@@ -15,8 +15,21 @@ function readerStats(samples) {
   return stats;
 }
 
+// Normalize an imported trace so timestamps start at 0, and clamp warm-up if the trace is shorter than warm-up.
+export function prepareTrace(trace, warmupMin = 0) {
+  if (!trace) return null;
+  const reqs = trace.requests ?? [];
+  if (!reqs.length) return { trace, warmupMin: 0, totalMin: 1 };
+  const t0 = reqs[0].t ?? 0;
+  const shifted = t0 === 0 ? trace : { ...trace, requests: reqs.map(r => ({ ...r, t: r.t - t0 })) };
+  const spanS = Math.max(0, (shifted.requests.at(-1)?.t ?? 0));
+  const totalMin = Math.max(1, Math.floor(spanS / 60) + 1);
+  const effWarmup = warmupMin * 60 >= spanS * 0.8 ? 0 : warmupMin;
+  return { trace: shifted, warmupMin: effWarmup, totalMin };
+}
+
 // onProgress(fraction) reports the share of simulated minutes done (warm-up included), below 1 until the run returns.
-export function replay(config, budgetFraction = config.sim.gpuBudgetFraction ?? 1, { onProgress } = {}) {
+export function replay(config, budgetFraction = config.sim.gpuBudgetFraction ?? 1, { onProgress, trace = null } = {}) {
   const sim = config.sim;
   const gpu = config.gpus.find(g => g.id === sim.gpu);
   const layout = context => fitFor(config, sim.model, gpu, sim.attention, sim.precision, sim, context);
@@ -28,8 +41,9 @@ export function replay(config, budgetFraction = config.sim.gpuBudgetFraction ?? 
       : "Choose a GPU with more memory or a smaller model.";
     throw new Error(`${config.models[sim.model].name} does not fit this cluster. ${advice}`);
   }
+  const prepared = prepareTrace(trace, config.sim.warmupMin ?? 0);
   for (;;) {
-    const result = replayLayout(config, fit, budgetFraction, onProgress);
+    const result = replayLayout(config, fit, budgetFraction, onProgress, prepared);
     if (!result.error) return result;
     const next = result.requiredContext && layout(result.requiredContext);
     if (!next || next.pp < fit.pp || (next.pp === fit.pp && next.tp <= fit.tp)) throw new Error(result.error);
@@ -37,9 +51,11 @@ export function replay(config, budgetFraction = config.sim.gpuBudgetFraction ?? 
   }
 }
 
-function replayLayout(config, fit, budgetFraction, onProgress) {
-  const warmupS = (config.sim.warmupMin ?? 0) * 60, skip = Math.round(warmupS / 60);
-  const minutes = Array.from({ length: config.workload.durationMin - skip }, () => ({
+function replayLayout(config, fit, budgetFraction, onProgress, prepared = null) {
+  const skip = prepared ? prepared.warmupMin : Math.round(((config.sim.warmupMin ?? 0) * 60) / 60);
+  const warmupS = skip * 60;
+  const totalMin = prepared ? prepared.totalMin : config.workload.durationMin;
+  const minutes = Array.from({ length: Math.max(1, totalMin - skip) }, () => ({
     count: 0, seconds: 0, loads: 0, waits: 0, transfers: 0, backingTokens: 0, peerBytes: 0, promptTokens: 0, reads: {}, readerSeconds: {}, samples: {},
   }));
   const runSamples = {};
@@ -48,7 +64,8 @@ function replayLayout(config, fit, budgetFraction, onProgress) {
   // Tier depth order (shallowest to deepest) for attributing a request's end-to-end TTFT to its bottleneck tier.
   const tierRank = ["gpu", "cpu", "disk", ...(config.sim.peerFirst ? ["p2p", "shared"] : ["shared", "p2p"])];
   function observeRequest(req, ttft, blocks, blockSize, loads, wait, transfer, peerBytes, readBytes) {
-    const minute = minutes[Math.floor((req.t - warmupS) / 60)];
+    const bucket = Math.min(minutes.length - 1, Math.max(0, Math.floor((req.t - warmupS) / 60)));
+    const minute = minutes[bucket];
     minute.count++;
     minute.seconds += ttft;
     minute.peerBytes += peerBytes;
@@ -72,7 +89,7 @@ function replayLayout(config, fit, budgetFraction, onProgress) {
     }
   }
   function observeMinuteEnd(index, snapshot) {
-    onProgress?.(Math.min(0.99, (index + 1) / (config.workload.durationMin || 1)));
+    onProgress?.(Math.min(0.99, (index + 1) / (totalMin || 1)));
     const usedGiB = {};
     for (const [tier, state] of Object.entries(snapshot)) {
       tiers[tier] = state.capacityGiB;
@@ -82,9 +99,10 @@ function replayLayout(config, fit, budgetFraction, onProgress) {
       if (index === skip - 1) initialUsedGiB = usedGiB;
       return;
     }
-    minutes[index - skip].usedGiB = usedGiB;
+    if (index - skip < minutes.length) minutes[index - skip].usedGiB = usedGiB;
   }
-  const result = runScenario(config, { ...fit, gpuBudgetFraction: budgetFraction }, null, {
+  const over = { ...fit, gpuBudgetFraction: budgetFraction, ...(prepared ? { warmupMin: skip } : {}) };
+  const result = runScenario(config, over, prepared?.trace ?? null, {
     maxSimNodes: config.sim.nodes, observeRequest, observeMinuteEnd,
   });
   if (result.error) return result;
@@ -98,7 +116,9 @@ function replayLayout(config, fit, budgetFraction, onProgress) {
     firstPayloadReadS: Object.fromEntries(Object.entries(result.firstPayloadReadS).map(([key, time]) => [key, shift(time)])),
     layout: fit, instances: result.instances, gpuGiB: result.kvGiB, kvBytesPerToken: result.kvBytesPerToken, order: result.order,
     mean: result.ttft.mean, ttft: result.ttft, wait: result.wait, share: result.share, utilization: result.utilization,
-    firstEviction: shift(result.firstGpuEvictionS), firstDiskEviction: shift(result.firstDiskEvictionS),
+    decodeUtilization: result.decodeUtilization ?? 0, tpot: result.tpot, decodeBatch: result.decodeBatch,
+    acceptedTokens: result.acceptedTokens, specSpeedup: result.specSpeedup, specUnavailable: result.specUnavailable, decodeEp: result.decodeEp,
+    firstEviction: shift(result.firstGpuEvictionS), firstDiskEviction: shift(result.firstDiskEvictionS), firstSharedEviction: shift(result.firstSharedEvictionS),
     windowBytes: result.windowBytes, replayTokens: result.replayTokens, blockTokens: result.blockTokens,
     s3Requests: result.s3Requests, requestCostPerHour: perHour(result.requestUsd),
     costPerHour: perHour(storage + fixed), tiers,

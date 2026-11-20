@@ -16,7 +16,7 @@ function niceMax(value) {
 
 // Every track uses the same minute-end x coordinates. Occupancy starts at zero;
 // the latency line starts at the first minute with requests and breaks at idle minutes.
-function drawTrack(track, selected) {
+function drawTrack(track, selected, hovered = -1) {
   const { canvas, values, max, unit, color, firstRead, occupancy } = track;
   const width = canvas.clientWidth, height = canvas.clientHeight, ratio = devicePixelRatio || 1;
   if (!width || !height) return;
@@ -64,6 +64,11 @@ function drawTrack(track, selected) {
     if (values[i] != null && values[i-1] == null && values[i+1] == null) dot(i, 2);
   }
   if (firstRead >= 0) dot(firstRead, 4, true);
+  if (hovered >= 0 && hovered !== selected) {
+    ctx.strokeStyle = "rgba(18, 71, 238, 0.35)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x(hovered + 1), top); ctx.lineTo(x(hovered + 1), bottom); ctx.stroke();
+    dot(hovered, 2.8, true);
+  }
   ctx.strokeStyle = "#788599"; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
   ctx.beginPath(); ctx.moveTo(x(selected + 1), top); ctx.lineTo(x(selected + 1), bottom); ctx.stroke();
   ctx.setLineDash([]); dot(selected, 3);
@@ -81,8 +86,17 @@ export function timeline() {
   const slider = $("inspect-minute"), chart = $("chart"), container = $("tier-tracks");
   const scope = $("reader-scope"), events = $("read-events");
   // selected starts unset; the first replay opens on its last minute, where occupancy is highest.
-  let minutes = [], tracks = [], selected = -1, runStats = {};
-  const resize = new ResizeObserver(() => tracks.forEach(track => drawTrack(track, selected)));
+  let minutes = [], tracks = [], selected = -1, hovered = -1, runStats = {};
+  const tooltip = el("div", { class: "chart-tooltip", hidden: true });
+  document.body.append(tooltip);
+  const hideTooltip = () => {
+    if (hovered < 0 && tooltip.hidden) return;
+    hovered = -1;
+    tooltip.hidden = true;
+    tracks.forEach(t => drawTrack(t, selected, hovered));
+  };
+  window.addEventListener("scroll", hideTooltip, { passive: true });
+  const resize = new ResizeObserver(() => tracks.forEach(track => drawTrack(track, selected, hovered)));
 
   function showReaders() {
     const stats = scope.value === "replay" ? runStats : minutes[selected]?.readerStats;
@@ -110,7 +124,7 @@ export function timeline() {
       ? m.count + " requests · " + secs(m.load) + " loading cache · " + secs(m.transfer) + " transferring KV to decode · " + secs(m.wait) + " queueing per request"
       : "No requests arrived in this minute.";
     for (const track of tracks) {
-      drawTrack(track, selected);
+      drawTrack(track, selected, hovered);
       if (!track.key) continue;
       const readers = m.reads[track.key] ?? 0;
       if (track.key === "p2p") {
@@ -126,17 +140,60 @@ export function timeline() {
       track.reads.textContent = readers ? summary + peerVolume + " · " + secs(m.readerStats[track.key]?.medianTTFT) + " median TTFT for those requests" : summary;
     }
   }
+  function showTooltip(track, index, clientX, clientY) {
+    const m = minutes[index];
+    if (!m) return;
+    let title, detail;
+    if (!track.key) {
+      title = `Minute ${index + 1} · ${m.count ? secs(m.mean) + " avg TTFT" : "Idle"}`;
+      detail = m.count ? `${m.count} reqs · ${secs(m.load)} load · ${secs(m.transfer)} xfer · ${secs(m.wait)} queue` : "No requests arrived";
+    } else {
+      const { name } = tierStyles[track.key];
+      const readers = m.reads[track.key] ?? 0;
+      title = `Minute ${index + 1} · ${name}`;
+      if (track.key === "p2p") {
+        const share = m.count ? pctf(readers / m.count, 1) : "0%";
+        detail = `${share} (${readers} reqs)` + (readers ? ` · ${secs(m.readerStats.p2p?.medianTTFT)} median TTFT` : "");
+      } else {
+        const used = m.usedGiB[track.key], cap = track.capacity;
+        const occ = cap == null ? `${fmt(used)} GiB` : `${fmt(used)} / ${fmt(cap)} GiB (${pctf(used / cap, 1)})`;
+        detail = `${occ} · ${readers} reader${readers === 1 ? "" : "s"}` + (readers ? ` · ${secs(m.readerStats[track.key]?.medianTTFT)} median` : "");
+      }
+    }
+    tooltip.replaceChildren(el("strong", { text: title }), el("span", { text: detail }));
+    tooltip.hidden = false;
+    const pad = 12, w = tooltip.offsetWidth || 220, h = tooltip.offsetHeight || 48;
+    const leftPx = Math.min(window.innerWidth - w - pad, Math.max(pad, clientX - w / 2));
+    const topPx = clientY - h - 14 >= pad ? clientY - h - 14 : clientY + 18;
+    tooltip.style.left = `${leftPx}px`;
+    tooltip.style.top = `${topPx}px`;
+  }
+
   function addTrack(track) {
     tracks.push(track);
     resize.observe(track.canvas);
-    const pick = e => {
+    const minuteAt = e => {
       const box = track.canvas.getBoundingClientRect();
-      const minute = Math.round((e.clientX - box.left - left) / (box.width - left - right) * minutes.length);
-      inspect(minute - 1);
+      const raw = Math.round((e.clientX - box.left - left) / (box.width - left - right) * minutes.length) - 1;
+      return Math.max(0, Math.min(minutes.length - 1, raw));
     };
-    // Selection follows a press or drag, not a passing pointer, so the reader table stays put while scrolling.
-    track.canvas.onpointermove = e => { if (e.buttons) pick(e); };
-    track.canvas.onpointerdown = pick;
+    track.canvas.onpointermove = e => {
+      if (!minutes.length) return;
+      const idx = minuteAt(e);
+      if (e.buttons) inspect(idx);
+      if (e.pointerType !== "touch") {
+        if (hovered !== idx) {
+          hovered = idx;
+          tracks.forEach(t => drawTrack(t, selected, hovered));
+        }
+        showTooltip(track, idx, e.clientX, e.clientY);
+      }
+    };
+    track.canvas.onpointerdown = e => {
+      if (!minutes.length) return;
+      inspect(minuteAt(e));
+    };
+    track.canvas.onpointerleave = hideTooltip;
     track.canvas.onkeydown = e => {
       if (!["ArrowLeft", "ArrowRight"].includes(e.key)) return;
       e.preventDefault(); inspect(selected + (e.key === "ArrowLeft" ? -1 : 1));
@@ -164,6 +221,8 @@ export function timeline() {
     $("reader-rows").replaceChildren();
     minutes = result?.minutes ?? [];
     tracks = [];
+    hovered = -1;
+    tooltip.hidden = true;
     runStats = result?.readerStats ?? {};
     $("reader-summary").hidden = !minutes.length;
     slider.disabled = !minutes.length;
@@ -219,6 +278,12 @@ export function timeline() {
         eviction = result.firstDiskEviction == null ? el("span", { text: "No SSD evictions" })
           : minute < 0 ? el("span", { text: "SSD evictions began during warm-up" })
           : el("button", { type: "button", text: "First SSD eviction · min " + (minute + 1),
+            onclick: () => inspect(minute) });
+      } else if (key === "shared" && capacity != null) {
+        const minute = Math.floor(result.firstSharedEviction / 60);
+        eviction = result.firstSharedEviction == null ? el("span", { text: "No S3 cap evictions" })
+          : minute < 0 ? el("span", { text: "S3 cap evictions began during warm-up" })
+          : el("button", { type: "button", text: "First S3 cap eviction · min " + (minute + 1),
             onclick: () => inspect(minute) });
       }
       let note;

@@ -3,9 +3,10 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { defaultConfig } from "../config.js";
 import { GPUS, MODELS, SOFTWARE, VARIANTS } from "../presets.js";
-import { replay } from "../replay.js";
+import { prepareTrace, replay } from "../replay.js";
 import { compareTiers } from "../tier-comparison.js";
 import { runScenario } from "../scenario.js";
+import { parseTrace } from "../sim.js";
 
 const s1 = JSON.parse(readFileSync(new URL("../data/s1.json", import.meta.url)));
 const setup = () => {
@@ -269,7 +270,11 @@ test("tier rows report the median TTFT of requests reading that tier and on-dema
   Object.assign(c.workload, { durationMin: 2 });
   Object.assign(c.sim, { nodes: 12, disk: "fs-nvme-gen4", diskCapacityGiB: 4, shared: null, p2p: null });
   const result = replay(c, 0.1);
-  const rows = compareTiers(c, result.layout, 0.1);
+  const progress = [];
+  const rows = compareTiers(c, result.layout, 0.1, { onRow: (partial, done, total) => progress.push([partial.length, done, total]) });
+  assert.equal(progress.length, rows.length);
+  assert.deepEqual(progress[0], [1, 1, rows.length]);
+  assert.deepEqual(progress.at(-1), [rows.length, rows.length, rows.length]);
   const ssd = rows.find(row => row.name === "NVMe Gen4");
   assert.equal(ssd.mean, result.mean, "the SSD row replays the live setup");
   assert.equal(ssd.readers, result.readerStats.disk?.count ?? 0);
@@ -313,4 +318,26 @@ test("prompts shorter than the minimum cached length are neither looked up nor s
   assert.ok(runScenario(c).share.miss < 0.5);
   c.sim.minCacheTokens = 4096;
   assert.equal(runScenario(c).share.miss, 1);
+});
+
+test("replay and compareTiers support imported JSONL traces with non-zero start timestamps and short spans", () => {
+  const raw = [
+    { timestamp: 600_000, input_length: 1024, output_length: 128, hash_ids: [10, 11] },
+    { timestamp: 630_000, input_length: 1536, output_length: 128, hash_ids: [10, 11, 12] },
+    { timestamp: 720_000, input_length: 2048, output_length: 128, hash_ids: [10, 11, 12, 13] },
+  ].map(x => JSON.stringify(x)).join("\n");
+  const trace = parseTrace(raw, 512, "unit-trace");
+  // Short 2-minute trace clamps a 20-minute warm-up to 0 so all arrivals are measured.
+  const prep = prepareTrace(trace, 20);
+  assert.equal(prep.warmupMin, 0);
+  assert.equal(prep.trace.requests[0].t, 0);
+  assert.equal(prep.totalMin, 3);
+  const c = setup();
+  c.sim.warmupMin = 20;
+  const r = replay(c, 1, { trace });
+  assert.equal(r.requests, 3);
+  assert.ok(r.share.gpu > 0 || r.share.cpu > 0 || r.share.shared > 0);
+  assert.ok(r.tpot > 0 && r.decodeUtilization >= 0);
+  const rows = compareTiers(c, r.layout, 1, { trace });
+  assert.ok(rows.find(row => row.name === "GPU only").requests === 3);
 });

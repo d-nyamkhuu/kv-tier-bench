@@ -36,6 +36,7 @@ export function deriveArch(spec) {
   const B = spec.kv_dtype_bytes ?? 2;
   const tps = [1, 2, 4, 8];
   const perTok = Object.fromEntries(tps.map((tp) => [tp, 0]));
+  const fixedKvByTp = Object.fromEntries(tps.map((tp) => [tp, 0]));
   const winByTp = Object.fromEntries(tps.map((tp) => [tp, 0]));
   let linearBytes = 0, maxSwaWindow = 0, quad = 0, quadLayers = 0, linearLayers = 0;
   const windows = [];
@@ -48,11 +49,19 @@ export function deriveArch(spec) {
     const kvDims = (x) => x.k_dim + (x.k_eq_v ? 0 : x.v_dim);
     if (g.type === "full") {
       const own = g.stores === false ? 0 : 1;
-      for (const tp of tps) perTok[tp] += g.count * (own * Math.max(1, Math.floor(g.kv_heads / tp)) * tp * kvDims(g) * B + (g.index_bytes ?? 0) * tp);
+      for (const tp of tps) {
+        const idx = g.count * (g.index_bytes ?? 0) * tp;
+        perTok[tp] += g.count * own * Math.max(1, Math.floor(g.kv_heads / tp)) * tp * kvDims(g) * B + idx;
+        if (g.index_fp8) fixedKvByTp[tp] += idx;
+      }
       attend(g, (g.q_heads * (g.k_dim + g.v_dim)) / 2);
     } else if (g.type === "mla") {
       const own = g.stores === false ? 0 : 1;
-      for (const tp of tps) perTok[tp] += g.count * (own * (g.latent + g.rope) * B + (g.index_bytes ?? 0)) * tp;
+      for (const tp of tps) {
+        const idx = g.count * (g.index_bytes ?? 0) * tp;
+        perTok[tp] += g.count * own * (g.latent + g.rope) * B * tp + idx;
+        if (g.index_fp8) fixedKvByTp[tp] += idx;
+      }
       attend(g, (g.q_heads * (g.qk_dim + g.v_dim)) / 2);
     } else if (g.type === "swa") {
       for (const tp of tps) winByTp[tp] += g.count * Math.max(1, Math.floor(g.kv_heads / tp)) * tp * kvDims(g) * B * g.window;
@@ -77,6 +86,7 @@ export function deriveArch(spec) {
     attn_windows: windows,
     kv_bytes_per_token: perTok[1],
     kv_bytes_per_token_by_tp: perTok,
+    ...(fixedKvByTp[1] > 0 ? { fixed_kv_bytes_per_token: fixedKvByTp[1], fixed_kv_bytes_per_token_by_tp: fixedKvByTp } : {}),
     // Total live per-sequence fixed state (linear recurrent state + sliding-window KV), for GPU memory & decode.
     state_bytes_per_prefix: linearBytes + windowBytes,
     // Only hybrid linear-attention layers carry an opaque recurrent-state checkpoint on prefix reads.
@@ -382,13 +392,16 @@ export function withPrecision(m, precision = "released") {
   if (!p) return m;
   const weights = Math.min(m.weights_bytes, ((m.total_params ?? m.params) * p.bits) / 8);
   const kvScale = (m.kv_dtype_bytes ?? 2) > 1 ? 1 / (m.kv_dtype_bytes ?? 2) : 1; // to 1 byte per value
+  const scaleKv = (total, fixed = 0) => fixed + (total - fixed) * kvScale;
+  const fixed1 = m.fixed_kv_bytes_per_token ?? 0;
   const win = (m.state_window_bytes ?? 0) * (1 - kvScale);
   const order = { bf16: 0, fp8: 1, fp4: 2 };
   return {
     ...m, weights_bytes: weights,
     compute_dtype: order[p.compute] > order[m.compute_dtype ?? "bf16"] ? p.compute : m.compute_dtype ?? "bf16",
-    kv_bytes_per_token: m.kv_bytes_per_token * kvScale,
-    kv_bytes_per_token_by_tp: m.kv_bytes_per_token_by_tp && Object.fromEntries(Object.entries(m.kv_bytes_per_token_by_tp).map(([k, v]) => [k, v * kvScale])),
+    kv_bytes_per_token: scaleKv(m.kv_bytes_per_token, fixed1),
+    kv_bytes_per_token_by_tp: m.kv_bytes_per_token_by_tp && Object.fromEntries(
+      Object.entries(m.kv_bytes_per_token_by_tp).map(([k, v]) => [k, scaleKv(v, m.fixed_kv_bytes_per_token_by_tp?.[k] ?? fixed1)])),
     state_bytes_per_prefix: m.state_bytes_per_prefix - win,
     read_fixed_bytes: Math.max(0, m.read_fixed_bytes - (m.hybrid ? 0 : win)),
     state_window_bytes: (m.state_window_bytes ?? 0) * kvScale,

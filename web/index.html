@@ -44,11 +44,34 @@
       <p id="cluster-summary" class="cluster-summary"></p>
       <p id="fit-note" class="fit-note" role="status" hidden></p>
       <section><h2>Workload</h2>
-        <label class="select-field" for="hours">Measured period</label>
-        <select id="hours"><option value="1">1 hour</option><option value="2">2 hours</option><option value="3">3 hours</option></select>
-        <div id="workload-controls"></div>
-        <label class="select-field" for="pattern">Arrival pattern</label>
-        <select id="pattern"><option value="steady">Steady (random arrivals)</option><option value="bursty">Bursty (2× for 2 min of every 6)</option></select>
+        <label class="select-field" for="workload-source">Traffic source</label>
+        <select id="workload-source">
+          <option value="synthetic">Synthetic chat traffic</option>
+          <option value="mc:0">Mooncake · Conversation trace (12k reqs)</option>
+          <option value="mc:1">Mooncake · Tool &amp; coding agent (23.6k reqs)</option>
+          <option value="mc:2">Mooncake · Synthetic trace (4k reqs)</option>
+          <option value="mc:3">Mooncake · arXiv trace (23.6k reqs)</option>
+          <option value="upload">Upload custom JSONL / JSON trace…</option>
+        </select>
+        <div id="trace-upload" hidden>
+          <label class="select-field" for="trace-file">Trace file (JSONL or JSON)</label>
+          <input type="file" id="trace-file" accept=".jsonl,.json,application/json,text/plain">
+          <label class="select-field" for="trace-block">Tokens per hash ID</label>
+          <select id="trace-block">
+            <option value="512" selected>512 tokens (Mooncake)</option>
+            <option value="256">256 tokens (LMCache)</option>
+            <option value="64">64 tokens (vLLM)</option>
+            <option value="16">16 tokens</option>
+          </select>
+        </div>
+        <p id="trace-note" class="chart-note" hidden></p>
+        <div id="synthetic-controls">
+          <label class="select-field" for="hours">Measured period</label>
+          <select id="hours"><option value="1">1 hour</option><option value="2">2 hours</option><option value="3">3 hours</option></select>
+          <div id="workload-controls"></div>
+          <label class="select-field" for="pattern">Arrival pattern</label>
+          <select id="pattern"><option value="steady">Steady (random arrivals)</option><option value="bursty">Bursty (2× for 2 min of every 6)</option></select>
+        </div>
         <label class="select-field" for="routing">Request routing</label>
         <select id="routing"><option value="round-robin">Round-robin across nodes</option><option value="sticky">Keep each chat on one instance</option><option value="random">Random instance per request</option></select>
       </section>
@@ -66,6 +89,17 @@
           <option value="obj-aws-s3-express">S3 Express</option>
           <option value="">Off</option>
         </select>
+        <div id="s3-controls">
+          <div id="s3-size-host"></div>
+          <label class="select-field" for="s3-ttl">S3 object retention</label>
+          <select id="s3-ttl">
+            <option value="15">15 minutes</option>
+            <option value="60">1 hour</option>
+            <option value="360">6 hours</option>
+            <option value="1440">24 hours (S3 lifecycle min)</option>
+            <option value="0">No time limit</option>
+          </select>
+        </div>
         <label class="select-field" for="lifetime">Cache lifetime</label>
         <select id="lifetime"><option value="0">Until evicted (vLLM, LMCache)</option><option value="60">1 hour unused</option><option value="5">5 minutes unused (hosted API default)</option></select>
       </section>
@@ -73,12 +107,41 @@
         <label class="select-field" for="price-at">Price tokens at</label>
         <select id="price-at"><option value="0.6">60% prefill busy (like a provider)</option><option value="0.4">40% prefill busy</option><option value="0.8">80% prefill busy</option><option value="actual">This replay's load</option></select>
       </section>
+      <details id="decode-details" class="extra decode-controls"><summary>Decode and speculative drafters</summary>
+        <label class="select-field" for="spec">Speculative decoding</label>
+        <select id="spec"></select>
+        <label class="select-field" for="decode-ep">Expert-parallel decode (MoE)</label>
+        <select id="decode-ep">
+          <option value="0">Off · match TP instance</option>
+          <option value="16">16 GPUs</option>
+          <option value="32">32 GPUs</option>
+          <option value="64">64 GPUs</option>
+          <option value="144">144 GPUs (DeepSeek wide-EP)</option>
+        </select>
+        <label class="select-field" for="decode-overlap">Two-batch comm overlap</label>
+        <select id="decode-overlap">
+          <option value="off">Off</option>
+          <option value="on">On (hide EP all-to-all)</option>
+        </select>
+        <label class="select-field" for="decode-speed">Min per-user output speed</label>
+        <select id="decode-speed">
+          <option value="0">No floor (max batch)</option>
+          <option value="30">30 tok/s per user</option>
+          <option value="50">50 tok/s per user</option>
+          <option value="80">80 tok/s per user</option>
+          <option value="100">100 tok/s per user</option>
+          <option value="150">150 tok/s per user</option>
+        </select>
+        <p id="decode-note" class="chart-note" hidden></p>
+      </details>
       <details class="extra"><summary>More workload and cache settings</summary>
         <label class="select-field" for="start">Measure from</label>
         <select id="start"><option value="warm">Warmed-up caches (after 20 min)</option><option value="cold">Empty caches (cold start)</option></select>
-        <label class="select-field" for="spread">Message and reply lengths</label>
-        <select id="spread"><option value="fixed">Fixed at the set lengths</option><option value="moderate">Varied around them (moderate)</option><option value="long">Long-tailed (a few very long)</option></select>
-        <div id="detail-controls"></div>
+        <div id="synthetic-extra">
+          <label class="select-field" for="spread">Message and reply lengths</label>
+          <select id="spread"><option value="fixed">Fixed at the set lengths</option><option value="moderate">Varied around them (moderate)</option><option value="long">Long-tailed (a few very long)</option></select>
+          <div id="detail-controls"></div>
+        </div>
         <div id="memory-controls"></div>
         <label class="select-field" for="min-cache">Shortest cached prompt</label>
         <select id="min-cache"><option value="0">Any full block (vLLM, LMCache)</option><option value="1024">1,024 tokens (OpenAI)</option><option value="4096">4,096 tokens (some Anthropic models)</option></select>
@@ -100,7 +163,7 @@
           <dl id="cost-stats" class="stats"></dl><p id="cost-detail" class="metric-note">Prefill GPUs and cache tiers</p></section>
       </div>
       <section class="price-compare" aria-labelledby="price-heading">
-        <h2 id="price-heading">Price per 1M input tokens: this setup against OpenRouter</h2>
+        <h2 id="price-heading">Price per 1M tokens: this setup against OpenRouter</h2>
         <div id="openrouter-input-prices" aria-live="polite">Waiting for the replay…</div>
       </section>
       <p id="status" role="status" class="busy">Simulating…</p>
@@ -144,6 +207,17 @@
           <thead><tr><th scope="col">Cache option</th><th scope="col">Median TTFT of requests reading it</th><th scope="col">USD / GiB-month</th></tr></thead>
           <tbody></tbody>
         </table>
+      </section>
+      <section class="validation" aria-labelledby="validation-title">
+        <details id="validation-details">
+          <summary id="validation-title">Sources, assumptions and benchmark validation</summary>
+          <div class="validation-body">
+            <h3>Active setup sources &amp; assumptions</h3>
+            <div id="active-sources" class="source-grid"></div>
+            <h3>Formula validation against published benchmarks &amp; cloud runs</h3>
+            <div id="validation-checks"></div>
+          </div>
+        </details>
       </section>
     </article>
   </div>
