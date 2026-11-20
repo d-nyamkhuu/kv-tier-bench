@@ -1,5 +1,11 @@
 # kv-tier-bench
 
+[![CI](https://github.com/d-nyamkhuu/kv-tier-bench/actions/workflows/ci.yml/badge.svg)](https://github.com/d-nyamkhuu/kv-tier-bench/actions/workflows/ci.yml)
+[![Simulator](https://github.com/d-nyamkhuu/kv-tier-bench/actions/workflows/pages.yml/badge.svg)](https://d-nyamkhuu.github.io/kv-tier-bench/)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
+**[Live Interactive Simulator →](https://d-nyamkhuu.github.io/kv-tier-bench/)** · **[Full Benchmark Report →](docs/report.md)** · **[Experiment Plan & Runbook →](docs/plan.md)**
+
 **When GPU memory fills up during LLM serving, is it faster and cheaper to reload a cached KV prefix from a slower tier — or just recompute the prompt?**
 
 In multi-turn chat, coding agents, and shared-prompt APIs, **50–95% of input tokens are repeated prefixes**. Once active conversations outgrow GPU HBM, an inference engine like **vLLM** has to either recompute evicted prefixes from scratch or offload KV blocks to cheaper tiers: **host CPU RAM, local/network SSD, Object Storage (S3), peer GPU VM memory, or a dedicated CPU KV-store node**.
@@ -7,7 +13,7 @@ In multi-turn chat, coding agents, and shared-prompt APIs, **50–95% of input t
 `kv-tier-bench` answers which tier wins — in **time to first token (TTFT)**, **sustained throughput**, and **$/1M tokens** — through two parts:
 
 1. **Empirical Cloud Benchmark (`src/kv_tier_bench/`, [docs/report.md](docs/report.md))** — **1,737 metric-verified data points** measured on cloud GPU VMs (NVIDIA RTX PRO 6000 Blackwell 96 GB, vLLM v0.34.0) across **7 cache tiers** and **3 stages**, comparing **standard full-attention** models (`Qwen3-VL-32B`, `Qwen3-8B`) side-by-side with **hybrid linear-attention** models (`Qwen3.8-27B`, `Qwen3.5-9B`, Gated DeltaNet 3:1).
-2. **Interactive Cluster Simulator ([`web/`](web/index.html))** — A calibrated, browser-based discrete-event simulator that replays hours of multi-turn chat and agent traffic across multi-node GPU clusters (`H100`, `H200`, `B200`, `B300`, `GB200`), modeling continuous prefill batching, multi-tier LRU eviction, interconnect contention, and `$/1M` token unit economics next to OpenRouter provider pricing.
+2. **Interactive Cluster Simulator ([Live Demo](https://d-nyamkhuu.github.io/kv-tier-bench/) · [`web/`](web/index.html))** — A calibrated, browser-based discrete-event simulator that replays hours of multi-turn chat and agent traffic across multi-node GPU clusters (`H100`, `H200`, `B200`, `B300`, `GB200`), modeling continuous prefill batching, multi-tier LRU eviction, interconnect contention, and `$/1M` token unit economics next to OpenRouter provider pricing.
 
 ---
 
@@ -102,7 +108,7 @@ At production reuse (~100+ reads/hour of a 128K prefix), every remote tier cuts 
 
 ## Interactive KV-Cache Cluster Simulator (`web/`)
 
-The **[browser simulator](web/index.html)** extends the empirical single-node measurements to full multi-node production clusters using a zero-dependency discrete-event engine running in a Web Worker.
+The **[live browser simulator](https://d-nyamkhuu.github.io/kv-tier-bench/)** (source in [`web/`](web/index.html)) extends the empirical single-node measurements to full multi-node production clusters using a zero-dependency discrete-event engine running in a Web Worker.
 
 ### What It Models
 

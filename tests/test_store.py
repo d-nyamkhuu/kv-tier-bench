@@ -41,7 +41,11 @@ def test_s3_runs_its_baselines_on_one_vm_and_each_remote_tier_on_its_own():
 def test_store_batches_fit_the_pool():
     pts = [p for p in expand(EXP, "s3") if p.tier == "store"]
     have = {(p.model, p.target_tokens, p.concurrency) for p in pts}
-    assert ("qwen3-8b", 131072, 2) in have and ("qwen3-8b", 131072, 4) not in have  # 72 GiB: the GPU's KV room, not the pool, stops it
+    assert ("qwen3-8b", 131072, 2) in have and (
+        "qwen3-8b",
+        131072,
+        4,
+    ) not in have  # 72 GiB: the GPU's KV room, not the pool, stops it
     assert len({p.id for p in pts}) == len(pts)
 
 

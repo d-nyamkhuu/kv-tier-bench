@@ -11,7 +11,9 @@ def ep(provider, prompt, completion, cache=None, quant="fp8"):
 
 
 def test_summarize_converts_to_per_million_and_drops_free_endpoints():
-    rows = summarize([ep("B", "0.0000003", "0.0000012", "0.000000006"), ep("Free", "0", "0"), ep("A", "0.0000001", "0.0000004")])
+    rows = summarize(
+        [ep("B", "0.0000003", "0.0000012", "0.000000006"), ep("Free", "0", "0"), ep("A", "0.0000001", "0.0000004")]
+    )
     assert [r["provider"] for r in rows] == ["A", "B"]  # sorted by input price
     assert rows[1] == {"provider": "B", "quantization": "fp8", "input": 0.3, "cached": 0.006, "output": 1.2}
     assert rows[0]["cached"] is None  # no cache price listed
@@ -35,5 +37,7 @@ def test_export_keeps_the_recorded_speed_date_whatever_the_fetch_date():
     assert data["fetched"] == "2030-01-01"
     assert set(SPEED) == set(MODEL_MAP)
     s = data["models"]["kimi-k3"]["speed"]
-    assert s["as_of"] == SPEED_AS_OF and s["p50_tok_s"] == 101.0 and s["url"].startswith("https://openrouter.ai/compare/")
+    assert (
+        s["as_of"] == SPEED_AS_OF and s["p50_tok_s"] == 101.0 and s["url"].startswith("https://openrouter.ai/compare/")
+    )
     assert data["models"]["minimax-m3"]["speed"]["p50_tok_s"] is None
