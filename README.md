@@ -95,9 +95,9 @@ hour per read, Standard-class request fees left out. The aggregated tables behin
 
 Each prefix is prefilled once. vLLM writes it through to every tier, and each rep then resets the tiers above the
 one under test and reads it back, so a stage needs one prefill per length rather than one per data point. A data
-point counts only if vLLM's own metrics show that the tokens came from the tier under test. A few
-natural-text prompts per tier are also generated greedily from the tier and from recompute, and the outputs
-compared.
+point counts only if vLLM's own metrics show that the tokens came from the tier under test. Greedy output equality
+against recompute was spot-checked on `Qwen3-0.6B` p2p during NIXL tuning; the sweep-wide natural-text validity
+runner (`validity.py`) has not been built or run on the benchmarked models.
 
 ## Stack
 
@@ -132,17 +132,33 @@ uv run pytest
 
 The [KV cache simulator](web/index.html) replays synthetic chat traffic and measures one hour, by default after a
 20-minute warm-up (a cold start from empty caches is one setting away). Adjust request rate, average turns per chat,
-think time, steady or bursty arrivals, CPU cache capacity, and independent local SSD and S3 tiers. More settings vary
+the share of chats with their own system prompt, think time, steady or bursty arrivals, CPU cache capacity, and independent local SSD and S3 tiers. More settings vary
 message and reply lengths (fixed, moderate or long-tailed lognormal around the set means), split traffic across distinct
-system prompts with Zipf popularity, and set the GPU KV budget, shown in GiB per instance. Four scenarios
+system prompts with Zipf popularity, and set the GPU KV budget, shown in GiB per instance. Five scenarios
 set every control at once, all on two nodes with eight B200 GPUs each and InfiniBand NDR between them: Every tier in use
-(the default: MiniMax-M3 in FP8 at 480 requests per minute with 15-turn chats, 768 GiB of CPU cache, a 1.5 TiB Gen5 SSD
-per node, peer reads and S3 Standard), Plenty of GPU memory (DeepSeek V4.1 Flash, which keeps the hour in GPU memory),
+(the default: MiniMax-M3 in FP8 at 480 requests per minute of typical chat traffic, 768 GiB of CPU cache, a 1.5 TiB Gen5 SSD
+per node, peer reads and S3 Standard), Long chats (15-turn chats on one shared system prompt), Plenty of GPU memory (DeepSeek V4.1 Flash, which keeps the hour in GPU memory),
 GPU cache fills (Kimi K3 with 1.5 TiB of CPU cache per node) and SSD fills (Mistral Large 4 with 64 GiB of CPU cache and
 a 768 GiB SSD per node). Choosing a model applies its serving defaults: FP8 when it was released in BF16 (as providers
 serve it; fewer GPUs per instance copy less KV across tensor-parallel ranks) and RDMA between nodes. Over TCP at
 400 Gbit/s (about 18 GiB/s in practice) the KV that long chats send to the decode GPUs saturates the link and TTFT climbs
-without bound; the page warns when TTFT is still rising at the end of the run, which can be 1, 2 or 3 hours. Every tier
+without bound; the page warns when TTFT is still rising at the end of the run, which can be 1, 2 or 3 hours (2 by default, so caches that fill slowly reach a steady state). 
+Production prefix caches serve about half to two thirds of prompt tokens: DeepSeek's API served 56.3% of input tokens
+from its disk cache over a day ([inference system overview](https://github.com/deepseek-ai/open-infra-index/blob/main/202502OpenSourceWeek/day_6_one_more_thing_deepseekV3R1_inference_system_overview.md)),
+SGLang measured 52–74% on Chatbot Arena, and Alibaba's chat and API traces reuse 62% and 54% with unlimited cache
+([KVCache Cache in the Wild](https://arxiv.org/abs/2506.02634)). Long sessions reach more: Character.AI reports 95% and
+coding agents 85–97%. The default workload follows the chat and API figures, and about 60% of its prompt tokens come
+from cache: chats average 1.5 turns (46% of requests come from one-turn chats; Alibaba: 54%), half the chats bring a
+system prompt of their own, since users customise them and cross-user hits are rare, the rest share 10 prompts with
+Zipf popularity, and users reply after 6 minutes on average (Alibaba: 80% of reuse within 10 minutes). The page shows
+the share of prompt tokens served from cache. Misses the simulator models: first turns, unshared system prompts
+(each shared prompt stands for one app or tenant, and caches never cross them), the uncached reply of the previous turn
+(with prompt-only saving), partial last blocks, eviction, chats that outgrow the context window and drop their oldest
+turns, follow-ups that rewrite earlier history (edited messages, compacted tool results, refreshed timestamps; off by
+default, since no rate is published), a hosted-API cache lifetime (off by default, as vLLM and LMCache keep blocks until
+evicted; 5 minutes, as Anthropic and OpenAI default to, takes the default workload from 59% to 50%), a minimum cached
+prompt length (1,024 tokens at OpenAI, up to 4,096 at Anthropic), and, for hybrid linear-attention models such as
+Kimi K3, prefixes without a saved state. Every tier
 is written as prompt chunks are computed, so a CPU or SSD tier serves hits only when it is larger than the GPU cache on
 its node; the page says so when CPU memory is not. Choosing a model, GPU or precision that the
 cluster cannot hold raises the node and GPU counts to the smallest layout that fits (a model moves to B200, then B300,
@@ -166,7 +182,7 @@ max_num_batched_tokens), with cache lookups and loads overlapping other requests
 keeps the calibrated one-at-a-time TTFT. [Prefill batching](docs/design/prefill-batching.md) gives the step model, the
 published benchmarks it was checked against, and its limits. The [LMCache compatibility notes](docs/lmcache-compatibility.md) give the versioned sources and sizing assumptions.
 
-The tier comparison replays GPU-only, local CPU, peer CPU, NVMe and S3 alternatives on the same layout and workload settings. Its bars show mean TTFT and the storage rate per decimal GB-month. SSD rates apply to provisioned capacity and S3 rates to retained data.
+The tier comparison replays GPU-only, local CPU, peer CPU, NVMe and S3 alternatives on the same layout and workload settings, each adding one tier below GPU memory. Each row shows the median TTFT of the requests that read from that tier (a mean over all requests is dominated by GPU hits) and the on-demand price per GiB-month: GPU memory as the GPU-hour price × 730 ÷ its HBM, CPU and peer memory at Nebius's RAM rate ($0.0045 per GiB-hour), local NVMe at Nebius's local SSD rate ($0.065, the same for Gen4 and Gen5, since providers do not price by PCIe generation), and S3 at AWS US East list prices. SSD rates apply to provisioned capacity and S3 rates to retained data.
 
 The page sets this setup's price per million input and cached input tokens beside OpenRouter's rates for the selected model. By default it prices the prefill GPUs as if they were 60% busy, as a provider runs them (the replay's own load, often under 20% busy, would charge idle GPU hours to every token); 40%, 80% and the replay's load are options. The scaling is linear in GPU time and keeps cache-tier costs as they are. Each OpenRouter rate is the median of endpoints that list it in the dated pricing snapshot, across provider precisions. The simulator splits its hourly cost over the tokens it served: prefill GPU time by uncached and cached tokens, cache tiers to cached input, decode GPUs to output.
 
@@ -196,9 +212,10 @@ deployment and resumes after preemption. The steps are in the runbook in [docs/p
 
 ## Limitations (known up front)
 
-- Nebius has no local NVMe on these GPUs. The disk tier is a network SSD, and its read rate (~1.0–1.3 GiB/s in s1,
-  flat at every prefix length) looks like the disk's provisioned throughput cap. That cap is inferred from the
-  results; no standalone `fio` run measured it.
+- Nebius has no local NVMe on these GPUs. The disk tier is a network SSD (1,767 GiB, 2 GiB/s published read cap;
+  standalone `fio` in s2 measured 1.94 GiB/s 16-way random reads and 1.69 GiB/s single-stream in
+  [results/fio-kv-disk-us-central1.json](results/fio-kv-disk-us-central1.json)). Single-request reads in s1
+  (1.0–1.3 GiB/s) were limited by vLLM's fs path; concurrent batches in s2 hit the ~2 GiB/s disk cap.
 - Object-store reads are of freshly written objects: each prefix is read back seconds to minutes after it is
   stored, possibly while the storage service still has it cached. A prefix stored hours earlier may load slower.
 - Text-only prompts. The linear-attention state is stored in bf16, which is **not** the HF default of fp32.
@@ -208,7 +225,8 @@ deployment and resumes after preemption. The steps are in the runbook in [docs/p
 - Disk numbers are only valid if the disk tier uses O_DIRECT. With buffered I/O, reads can come from the OS page
   cache, so disk numbers are published only once day 1 shows direct I/O (or the page cache is dropped before
   each disk read).
-- Every point is a single request: there are no runs under concurrent load.
+- Stage s1 measures single requests; s2 and s3 measure concurrent batches of 1–16 requests, but with no background
+  decode traffic or mixed/trace-driven load running during the reads.
 - One hardware point only: RTX PRO 6000 at TP=1. No H100 or tensor-parallel numbers.
 - The p2p tier runs over TCP between two VMs. It is not RDMA, and there is no InfiniBand anywhere in
   this benchmark. The p2p numbers are "vLLM v0.34.0 + a NIXL tuning hook" (`scripts/nixl_patch`: 32 NIXL agents per

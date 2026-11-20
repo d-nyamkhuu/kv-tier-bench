@@ -12,14 +12,18 @@ export const DEFAULT_LINK = "p2p-ib-ndr";
 export const modelDefaults = model => ({ precision: (model?.compute_dtype ?? "bf16") === "bf16" ? "fp8" : "released", interconnect: DEFAULT_LINK });
 const forModel = settings => ({ ...settings, ...modelDefaults(MODELS[settings.model]) });
 
-// The default uses every tier: MiniMax-M3 on two B200 nodes fills its GPU cache within the hour, and each tier
-// below is larger than the one above, since a tier written as chunks are computed serves hits only then.
+// The default is typical chat traffic, where about 60% of prompt tokens can come from cache (DeepSeek's API served
+// 56% from its disk cache; Alibaba's chat and API traces reuse 62% and 54% with unlimited cache): chats average 1.5
+// turns (46% of requests come from one-turn chats; Alibaba: 54%), half bring a system prompt of their own (cross-user
+// hits are rare), and users reply after 6 minutes on average (Alibaba: 80% of reuse within 10 minutes). MiniMax-M3 on
+// two B200 nodes fills its GPU cache, and each tier below is larger than the one above, since a tier written as chunks
+// are computed serves hits only then.
 export const DEFAULT_SETTINGS = Object.freeze({
   model: "minimax-m3", precision: "fp8", gpu: "b200", nodes: 2, gpusPerNode: 8, interconnect: "p2p-ib-ndr",
-  rate: 480, turns: 15, pause: 2, pattern: "steady", routing: "round-robin",
+  rate: 480, turns: 1.5, ownPrompt: 50, pause: 6, pattern: "steady", routing: "round-robin",
   cpu: 768, disk: "fs-nvme-gen5", diskSize: 1536, lookup: "peer", backing: "obj-aws-s3-standard",
-  start: "warm", hours: 1, spread: "moderate", prompts: 1, batch: 8192, priceAt: "0.6",
-  admission: "prompt", prefix: 6000, input: 800, output: 400, gpuBudget: 100,
+  start: "warm", hours: 2, spread: "moderate", prompts: 10, batch: 8192, priceAt: "0.6",
+  admission: "prompt", prefix: 6000, input: 800, output: 400, gpuBudget: 100, rewrite: 0, lifetime: 0, minCache: 0,
 });
 
 // Message and reply lengths vary around their means with this coefficient of variation.
@@ -28,12 +32,17 @@ export const WARMUP_MIN = 20;
 
 // Each scenario is a complete set of settings, so choosing one never leaves a hidden value behind. All run large
 // models on two B200 nodes, with CPU and SSD tiers sized past the GPU cache on their node where they should serve hits.
-const LIGHT = { ...DEFAULT_SETTINGS, rate: 120, turns: 5, pause: 5, cpu: 128, disk: "", diskSize: 8, lookup: "stock" };
+const LIGHT = { ...DEFAULT_SETTINGS, rate: 120, cpu: 128, disk: "", diskSize: 8, lookup: "stock" };
 export const SCENARIOS = [
   {
     id: "tiers", name: "Every tier in use",
-    description: "MiniMax-M3 (428B, FP8) at 480 req/min with 15-turn chats: every tier serves hits.",
+    description: "MiniMax-M3 (428B, FP8) at 480 req/min of typical chat traffic: every tier serves hits.",
     settings: forModel(DEFAULT_SETTINGS),
+  },
+  {
+    id: "long", name: "Long chats",
+    description: "15-turn chats on one shared system prompt, like companion apps or coding agents: about 90% of prompt tokens hit.",
+    settings: forModel({ ...DEFAULT_SETTINGS, turns: 15, ownPrompt: 0, prompts: 1, pause: 2 }),
   },
   {
     id: "ample", name: "Plenty of GPU memory",
@@ -68,7 +77,7 @@ export function fitCluster(config, settings) {
   return fits(nodes, gpusPerNode) ? { nodes, gpusPerNode } : { nodes: Math.max(nodes, need.pp), gpusPerNode: 8 };
 }
 
-const NUMERIC = new Set(["nodes", "gpusPerNode", "hours", "rate", "turns", "pause", "cpu", "diskSize", "prompts", "batch", "prefix", "input", "output", "gpuBudget"]);
+const NUMERIC = new Set(["nodes", "gpusPerNode", "hours", "rate", "turns", "ownPrompt", "rewrite", "lifetime", "minCache", "pause", "cpu", "diskSize", "prompts", "batch", "prefix", "input", "output", "gpuBudget"]);
 const KEYS = Object.keys(DEFAULT_SETTINGS);
 
 // The price basis changes only how tokens are priced, so it does not make a scenario custom.
@@ -110,7 +119,7 @@ export function applySettings(config, settings) {
     requestsPerMin: settings.rate, followUpShare: 1 - 1 / Math.max(1, settings.turns), thinkTimeS: settings.pause * 60,
     systemTokens: settings.prefix, inputTokens: settings.input, outputTokens: settings.output,
     durationMin: 60 * (settings.hours || 1) + warmupMin, lengthSpread: LENGTH_SPREAD[settings.spread] ?? 0,
-    systemPrompts: settings.prompts, arrivalPattern: settings.pattern === "bursty" ? "bursty" : "steady",
+    systemPrompts: settings.prompts, ownPromptShare: (settings.ownPrompt ?? 0) / 100, rewriteShare: (settings.rewrite ?? 0) / 100, arrivalPattern: settings.pattern === "bursty" ? "bursty" : "steady",
   });
   Object.assign(config.sim, {
     model: settings.model, precision: settings.precision, gpu: settings.gpu, decodeGpu: settings.gpu,
@@ -118,7 +127,8 @@ export function applySettings(config, settings) {
     peerFirst: settings.lookup === "peer", saveDecode: settings.admission === "reply",
     p2p: settings.interconnect, stageLink: settings.interconnect, transfer: settings.interconnect,
     cpuGiB: settings.cpu, shared: settings.backing || null, disk: settings.disk || null,
-    diskCapacityGiB: settings.diskSize, warmupMin, prefillBatchTokens: settings.batch > 0 ? settings.batch : null,
+    diskCapacityGiB: settings.diskSize, warmupMin, cacheLifetimeS: settings.lifetime > 0 ? settings.lifetime * 60 : null,
+    minCacheTokens: settings.minCache || 0, prefillBatchTokens: settings.batch > 0 ? settings.batch : null,
   });
   return settings.gpuBudget / 100;
 }

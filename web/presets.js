@@ -299,6 +299,13 @@ const gpu = (g) => ({ mbu: MBU, nvlink_gb_s: null, nvlink_domain: g.pcie_only ||
   assumptions: [...(g.assumptions ?? []), "tflops_fp8", ...(BLACKWELL.has(g.id) ? ["tflops_fp4"] : [])],
   sources: [...g.sources, ...MBU_SOURCES, ...(g.prefill_mfu === RTX_MFU ? [S1_CALIBRATION] : [INFERENCEX])] });
 
+// Host memory bought on demand, as a price reference for CPU and peer KV caches: Nebius lists RAM on its non-GPU
+// VMs per GiB-hour (on GPU VMs it comes with the GPU-hour). 730 hours make a month.
+export const HOST_RAM = {
+  usd_per_gib_month: 3.285, // $0.0045 per GiB-hour × 730 hours
+  source: src("Nebius Compute pricing", S.pricing, "Non-GPU AMD Epyc Genoa. RAM | $0.0045 | 1 GiB hour"),
+};
+
 export const GPUS = [
   gpu({
     id: "rtx-pro-6000", name: "RTX PRO 6000 Blackwell",

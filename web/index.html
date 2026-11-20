@@ -43,13 +43,14 @@
       </details>
       <p id="cluster-summary" class="cluster-summary"></p>
       <p id="fit-note" class="fit-note" role="status" hidden></p>
-      <section><h2>Workload</h2><div id="workload-controls"></div>
+      <section><h2>Workload</h2>
+        <label class="select-field" for="hours">Measured period</label>
+        <select id="hours"><option value="1">1 hour</option><option value="2">2 hours</option><option value="3">3 hours</option></select>
+        <div id="workload-controls"></div>
         <label class="select-field" for="pattern">Arrival pattern</label>
         <select id="pattern"><option value="steady">Steady (random arrivals)</option><option value="bursty">Bursty (2× for 2 min of every 6)</option></select>
         <label class="select-field" for="routing">Request routing</label>
         <select id="routing"><option value="round-robin">Round-robin across nodes</option><option value="sticky">Keep each chat on one instance</option><option value="random">Random instance per request</option></select>
-        <label class="select-field" for="hours">Measured period</label>
-        <select id="hours"><option value="1">1 hour</option><option value="2">2 hours</option><option value="3">3 hours</option></select>
       </section>
       <section><h2>Cache tiers</h2><div id="cache-controls"></div>
         <label class="select-field" for="disk">Local disk per node</label>
@@ -65,6 +66,8 @@
           <option value="obj-aws-s3-express">S3 Express</option>
           <option value="">Off</option>
         </select>
+        <label class="select-field" for="lifetime">Cache lifetime</label>
+        <select id="lifetime"><option value="0">Until evicted (vLLM, LMCache)</option><option value="60">1 hour unused</option><option value="5">5 minutes unused (hosted API default)</option></select>
       </section>
       <section><h2>Pricing</h2>
         <label class="select-field" for="price-at">Price tokens at</label>
@@ -77,6 +80,8 @@
         <select id="spread"><option value="fixed">Fixed at the set lengths</option><option value="moderate">Varied around them (moderate)</option><option value="long">Long-tailed (a few very long)</option></select>
         <div id="detail-controls"></div>
         <div id="memory-controls"></div>
+        <label class="select-field" for="min-cache">Shortest cached prompt</label>
+        <select id="min-cache"><option value="0">Any full block (vLLM, LMCache)</option><option value="1024">1,024 tokens (OpenAI)</option><option value="4096">4,096 tokens (some Anthropic models)</option></select>
         <label class="select-field" for="cache-admission">Save to backing tiers</label>
         <select id="cache-admission"><option value="prompt">Complete prompt chunks</option><option value="reply">Include generated reply chunks</option></select>
         <label class="select-field" for="lookup-policy">Priority after local SSD</label>
@@ -136,7 +141,7 @@
         <h2 id="tier-comparison-title">Latency and storage price by tier</h2>
         <p id="comparison-status" class="track-note" role="status"></p>
         <table id="tier-bars" hidden aria-labelledby="tier-comparison-title">
-          <thead><tr><th scope="col">Cache option</th><th scope="col">60-minute average TTFT</th><th scope="col">USD / GB-month</th></tr></thead>
+          <thead><tr><th scope="col">Cache option</th><th scope="col">Median TTFT of requests reading it</th><th scope="col">USD / GiB-month</th></tr></thead>
           <tbody></tbody>
         </table>
       </section>

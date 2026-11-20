@@ -17,7 +17,7 @@ export const DEFAULT_WORKLOAD = {
   requestsPerMin: 300, followUpShare: 0.8, systemTokens: 6000, inputTokens: 800, outputTokens: 400, thinkTimeS: 600,
   durationMin: 60, maxContextTokens: 65536, seed: 1,
   // sim.synthetic's optional realism: length variation, distinct system prompts, arrival pattern
-  lengthSpread: 0, systemPrompts: 1, arrivalPattern: "steady",
+  lengthSpread: 0, systemPrompts: 1, ownPromptShare: 0, arrivalPattern: "steady",
 };
 export const DEFAULT_SIM = {
   model: "qwen3.8-27b", gpu: "rtx-pro-6000", nodes: 2, gpusPerNode: 8, tp: 1, pp: 1, stageLink: "p2p-ib-ndr", attention: "dp", precision: "released", routing: "round-robin",

@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { defaultConfig } from "../config.js";
 import { GPUS, MODELS, SOFTWARE, VARIANTS } from "../presets.js";
 import { minutesCsv, replay } from "../replay.js";
-import { synthetic } from "../sim.js";
+import { idealHitShare, synthetic } from "../sim.js";
 import {
   applySettings, cpuSizingNote, decodeSettings, modelDefaults, pricesAt, risingTtft, DEFAULT_SETTINGS, encodeSettings,
   fitCluster, SCENARIOS, scenarioFor, usdPerHour,
@@ -95,14 +95,14 @@ test("the per-minute CSV has one row per minute and a column per tier", () => {
 
 test("turns per chat, warm-up and the workload options reach the replay config", () => {
   const c = config();
-  applySettings(c, { ...DEFAULT_SETTINGS, turns: 4, start: "warm", spread: "long", prompts: 10, pattern: "bursty" });
+  applySettings(c, { ...DEFAULT_SETTINGS, hours: 1, turns: 4, start: "warm", spread: "long", prompts: 10, pattern: "bursty" });
   assert.equal(c.workload.followUpShare, 0.75);
   assert.equal(c.sim.warmupMin, 20);
-  assert.equal(c.workload.durationMin, 80, "a warm start still measures 60 minutes");
+  assert.equal(c.workload.durationMin, 80, "a warm start measures 60 minutes per hour set");
   assert.equal(c.workload.lengthSpread, 1.5);
   assert.equal(c.workload.systemPrompts, 10);
   assert.equal(c.workload.arrivalPattern, "bursty");
-  applySettings(c, { ...DEFAULT_SETTINGS, start: "cold", spread: "fixed" });
+  applySettings(c, { ...DEFAULT_SETTINGS, hours: 1, start: "cold", spread: "fixed" });
   assert.equal(c.sim.warmupMin, 0);
   assert.equal(c.workload.durationMin, 60);
   assert.equal(c.workload.lengthSpread, 0);
@@ -145,7 +145,7 @@ test("bursty arrivals keep the hourly volume and concentrate new chats in bursts
 
 test("a warmed-up replay bins the measured hour from its start and reports serving costs", () => {
   const c = config();
-  const r = replay(c, applySettings(c, { ...DEFAULT_SETTINGS, start: "warm" }));
+  const r = replay(c, applySettings(c, { ...DEFAULT_SETTINGS, start: "warm", hours: 1 }));
   assert.equal(r.minutes.length, 60);
   assert.equal(r.warmupMin, 20);
   assert.ok(r.minutes[0].count > 0 && r.minutes.every(m => m.usedGiB));
@@ -178,9 +178,11 @@ test("a replay reports progress by simulated minute, rising and below 1", () => 
 test("a saturated inter-node link is flagged as rising TTFT, and RDMA with FP8 keeps the default flat", () => {
   const run = settings => { const c = config(); return replay(c, applySettings(c, settings)); };
   // MiniMax-M3 as released (TP8) over TCP 400: decode KV transfers of 15-turn chats outgrow the link
-  const tcp = risingTtft(run({ ...DEFAULT_SETTINGS, precision: "released", interconnect: "p2p-tcp-400", cpu: 1536, diskSize: 2048 }));
+  const long = { ...DEFAULT_SETTINGS, hours: 1, turns: 15, ownPrompt: 0, prompts: 1, pause: 2 };
+  const tcp = risingTtft(run({ ...long, precision: "released", interconnect: "p2p-tcp-400", cpu: 1536, diskSize: 2048 }));
   assert.ok(tcp && tcp.to > 2 * tcp.from, JSON.stringify(tcp));
   assert.equal(tcp.cause, "transfer");
+  assert.equal(risingTtft(run(long)), null);
   assert.equal(risingTtft(run(DEFAULT_SETTINGS)), null);
 });
 
@@ -214,4 +216,37 @@ test("every scenario value is a stop on its slider, so the page shows the scenar
     assert.ok(cpu.includes(s.settings.cpu), `${s.id} CPU ${s.settings.cpu}`);
     assert.ok(disk.includes(s.settings.diskSize), `${s.id} SSD ${s.settings.diskSize}`);
   }
+});
+
+test("the default chat workload hits about 60% of prompt tokens, as production chat and API traffic does", () => {
+  const c = config();
+  applySettings(c, DEFAULT_SETTINGS);
+  const workload = synthetic({ ...c.workload, seed: 1 });
+  const ideal = idealHitShare(workload, 64).share;
+  assert.ok(ideal > 0.5 && ideal < 0.68, `ideal ${ideal}`);
+  const chats = new Map();
+  for (const r of workload.requests) chats.set(r.conv, (chats.get(r.conv) ?? 0) + 1);
+  const single = workload.requests.filter(r => chats.get(r.conv) === 1).length / workload.requests.length;
+  assert.ok(single > 0.4 && single < 0.55, `requests in one-turn chats ${single}`);
+  const long = applySettings(c, SCENARIOS.find(s => s.id === "long").settings) && synthetic({ ...c.workload, seed: 1 });
+  assert.ok(idealHitShare(long, 64).share > 0.85);
+});
+
+test("a chat with its own system prompt shares no blocks with other chats, and the share leaves other draws alone", () => {
+  const base = { requestsPerMin: 60, followUpShare: 0, thinkTimeS: 60, systemTokens: 640, inputTokens: 64, outputTokens: 10, durationMin: 10, seed: 3, systemPrompts: 1 };
+  const shared = synthetic(base), own = synthetic({ ...base, ownPromptShare: 1 });
+  assert.deepEqual(shared.requests.map(r => r.t), own.requests.map(r => r.t));
+  assert.ok(idealHitShare(shared, 64).share > 0.8);
+  assert.equal(idealHitShare(own, 64).share, 0);
+});
+
+test("rewritten follow-ups share only the system prompt, and a chat past the context window drops its oldest turns", () => {
+  const base = { requestsPerMin: 60, followUpShare: 0.9, thinkTimeS: 30, systemTokens: 640, inputTokens: 640, outputTokens: 64, durationMin: 30, seed: 5 };
+  const kept = synthetic(base), rewritten = synthetic({ ...base, rewriteShare: 1 });
+  assert.deepEqual(kept.requests.map(r => r.n), rewritten.requests.map(r => r.n), "same lengths and arrivals");
+  assert.ok(idealHitShare(rewritten, 64).share < idealHitShare(kept, 64).share - 0.3);
+  const capped = synthetic({ ...base, maxContextTokens: 4096 });
+  assert.ok(capped.requests.every(r => r.n + r.out <= 4096));
+  assert.ok(capped.requests.some(r => r.ver > 0), "long chats continue after truncation");
+  assert.ok(capped.requests.length >= synthetic({ ...base, maxContextTokens: 1e9 }).requests.length * 0.99);
 });

@@ -58,10 +58,12 @@ const cpuSizes = [0, 8, 16, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536
 const diskSizes = [0.25, 0.5, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 768, 1024, 1536, 2048, null];
 slider("workload-controls", "rate", "Target request rate", { min: 10, max: 600, step: 10, units: " req/min" });
 slider("workload-controls", "turns", "Average turns per chat", { stops: [1, 1.5, 2, 3, 4, 5, 6, 8, 10, 15, 20], units: v => v === 1 ? "1 · no follow-ups" : v + " turns" });
+slider("workload-controls", "ownPrompt", "Chats with their own system prompt", { min: 0, max: 100, step: 10, units: "%" });
 slider("workload-controls", "pause", "Think time after reply", { min: 1, max: 30, step: 1, units: " min" });
 slider("cache-controls", "cpu", "CPU cache per node", { stops: cpuSizes, units: v => v === 0 ? "Off" : gibf(v) });
 slider("disk-controls", "disk-size", "SSD capacity per node", { stops: diskSizes, units: v => v == null ? "Full drive" : gibf(v) });
-slider("detail-controls", "prompts", "Distinct system prompts", { stops: [1, 2, 5, 10, 20, 50, 100, 1000], units: v => v === 1 ? "1 · shared by all" : String(v) });
+slider("detail-controls", "rewrite", "Follow-ups that rewrite history", { min: 0, max: 50, step: 5, units: "%" });
+slider("detail-controls", "prompts", "Shared system prompts (apps or tenants)", { stops: [1, 2, 5, 10, 20, 50, 100, 1000], units: v => v === 1 ? "1 · shared by all" : String(v) });
 slider("detail-controls", "prefix", "System prompt length", { min: 0, max: 16000, step: 100, units: " tokens" });
 slider("detail-controls", "input", "Average new message", { min: 100, max: 4000, step: 100, units: " tokens" });
 slider("detail-controls", "output", "Average reply", { min: 100, max: 4000, step: 100, units: " tokens" });
@@ -73,7 +75,7 @@ slider("memory-controls", "gpu-budget", "GPU KV budget", { min: 1, max: 100, ste
 // Settings key → [control id, kind]. Selects hold strings except the two counts.
 const FIELDS = {
   model: ["model"], precision: ["precision"], gpu: ["gpu"], nodes: ["nodes", "count"], gpusPerNode: ["gpus-per-node", "count"],
-  interconnect: ["interconnect"], rate: ["rate", "slider"], turns: ["turns", "slider"], pause: ["pause", "slider"],
+  interconnect: ["interconnect"], rate: ["rate", "slider"], turns: ["turns", "slider"], ownPrompt: ["ownPrompt", "slider"], rewrite: ["rewrite", "slider"], lifetime: ["lifetime", "count"], minCache: ["min-cache", "count"], pause: ["pause", "slider"],
   pattern: ["pattern"], routing: ["routing"], hours: ["hours", "count"], priceAt: ["price-at"], cpu: ["cpu", "slider"], disk: ["disk"], diskSize: ["disk-size", "slider"],
   lookup: ["lookup-policy"], backing: ["backing"], start: ["start"], spread: ["spread"], prompts: ["prompts", "slider"], batch: ["batch", "slider"],
   admission: ["cache-admission"], prefix: ["prefix", "slider"], input: ["input", "slider"],
@@ -178,7 +180,7 @@ function useSettings(settings) {
   const after = readSettings();
   const changed = Object.keys(FIELDS).filter(key => before[key] !== after[key]);
   // A changed setting inside a closed section would otherwise be invisible.
-  if (changed.some(key => ["start", "spread", "prompts", "batch", "prefix", "input", "output", "gpuBudget", "admission", "lookup"].includes(key))) $("detail-controls").closest("details").open = true;
+  if (changed.some(key => ["start", "spread", "rewrite", "minCache", "prompts", "batch", "prefix", "input", "output", "gpuBudget", "admission", "lookup"].includes(key))) $("detail-controls").closest("details").open = true;
   showScenario(after);
   schedule();
 }
@@ -201,21 +203,19 @@ new IntersectionObserver(([entry]) => {
 }, { rootMargin: "200px" }).observe($("tier-comparison"));
 
 function renderComparison(rows) {
-  const currentMean = shown.mean;
-  const maxTime = Math.max(currentMean, ...rows.map(row => row.mean ?? 0));
-  const maxRate = Math.max(0, ...rows.map(row => row.rate ?? 0));
-  const bar = (value, max, text, mark = null, title = "") => el("td", { title }, text,
-    el("div", { class: "compare-track", "aria-hidden": "true" },
-      el("i", { style: `width:${max ? value / max * 100 : 0}%` }),
-      mark == null ? null : el("b", { style: `left:${max ? mark / max * 100 : 0}%` })));
+  const maxTime = Math.max(0, ...rows.map(row => row.median ?? 0));
+  const share = row => row.requests ? Math.round(row.readers / row.requests * 100) : 0;
+  const money = x => "$" + +x.toPrecision(3);
   $("tier-bars").tBodies[0].replaceChildren(...rows.map(row => el("tr", {},
     el("th", { scope: "row", text: row.name }),
-    row.mean == null ? el("td", { text: row.error }) : bar(row.mean, maxTime, secs(row.mean), currentMean),
+    row.median == null ? el("td", { class: "compare-note", text: row.error }) : el("td", {},
+      el("span", { text: secs(row.median) }), el("small", { text: ` · ${share(row)}% of requests` }),
+      el("div", { class: "compare-track", "aria-hidden": "true" }, el("i", { style: `width:${maxTime ? row.median / maxTime * 100 : 0}%` }))),
     row.rate == null ? el("td", { class: "compare-note", text: row.billing })
-      : bar(row.rate, maxRate, "$" + row.rate.toFixed(4), null, row.billing + " capacity"),
+      : el("td", {}, el("span", { class: "price", text: money(row.rate) }), el("small", { class: "billing", text: row.billing })),
   )));
   $("tier-bars").hidden = false;
-  $("comparison-status").textContent = `The tick marks the current setup’s average TTFT of ${secs(currentMean)}.`;
+  $("comparison-status").textContent = "Each row adds one tier below GPU memory. Prices: Nebius on-demand (GPU, RAM, SSD), AWS US East (S3).";
 }
 
 // The bar under the results header: indeterminate until the worker reports its first minute, hidden when done.
@@ -374,7 +374,8 @@ function render(result) {
   const realized = Math.round(requests / result.minutes.length);
   const filled = result.firstEviction == null ? "GPU cache never full"
     : result.firstEviction < 0 ? "GPU cache full during warm-up" : `GPU cache full from minute ${Math.floor(result.firstEviction / 60) + 1}`;
-  $("run-facts").replaceChildren(...[filled, `Prefill busy ${pctf(result.utilization, 0)}`,
+  const hit = 1 - (result.share?.miss ?? 0);
+  $("run-facts").replaceChildren(...[`${pctf(hit, 0)} of prompt tokens from cache`, filled, `Prefill busy ${pctf(result.utilization, 0)}`,
     `${realized.toLocaleString("en-US")} of ${settings.rate} req/min served`,
     ...(sim.shared ? [`S3 requests ${usdPerHour(result.requestCostPerHour)}/h`] : [])].map(text => el("li", { text })));
   const cpuNote = cpuSizingNote(settings, result);

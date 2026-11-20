@@ -67,7 +67,7 @@ export function buildRun(c, over = {}, trace = null, maxSimNodes = MAX_SIM_NODES
     externalCopiesPerGpuCopy: m.kv_layout === "deepseek-v41" && sim.attention === "tp" ? 1 / tp : 1,
     objectRanks: (sim.attention === "dp" || m.kv_layout === "deepseek-v41" ? 1 : tp) * pp,
     seed: 7, warmupS: (sim.warmupMin ?? 0) * 60, retentionH: sim.retentionH, simBlockTokens: sim.simBlockTokens,
-    prefillBatchTokens: sim.prefillBatchTokens ?? null,
+    prefillBatchTokens: sim.prefillBatchTokens ?? null, cacheLifetimeS: sim.cacheLifetimeS ?? null, minCacheTokens: sim.minCacheTokens ?? 0,
     decode: sim.decode ? {
       model: decodeModel, gpu: decodeGpu, batch: sim.decodeBatch, pooled: !!sim.decodePooled, speed: sim.decodeSpeed ?? null,
       spec: sp.spec, ep, overlap: !!sim.decodeOverlap,

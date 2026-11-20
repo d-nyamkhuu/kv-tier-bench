@@ -260,18 +260,25 @@ test("automatic layout accounts for the active sequence and respects the chosen 
   assert.throws(() => replay(c), /63000-token sequence exceeds/);
 });
 
-test("tier chart uses the live TTFT at the same layout, SSD budget and workload, with decimal GB rates", () => {
+test("tier rows report the median TTFT of requests reading that tier and on-demand prices per GiB-month", () => {
   const c = setup();
   Object.assign(c.workload, { durationMin: 2 });
   Object.assign(c.sim, { nodes: 12, disk: "fs-nvme-gen4", diskCapacityGiB: 4, shared: null, p2p: null });
   const result = replay(c, 0.1);
   const rows = compareTiers(c, result.layout, 0.1);
   const ssd = rows.find(row => row.name === "NVMe Gen4");
-  assert.equal(ssd.mean, result.mean);
-  assert.equal(ssd.rate, 0.065 * 1e9 / 2 ** 30);
-  assert.equal(rows.find(row => row.name === "GPU only").rate, null);
-  assert.equal(rows.find(row => row.name === "S3 Standard").rate, 0.023 * 1e9 / 2 ** 30);
-  assert.ok(rows.every(row => row.mean > 0 && !row.error));
+  assert.equal(ssd.mean, result.mean, "the SSD row replays the live setup");
+  assert.equal(ssd.readers, result.readerStats.disk?.count ?? 0);
+  if (ssd.readers) assert.equal(ssd.median, result.readerStats.disk.medianTTFT);
+  assert.equal(ssd.rate, 0.065);
+  const gpu = c.gpus.find(g => g.id === c.sim.gpu);
+  assert.equal(rows.find(row => row.name === "GPU only").rate, gpu.usd_per_hour * 730 / gpu.mem_gib);
+  assert.equal(rows.find(row => row.name === "Local CPU").rate, 3.285);
+  assert.equal(rows.find(row => row.name === "S3 Standard").rate, 0.023);
+  for (const row of rows) {
+    assert.ok(row.readers <= row.requests);
+    assert.ok(row.readers ? row.median > 0 && !row.error : row.median == null && row.error);
+  }
 });
 
 test("peer comparison needs CPU cache outside the local pipeline group", () => {
@@ -284,4 +291,22 @@ test("peer comparison needs CPU cache outside the local pipeline group", () => {
   c.sim.cpuGiB = 0;
   const noCpu = names({ tp: 1, pp: 1 });
   assert.ok(!noCpu.includes("Local CPU") && !noCpu.includes("Peer CPU"));
+});
+
+test("a cache lifetime expires blocks unused for longer than it, so pauses past it miss", () => {
+  const c = setup();
+  Object.assign(c.workload, { durationMin: 20, followUpShare: 0.8, thinkTimeS: 300 });
+  const hit = lifetime => { c.sim.cacheLifetimeS = lifetime; return 1 - runScenario(c).share.miss; };
+  const kept = hit(null), hour = hit(3600), short = hit(60);
+  assert.ok(Math.abs(kept - hour) < 0.01, `${kept} vs ${hour}`);
+  assert.ok(short < kept - 0.1, `a 1-minute lifetime against 5-minute pauses: ${short} vs ${kept}`);
+});
+
+test("prompts shorter than the minimum cached length are neither looked up nor saved", () => {
+  const c = setup();
+  Object.assign(c.workload, { durationMin: 10, followUpShare: 0, systemTokens: 2000, inputTokens: 200 });
+  c.sim.minCacheTokens = 0;
+  assert.ok(runScenario(c).share.miss < 0.5);
+  c.sim.minCacheTokens = 4096;
+  assert.equal(runScenario(c).share.miss, 1);
 });

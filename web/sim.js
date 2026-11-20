@@ -33,6 +33,16 @@ export class LRU {
     const count = Math.max(1, Math.floor(this.map.size * 0.2));
     for (let i = 0; i < count; i++) this.#evictOldest();
   }
+  // Drop entries from the least recently used end while `stale(id)` holds: a cache lifetime, not an eviction.
+  expire(stale) {
+    while (this.head && stale(this.head.id)) {
+      const old = this.head;
+      this.#unlink(old);
+      this.map.delete(old.id);
+      this.used -= old.bytes;
+      this.onEvict?.(old.id);
+    }
+  }
   keys() { const out = []; for (let n = this.head; n; n = n.next) out.push(n.id); return out; } // oldest first
   #unlink(n) {
     if (n.prev) n.prev.next = n.next; else this.head = n.next;
@@ -88,9 +98,13 @@ export function rng(seed = 1) { // mulberry32
 // conversations arrive as a Poisson process at requestsPerMin x (1 - followUpShare); after each turn a conversation
 // continues with probability followUpShare, after an exponential pause of mean thinkTimeS, so in steady state that
 // share of requests are follow-ups. Turn k sends the system prompt, every earlier message and answer, and the
-// new message: system + (k-1) x (input + output) + input tokens. A conversation ends at maxContextTokens.
+// new message: system + (k-1) x (input + output) + input tokens. A conversation that outgrows maxContextTokens drops
+// its oldest turns, as chat apps truncate or compact a long history, which changes everything after the system prompt.
 // Optional realism, each off by default:
 //   lengthSpread: coefficient of variation of each message and reply length (lognormal with the set mean; 0 = fixed),
+//   ownPromptShare: share of conversations with a system prompt of their own, shared with no other conversation,
+//   rewriteShare: share of follow-ups that rewrite earlier history (an edited message, a compacted or truncated tool
+//     result, a refreshed timestamp), so the turn shares only the system prompt with the cache,
 //   systemPrompts: distinct system prompts of the same length, chosen per conversation with Zipf(1) popularity,
 //   arrivalPattern: "steady" (Poisson) or "bursty" (new conversations at 2x the mean rate for 2 minutes of every 6,
 //     0.5x for the other 4, the same hourly volume).
@@ -129,13 +143,20 @@ export function synthetic(p) {
   let conv = 0;
   for (let start = exp(1 / (newPerS * peak)); start < end; start += exp(1 / (newPerS * peak)), conv++) {
     if (bursty && extra() * peak >= level(start)) continue; // thinning to the burst profile
-    const sysId = pickPrompt();
-    let t = start, history = 0;
+    // A chat with its own system prompt (a user's custom instructions or an app nobody else calls) shares no prefix.
+    const sysId = p.ownPromptShare > 0 && extra() < p.ownPromptShare ? `u${conv}` : pickPrompt();
+    let t = start, history = 0, ver = 0;
     for (let k = 1; ; k++) {
       const input = length(p.inputTokens), out = length(p.outputTokens);
+      if (k > 1 && p.rewriteShare > 0 && extra() < p.rewriteShare) ver++;
+      if (p.systemTokens + history + input + out > maxCtx) {
+        const kept = Math.max(0, maxCtx - p.systemTokens - input - out);
+        if (!kept && p.systemTokens + input + out > maxCtx) break;
+        history = Math.min(history, kept);
+        ver++;
+      }
       const n = p.systemTokens + history + input;
-      if (n + out > maxCtx) break;
-      requests.push({ t, n, out, conv, sys: p.systemTokens, sysId, followUp: k > 1 });
+      requests.push({ t, n, out, conv, ver, sys: p.systemTokens, sysId, followUp: k > 1 });
       history += input + out;
       t += exp(p.thinkTimeS);
       if (r() >= share || t >= end) break;
@@ -166,17 +187,18 @@ function blocksOf(req, B) {
   const sysBlocks = Math.floor(req.sys / B);
   const ids = new Array(nb);
   const sys = req.sysId ? `s${req.sysId}:` : "s";
-  for (let j = 0; j < nb; j++) ids[j] = j < sysBlocks ? sys + j : `c${req.conv}:${j}`;
+  const conv = req.ver ? `c${req.conv}.${req.ver}:` : `c${req.conv}:`;
+  for (let j = 0; j < nb; j++) ids[j] = j < sysBlocks ? sys + j : conv + j;
   return ids;
 }
 
 // Share of prompt tokens an infinite cache would serve: the most any tier chain can hit on this workload.
-export function idealHitShare(workload, blockTokens) {
+export function idealHitShare(workload, blockTokens, minCacheTokens = 0) {
   const B = workload.blockTokens ?? blockTokens;
   const seen = new Set();
   let hit = 0, total = 0;
   for (const req of workload.requests) {
-    const ids = blocksOf(req, B);
+    const ids = req.n < minCacheTokens ? [] : blocksOf(req, B);
     let i = 0;
     while (i < ids.length && seen.has(ids[i])) i++;
     hit += i * B;
@@ -202,6 +224,8 @@ const pct = (sorted, q) => sorted[Math.min(sorted.length - 1, Math.floor(q * sor
 //     requests admitted to a batch alongside the memory and sequence limits; spec: speculative decoding (a token takes step / accepted tokens); ep: experts spread over ep
 //     GPUs (decode then needs no pipeline stages), batch per attention group of tp GPUs (model.decodeStep),
 //   transfer: network variant for the prefill -> decode KV | null, simBlockTokens,
+//   cacheLifetimeS: hosted-API cache lifetime: a block unused for this long expires from every tier (null: kept
+//     until evicted, as vLLM and LMCache do), minCacheTokens: prompts shorter than this are neither looked up nor saved,
 //   prefillBatchTokens: continuous batching of prefill, vLLM's max_num_batched_tokens (null or 0: one request at a time).
 //     Each step takes waiting requests first come, first served up to this many new tokens, splitting the last one
 //     (chunked prefill), and finishes them together. A step costs one read of the weights (at the GPU's mbu, capped
@@ -318,8 +342,22 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
   };
   const pool = dec && decodePool(events, dec, profile);
 
+  // Last read or write of each block, for the cache lifetime. Lookups check it, and once a second every tier drops
+  // expired blocks from its least recently used end so they stop taking space.
+  const lifetime = cfg.cacheLifetimeS > 0 ? cfg.cacheLifetimeS : null;
+  const lastUse = lifetime ? new Map() : null;
+  const expired = (id, now) => now - (lastUse.get(id) ?? -Infinity) > lifetime;
+  let lastExpiry = 0;
+  function expireAll(now) {
+    const stale = id => { if (!expired(id, now)) return false; lastUse.delete(id); return true; };
+    for (const instance of inst) instance.gpu.expire(stale);
+    for (const n of nodes) { n.cpu.expire(stale); n.disk?.expire(stale); }
+    shared?.expire(stale);
+  }
+
   let lastPoll = 0;
   function advance(time) {
+    if (lifetime && time - lastExpiry >= 1) { lastExpiry = time; expireAll(time); }
     // The LMCache controller polls each second. Once all pools are below
     // watermark, jumping over a long idle interval has no further effect.
     const end = Math.floor(time);
@@ -382,10 +420,11 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
 
   function serve(req, template, here, start) {
     const node = nodes[here.node];
-    const ids = blocksOf(req, B);
+    const ids = req.n < (cfg.minCacheTokens ?? 0) ? [] : blocksOf(req, B);
     const k = Object.fromEntries(keys.map((kk) => [kk, 0]));
     const where = [];
     for (const id of ids) {
+      if (lifetime && expired(id, start)) break;
       if (here.gpu.has(id)) { where.push("gpu"); continue; }
       if (node.cpu.has(id)) { where.push("cpu"); continue; }
       const t = lower.find((tt) => tt.has(id, node));
@@ -581,7 +620,8 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
     }
     // A disaggregated prefill worker never generates the reply. A trace
     // supplies only prompt hashes, so it cannot identify generated chunks.
-    const allIds = req.hashes || (dec && !cfg.saveDecode) ? ids : blocksOf({ ...req, n: req.n + (req.out ?? 0) }, B);
+    const allIds = !ids.length || req.hashes || (dec && !cfg.saveDecode) ? ids : blocksOf({ ...req, n: req.n + (req.out ?? 0) }, B);
+    if (lifetime) for (const id of allIds) lastUse.set(id, start);
     const gpuCount = dec ? ids.length : allIds.length;
     const externalCount = cfg.saveDecode ? allIds.length : ids.length;
     function publish(from, to, time) {
