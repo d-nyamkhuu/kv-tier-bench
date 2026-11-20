@@ -121,7 +121,9 @@ function moeShape(spec) {
   const pick = e.per_token / e.routed;
   const dense = Math.max(0, decodeParams - pick * e.params);
   const share = Math.min(1, e.bytes_per_param ? (e.params * e.bytes_per_param) / spec.weights_bytes : e.params / (e.params + dense));
-  const elemBytes = spec.compute_dtype === "fp8" ? 1 : spec.compute_dtype === "fp4" ? 4.5 / 8 : 2;
+  // dense_bytes_per_param: the released precision of the non-expert weights where it differs from compute_dtype
+  // (Kimi K3 ships BF16 attention beside MXFP4 experts and computes with FP8 activations).
+  const elemBytes = spec.dense_bytes_per_param ?? (spec.compute_dtype === "fp8" ? 1 : spec.compute_dtype === "fp4" ? 4.5 / 8 : 2);
   const denseBytes = Math.min(spec.weights_bytes * (1 - share), dense * elemBytes);
   return {
     decode_params: decodeParams, dense_params: dense, dense_weights_bytes: denseBytes,
@@ -339,8 +341,10 @@ export const DEEPEP_LL_GB_S = [[8, 98, 127], [16, 63, 74], [32, 48, 53], [64, 43
 export const NVLINK_EP_EFF = 153 / 200;
 const deepepRates = (ep) => DEEPEP_LL_GB_S.find(([n]) => n >= ep) ?? DEEPEP_LL_GB_S[DEEPEP_LL_GB_S.length - 1];
 
-// Inside a rack-scale NVLink domain (e.g., GB200 / VR200 NVL72 where nvlink_domain > 8), inter-node RDMA traffic
-// within the domain traverses the NVLink switch backplane per GPU rather than bottlenecking on scale-out NICs.
+// Inside a rack-scale NVLink domain (GB200 / VR200 NVL72, nvlink_domain > 8), GPU-to-GPU traffic of one model between
+// trays (tensor/pipeline-parallel hidden states) crosses the NVLink switch backplane instead of the scale-out NICs
+// (multi-node NVLink: NVIDIA IMEX, NCCL_MNNVL_ENABLE). Used for the pipeline-stage hop only: KV cache transfers and
+// peer-memory cache hits stay on the RDMA NICs (scenario.buildRun).
 export function effectiveLink(v, gpu, nodes = 1, gpusPerNode = 1) {
   if (!v || !v.rdma || !gpu?.nvlink_gb_s) return v;
   const domain = gpu.nvlink_domain ?? 1;
@@ -375,7 +379,10 @@ export function decodeStep(m, gpu, batch, ctxTokens, tp = 1, { spec = null, ep =
     const inDomain = width <= (gpu.nvlink_domain ?? 1) && gpu.nvlink_gb_s;
     const nv = (gpu.nvlink_gb_s / 2) * NVLINK_EP_EFF * 1e9;
     const [, dGb, cGb] = deepepRates(width);
-    const linkScale = link?.rdma && link.link_gbit_s ? link.link_gbit_s / 400 : 1;
+    // DeepEP measured on 400 Gbit/s RDMA. Another RDMA link scales by its line rate; a non-RDMA link (TCP) by the
+    // rate it achieves end to end (variantBandwidth), so it never outruns RDMA of the same or a lower line rate.
+    const linkScale = !link ? 1 : link.rdma && link.link_gbit_s ? link.link_gbit_s / 400
+      : link.rdma ? 1 : (variantBandwidth(link) * GIB * 8) / 400e9;
     const move = inDomain ? (sends * 3) / nv : sends / (dGb * linkScale * 1e9) + (sends * 2) / (cGb * linkScale * 1e9);
     comm = layers * (TP_SYNC_PER_LAYER_S[8] + move);
   }
@@ -434,10 +441,12 @@ export const PRECISIONS = { released: null, fp8: { bits: 8, compute: "fp8" }, fp
 export function withPrecision(m, precision = "released") {
   const p = PRECISIONS[precision];
   if (!p) return m;
-  const weights = Math.min(m.weights_bytes, ((m.total_params ?? m.params) * p.bits) / 8);
   const denseWeights = m.dense_weights_bytes != null
     ? Math.min(m.dense_weights_bytes, ((m.dense_params ?? m.params) * p.bits) / 8)
     : undefined;
+  // A mixed-precision checkpoint (experts already below the target) still shrinks by what its dense part saves.
+  const weights = Math.min(m.weights_bytes - (denseWeights !== undefined ? m.dense_weights_bytes - denseWeights : 0),
+    ((m.total_params ?? m.params) * p.bits) / 8);
   const kvScale = (m.kv_dtype_bytes ?? 2) > 1 ? 1 / (m.kv_dtype_bytes ?? 2) : 1; // to 1 byte per value
   const scaleKv = (total, fixed = 0) => fixed + (total - fixed) * kvScale;
   const fixed1 = m.fixed_kv_bytes_per_token ?? 0;
@@ -481,14 +490,13 @@ export function served(m, { precision = "released", tp = 1, attention = "tp", gp
 const linkRails = (v, tp) => (v?.per_gpu ? tp : 1);
 export const stageHop = (m, link, tp = 1) => (link ? (n) => (link.latency_s ?? 0) + (n * (m.hidden_size ?? 0) * 2) / (variantBandwidth(link) * linkRails(link, tp) * GIB) : () => 0);
 
-// 2-stage chunked pipeline (storage/network -> host RAM -> GPU HBM): for M = 1 chunk it reduces to sequential
-// store-and-forward (bytes/bw + bytes/host); for M > 1 chunks, host DMA overlaps behind incoming chunks.
-export function stagedTransferSeconds(bytes, bwBytesPerS, hostBytesPerS, numChunks = 1) {
+// A lower-tier load into GPU memory: tier -> host memory, then host -> GPU, one after the other. vLLM stages "all
+// GPU<->secondary transfers ... through the CPU primary tier" and reports no hit while any chunk is pending; LMCache
+// publishes a hit only once every chunk has landed in L1. So the host copy does not overlap the read.
+// A variant whose published rate was timed into GPU memory (end_to_end) already contains the copy.
+export function stagedTransferSeconds(bytes, bwBytesPerS, hostBytesPerS, v = null) {
   if (!(bytes > 0)) return 0;
-  const m = Math.max(1, numChunks);
-  const tTier = bytes / bwBytesPerS;
-  const tHost = bytes / hostBytesPerS;
-  return Math.max(tTier, tHost) + (bytes / m) / Math.max(bwBytesPerS, hostBytesPerS);
+  return bytes / bwBytesPerS + (v?.end_to_end ? 0 : bytes / hostBytesPerS);
 }
 
 // The per-model timing functions the simulator calls, for one attention worker of `gpu`: `tpAttn` GPUs (1 under
@@ -504,17 +512,17 @@ export function timing(m, gpu, sw, tp = 1, eff = TP_EFF, { stages = 1, link = nu
   const R = (n) => (n > 0 ? overhead(n) + compute(n) : 0); // cold prefill
   const host = gpu.host_gib_s * GIB * tpAttn * stages; // one host link per GPU of this attention worker
   const cpuLoad = (k, state = true, bytes = prefixBytes(m, k, state)) => (k > 0 ? sw.cpu_load_latency_s + bytes / host : 0);
-  const chunkTokens = Math.max(1, m.block_size || 64);
   const loadFor = (v) => {
     if (!v) return () => 0;
     const bw = variantBandwidth(v) * GIB * stages * linkRails(v, tpAttn);
     const L = v.latency_s ?? 0;
-    if (v.rdma) {
-      // GPUDirect RDMA transfers directly into GPU HBM without staging through a second PCIe copy.
+    if (v.gpu_direct) {
+      // A device that writes straight into GPU memory (GPUDirect Storage / RDMA to HBM): no host copy. Peer-memory
+      // hits are not: vLLM's NIXL tier and LMCache's P2P both pull into host memory first, RDMA or not.
       return (k, state = true, bytes = prefixBytes(m, k, state)) => (k > 0 ? L + bytes / bw : 0);
     }
     return (k, state = true, bytes = prefixBytes(m, k, state)) =>
-      (k > 0 ? L + sw.cpu_load_latency_s + stagedTransferSeconds(bytes, bw, host, Math.ceil(k / chunkTokens)) : 0);
+      (k > 0 ? L + sw.cpu_load_latency_s + stagedTransferSeconds(bytes, bw, host, v) : 0);
   };
   // prefill -> decode KV transfer over a network variant, GPU to GPU
   const transferFor = (v) => {

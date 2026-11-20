@@ -383,7 +383,7 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
     const step = best.step + stepHops;
     return { step, perToken: step / best.tokens, tokens: best.tokens, plain: plain.step + stepHops };
   };
-  const pool = dec && decodePool(events, dec, profile);
+  const pool = dec && decodePool(events, { ...dec, ranks: decodeEp ? decodeEp / decTp : 1 }, profile);
 
   // Last read or write of each block, kept in strict oldest-first Map insertion order for O(1) lifetime expiration
   // across every tier (so a GPU-hot block at an LRU's head never blocks expiring stale entries behind it).
@@ -501,31 +501,44 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
         where.pop();
       }
     }
-    // Cost-aware recompute guard (when enabled): if fetching slow lower-tier blocks (including current lane backlog)
-    // would take longer than recomputing those suffix tokens on the GPU, drop the slow-tier suffix and recompute.
+    // Cost-aware load guard (opt-in; LMCache and vLLM load every hit by default): the part of the hit that is slower
+    // to load than to recompute, current lane backlog included, is recomputed instead.
     if (cfg.skipSlowLoads && where.length) {
-      let cut = where.findIndex(w => w !== "gpu" && w !== "cpu");
+      const cut = where.findIndex(w => w !== "gpu" && w !== "cpu");
       if (cut >= 0) {
-        let estLoadS = 0;
-        for (const tier of lower) {
-          const cnt = where.slice(cut).filter(w => w === tier.key).length;
-          if (!cnt) continue;
-          const bytes = cnt * backingBlock + (where.at(-1) === tier.key ? externalState : 0);
-          const bw = variantBandwidth(tier.v) * GIB * pp * linkRails(tier.v);
-          const lane = tier.key === "disk" ? node.diskLane : tier.key === "shared" ? node.ethRx : rxLane(node, tier.v, here.replica);
-          const qWait = Math.max(0, lane.free - start);
-          const headRtt = tier.key === "shared" && s3 && ids.slice(cut).some((id, idx) => where[cut + idx] === "shared" && !node.knownObjects.has(id))
-            ? (cfg.shared.latency_s ?? 0) : 0;
-          const numChunks = Math.max(1, cnt * Math.ceil(B / Math.max(1, m.block_size || 64)));
-          const xferS = tier.v.rdma ? bytes / bw
-            : cfg.software.cpu_load_latency_s + stagedTransferSeconds(bytes, bw, T.hostBytesPerS, numChunks);
-          estLoadS += headRtt + qWait + (tier.v.latency_s ?? 0) + xferS;
+        // Seconds to load the lower-tier blocks of where[cut, len), current lane backlog included.
+        const estimate = (len) => {
+          let seconds = 0;
+          for (const tier of lower) {
+            let cnt = 0, head = false;
+            for (let j = cut; j < len; j++) {
+              if (where[j] !== tier.key) continue;
+              cnt++;
+              head ||= tier.key === "shared" && s3 && !node.knownObjects.has(ids[j]);
+            }
+            if (!cnt) continue;
+            const bytes = cnt * backingBlock + (where[len - 1] === tier.key ? externalState : 0);
+            const bw = variantBandwidth(tier.v) * GIB * pp * linkRails(tier.v);
+            const lane = tier.key === "disk" ? node.diskLane : tier.key === "shared" ? node.ethRx : rxLane(node, tier.v, here.replica);
+            const xferS = tier.v.gpu_direct ? bytes / bw
+              : cfg.software.cpu_load_latency_s + stagedTransferSeconds(bytes, bw, T.hostBytesPerS, tier.v);
+            seconds += (head ? cfg.shared.latency_s ?? 0 : 0) + Math.max(0, lane.free - start) + (tier.v.latency_s ?? 0) + xferS;
+          }
+          return seconds;
+        };
+        const usable = (len) => Math.max(0, len * B - (len > 0 ? m.prefix_replay_tokens ?? 0 : 0));
+        // The hit may end where the source tier changes: vLLM's per-tier load filter and load cap recompute what lies
+        // beyond, keeping the faster tiers' prefix. A stateful prefix needs a checkpoint at its end, so it is all or
+        // nothing below the GPU and CPU tiers.
+        const ends = [cut, where.length];
+        if (!m.read_fixed_bytes) for (let j = cut + 1; j < where.length; j++) if (where[j] !== where[j - 1]) ends.push(j);
+        let best = where.length, bestS = Infinity;
+        for (const len of ends) {
+          const total = estimate(len) + T.ttft(req.n, usable(len), 0);
+          if (total < bestS || (total === bestS && len > best)) { best = len; bestS = total; }
         }
-        const usableFast = Math.max(0, cut * B - (cut > 0 ? m.prefix_replay_tokens ?? 0 : 0));
-        const usableAll = Math.max(0, where.length * B - (m.prefix_replay_tokens ?? 0));
-        const savedComputeS = T.ttft(req.n, usableFast, 0) - T.ttft(req.n, usableAll, 0);
-        if (estLoadS > savedComputeS) {
-          where.length = cut;
+        if (best < where.length) {
+          where.length = best;
           if (m.read_fixed_bytes) {
             while (where.length) {
               const id = ids[where.length - 1];
@@ -589,7 +602,6 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
     const usable = Math.max(0, h - (m.prefix_replay_tokens ?? 0));
     const out = req.out ?? 0;
     const hostBw = T.hostBytesPerS;
-    const modelChunkTokens = Math.max(1, m.block_size || 64);
     const phases = [];
     if (k.cpu) {
       const cpuBytes = readBytes("cpu");
@@ -609,12 +621,9 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
         ? [...peerBytes].map(([owner, size]) => ({ seconds: size / bw, lanes: [txLane(owner, tier.v), rxLane(node, tier.v, here.replica)] }))
         : [{ seconds: bytes / bw, lanes: [tier.key === "disk" ? node.diskLane : node.ethRx] }];
       let hostLatency = 0, hostSeconds = 0;
-      if (!tier.v.rdma) {
+      if (!tier.v.gpu_direct) {
         hostLatency = cfg.software.cpu_load_latency_s;
-        if (bytes > 0 && Number.isFinite(hostBw)) {
-          const numChunks = Math.max(1, Math.ceil((k[tier.key] * B) / modelChunkTokens));
-          hostSeconds = Math.max(0, stagedTransferSeconds(bytes, bw, hostBw, numChunks) - bytes / bw);
-        }
+        if (bytes > 0 && Number.isFinite(hostBw)) hostSeconds = Math.max(0, stagedTransferSeconds(bytes, bw, hostBw, tier.v) - bytes / bw);
       }
       phases.push({ tier: tier.key, latency: tier.v.latency_s ?? 0, payloads, hostLatency, hostSeconds });
     }
@@ -753,8 +762,8 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
     const externalCount = cfg.saveDecode ? allIds.length : ids.length;
     const sysEnd = req.sys > 0 ? Math.floor(req.sys / B) - 1 : -1;
     function publish(from, to, time) {
-      const writes = [];
-      let writeBytes = 0;
+      const diskWrites = [], sharedWrites = [];
+      let diskWriteBytes = 0, sharedWriteNow = 0;
       for (let j = to - 1; j >= from; j--) {
         const id = allIds[j];
         // Hybrid models checkpoint recurrent state at the prompt end, matched prefix end, and shared system-prompt boundary.
@@ -774,32 +783,38 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
         const prior = node.cpu.bytes(id);
         if (prior >= bytes) continue;
         node.cpu.put(id, bytes);
-        if (node.disk || shared) {
-          writes.push({ id, bytes, state, prior });
-          writeBytes += bytes - prior;
+        // A recomputed chunk goes to every backing store again. The filesystem connectors skip a file that already
+        // exists (vLLM's access() check, LMCache fs); LMCache's S3 adapter PUTs without a HEAD, so it is uploaded
+        // and billed again.
+        if (node.disk && node.disk.bytes(id) < bytes) {
+          diskWrites.push({ id, bytes });
+          diskWriteBytes += bytes - prior;
+        }
+        if (shared) {
+          sharedWrites.push({ id, bytes, state, prior });
+          sharedWriteNow += bytes - prior;
         }
       }
       if (firstGpuEvictionS == null && here.gpu.evictions) firstGpuEvictionS = time;
-      if (!writes.length) return;
 
       // The cache batch becomes readable on each backing tier after its own
       // asynchronous write. SSD writes use write bandwidth; S3 uploads use the frontend TX lane.
-      const writeTo = (variant, lane, commit) => {
+      const writeTo = (variant, lane, writeBytes, commit) => {
         events.at(time + (variant.latency_s ?? 0), 1, ready => {
           const done = reserve(ready, writeBytes / (writeBandwidth(variant) * GIB * pp), [lane]);
           events.at(done, 0, commit);
         });
       };
-      if (node.disk) writeTo(cfg.disk, node.diskLane, done => {
+      if (diskWrites.length) writeTo(cfg.disk, node.diskLane, diskWriteBytes, done => {
         const before = node.disk.added;
-        for (const { id, bytes } of writes) node.disk.put(id, bytes);
+        for (const { id, bytes } of diskWrites) node.disk.put(id, bytes);
         if (measured) node.diskWritten += node.disk.added - before;
         if (firstDiskEvictionS == null && node.disk.evictions) firstDiskEvictionS = done;
       });
-      if (shared) writeTo(cfg.shared, node.ethTx, done => {
+      if (sharedWrites.length) writeTo(cfg.shared, node.ethTx, sharedWriteNow, done => {
         noteShared(done);
         const before = shared.added;
-        for (const { id, bytes, state, prior } of writes) {
+        for (const { id, bytes, state, prior } of sharedWrites) {
           shared.put(id, bytes);
           touchShared(id, done);
           node.knownObjects?.add(id);
@@ -808,7 +823,7 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
         }
         if (firstSharedEvictionS == null && shared.evictions) firstSharedEvictionS = done;
         if (measured) {
-          sharedWriteBytes += writeBytes;
+          sharedWriteBytes += sharedWriteNow;
           sharedStored += shared.added - before;
         }
       });

@@ -627,3 +627,50 @@ test("skipSlowLoads bypasses slow storage tiers when GPU recomputation is faster
   assert.equal(smart.tokens.disk, 0);
   assert.ok(smart.ttft.p90 < stock.ttft.p90 / 4, `cost-aware guard avoids 5.5s disk stall: ${smart.ttft.p90} vs ${stock.ttft.p90}`);
 });
+
+test("a recomputed chunk is PUT to S3 again (no HEAD first) but an existing file on disk is not rewritten", () => {
+  const slowS3 = { family: "obj", bw_gib_s: 200 / GIB, latency_s: 0.05, usd_per_1k_put: 0.005, usd_per_1k_get: 0.0004, usd_per_gib_month: 0.02 };
+  const hashes = Array.from({ length: 10 }, (_, j) => `h${j}`);
+  const work = { blockTokens: null, requests: [0, 100, 200].map(t => ({ t, n: 1000, hashes })) };
+  const stock = simulate(work, { ...base, gpuGiB: 0, cpuGiB: 0, shared: slowS3, skipSlowLoads: false });
+  const smart = simulate(work, { ...base, gpuGiB: 0, cpuGiB: 0, shared: slowS3, skipSlowLoads: true });
+  assert.equal(stock.s3Requests.put, 10);
+  assert.equal(smart.tokens.shared, 0);
+  assert.equal(smart.s3Requests.put, 30, "LMCache's S3 adapter uploads a recomputed chunk without checking for it");
+  assert.equal(smart.s3Requests.get, 0);
+  const slowDisk = { family: "fs", bw_gib_s: 200 / GIB, latency_s: 0.05, usd_per_gib_written: 1, usd_per_gib_month: 0 };
+  const once = simulate({ blockTokens: null, requests: work.requests.slice(0, 1) }, { ...base, gpuGiB: 0, cpuGiB: 0, disk: slowDisk, skipSlowLoads: true });
+  const thrice = simulate(work, { ...base, gpuGiB: 0, cpuGiB: 0, disk: slowDisk, skipSlowLoads: true });
+  assert.equal(thrice.tokens.disk, 0);
+  assert.ok(once.usd.storage > 0 && thrice.usd.storage === once.usd.storage, "the file connector skips files that exist");
+});
+
+test("skipSlowLoads keeps the fast tier's prefix and recomputes only what is slower to load", () => {
+  // 3 of 10 blocks stay on a fast disk; the rest are only in a very slow object store.
+  const disk = { family: "fs", bw_gib_s: 1e6 / GIB, latency_s: 0.001, capacity_gib: gib(500) };
+  const shared = { family: "obj", bw_gib_s: 5 / GIB, latency_s: 0.05 };
+  const hashes = Array.from({ length: 10 }, (_, j) => `h${j}`);
+  const work = { blockTokens: null, requests: [0, 1000].map(t => ({ t, n: 1000, hashes })) };
+  const run = (extra) => { const seen = []; simulate(work, { ...base, gpuGiB: 0, cpuGiB: 0, disk, shared, ...extra }, (req, ttft, k) => seen.push({ ttft, k: { ...k } })); return seen[1]; };
+  const stock = run({}), smart = run({ skipSlowLoads: true }), diskOnly = run({ shared: null });
+  assert.ok(stock.k.disk > 0 && stock.k.shared > 0);
+  assert.equal(smart.k.disk, stock.k.disk);
+  assert.equal(smart.k.shared, 0);
+  assert.ok(Math.abs(smart.ttft - diskOnly.ttft) < 1e-9 && smart.ttft < stock.ttft / 10, `${smart.ttft} vs ${diskOnly.ttft} vs ${stock.ttft}`);
+});
+
+test("decode requests spread over the DP ranks of an instance instead of filling one", async () => {
+  const { Events } = await import("../events.js");
+  const { decodePool } = await import("../decode.js");
+  const peak = (ranks, n) => {
+    const events = new Events();
+    const pool = decodePool(events, { batch: 64, ranks }, () => ({ step: 0.01, perToken: 0.01, tokens: 1, plain: 0.01 }));
+    const sizes = [];
+    for (let i = 0; i < n; i++) pool.submit(0, { measured: true, left: 10, ctx: 100, peak: 110, done: (t, task) => sizes.push(task.batchSteps / task.steps) });
+    events.drain(() => {});
+    return { groups: pool.peakGroups, sizes };
+  };
+  assert.deepEqual(peak(1, 8), { groups: 1, sizes: Array(8).fill(8) });
+  assert.deepEqual(peak(4, 8), { groups: 4, sizes: Array(8).fill(2) });
+  assert.equal(peak(4, 2).groups, 2);
+});

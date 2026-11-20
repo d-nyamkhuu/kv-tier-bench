@@ -69,17 +69,18 @@ export function buildRun(c, over = {}, trace = null, maxSimNodes = MAX_SIM_NODES
     return { error: "The shared tier accepts object storage. Choose a private disk in the local disk slot." };
   const gpuBudget = kv * (sim.gpuBudgetFraction ?? 1);
   const workerScale = m.attention === "dp" ? tp : 1;
-  const resolveLink = (id) => effectiveLink(byId(c.variants, id), gpu, sim.nodes, sim.gpusPerNode);
-  const transferVariant = sim.decode
-    ? (decodeGpu.id === gpu.id ? resolveLink(sim.transfer) : byId(c.variants, sim.transfer))
-    : null;
+  // Inside an NVL72 rack only the model's own traffic between trays (the pipeline-stage hop) rides NVLink, as
+  // NCCL and vLLM's all-reduce do over multi-node NVLink. KV moves over the trays' RDMA NICs: Dynamo documents an
+  // RDMA fabric as the only fast path between nodes, and vLLM, SGLang and NIXL register NIC-reachable memory.
+  const stageVariant = effectiveLink(byId(c.variants, sim.stageLink), gpu, sim.nodes, sim.gpusPerNode);
+  const transferVariant = sim.decode ? byId(c.variants, sim.transfer) : null;
   const cfg = {
     model: m, gpu, software: sw,
     cluster: { nodes: simNodes, gpusPerNode: sim.gpusPerNode, tp, pp }, costScale: sim.nodes / simNodes,
-    stageLink: pp > 1 ? resolveLink(sim.stageLink) : null,
+    stageLink: pp > 1 ? stageVariant : null,
     physicalKvGiB: kv / workerScale, gpuGiB: gpuBudget, cpuGiB: sim.cpuGiB,
     disk: disk && sim.diskCapacityGiB != null ? { ...disk, capacity_gib: sim.diskCapacityGiB } : disk,
-    p2p: simNodes > pp && sim.cpuGiB > 0 ? resolveLink(sim.p2p) : null,
+    p2p: simNodes > pp && sim.cpuGiB > 0 ? byId(c.variants, sim.p2p) : null,
     shared: shared && sim.sharedCapacityGiB != null ? { ...shared, capacity_gib: sim.sharedCapacityGiB } : shared,
     durationMin: trace && !trace.syntheticScaled ? undefined : c.workload.durationMin, routing: sim.routing,
     peerFirst: sim.peerFirst, saveDecode: sim.saveDecode, skipSlowLoads: !!sim.skipSlowLoads,

@@ -82,3 +82,17 @@ test("pipeline stages across nodes: memory adds up, a request crosses every stag
   c.sim.nodes = 3;
   assert.match(runScenario(c).error, /instances of 2 nodes/);
 });
+
+test("inside an NVL72 rack KV still moves over the RDMA NICs; only the pipeline-stage hop rides NVLink", async () => {
+  const { MODELS } = await import("../presets.js");
+  const { variantBandwidth } = await import("../model.js");
+  const c = defaultConfig(S1, VARIANTS, GPUS, SOFTWARE, MODELS);
+  const ndr = c.variants.find((v) => v.id === "p2p-ib-ndr");
+  Object.assign(c.sim, { model: "kimi-k3", precision: "fp8", gpu: "gb200", decodeGpu: "gb200", nodes: 4, gpusPerNode: 8, tp: 8, pp: 2,
+    p2p: "p2p-ib-ndr", transfer: "p2p-ib-ndr", stageLink: "p2p-ib-ndr", cpuGiB: 512 });
+  const run = buildRun(c);
+  assert.equal(run.error, undefined);
+  assert.equal(run.cfg.p2p, ndr);
+  assert.equal(run.cfg.transfer, ndr);
+  assert.ok(variantBandwidth(run.cfg.stageLink) > 10 * variantBandwidth(ndr));
+});

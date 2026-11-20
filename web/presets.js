@@ -34,7 +34,9 @@ const TCP_EFFICIENCY = 4.9 / 12.5;
 const RDMA_EFFICIENCY = 0.711;
 const RDMA_LATENCY_S = 0.001; // DERIVED: intercept of transfer time vs KV size in the same Mooncake table (0.5-1 ms)
 // Local NVMe through vLLM's filesystem connector (direct I/O, staged via CPU): 11.2-12.0 GB/s on a Gen5 drive that
-// fio reads at 13.5 GB/s, and ~6 ms from cache lookup to the first file read (py-kvcache, Sep 2026)
+// fio reads at 13.5 GB/s, and ~6 ms from cache lookup to the first file read (py-kvcache, Sep 2026). The paper times
+// disk to GPU ("covers the disk read as well as the GPU copy"), so the rate is end to end (end_to_end: no separate
+// host -> GPU copy is added). Object storage and peer rates are network rates: their host copy follows the transfer.
 const NVME_VS_FIO = 11.6 / 13.5;
 const NVME_LATENCY_S = 0.006;
 const pykvSources = [
@@ -62,7 +64,7 @@ const tcp = (gbit) => ({
 
 // A Nebius network disk: the documented bandwidth limit, reached through vLLM's filesystem connector as a local NVMe
 // drive is (py-kvcache), with the connector's ~6 ms first-read delay. Nebius documents no latency.
-const nebiusDisk = (d) => ({ family: "fs", efficiency: NVME_VS_FIO, latency_s: NVME_LATENCY_S, shared: false, bill: "provisioned", usd_per_hour: 0, ...d,
+const nebiusDisk = (d) => ({ family: "fs", efficiency: NVME_VS_FIO, end_to_end: true, latency_s: NVME_LATENCY_S, shared: false, bill: "provisioned", usd_per_hour: 0, ...d,
   assumptions: ["efficiency", "latency_s", ...(d.assumptions ?? [])], sources: [...d.sources, ...pykvSources] });
 
 // Object storage. Throughput: AWS's per-instance ceiling (100 Gb/s) at the best published KV-load efficiency over S3
@@ -95,31 +97,31 @@ export const VARIANTS = [
   // ---------------------------------------------------------------------------------------------- local disk (fs)
   {
     id: "fs-bf4-icms", family: "fs", name: "BlueField-4 ICMS Context Pod (800G RDMA Flash)",
-    bw_gib_s: GB(100), write_bw_gib_s: GB(80), efficiency: RDMA_EFFICIENCY, latency_s: 0.0005, rdma: true, capacity_gib: GB(16384), shared: false, bill: "provisioned", usd_per_gib_month: 0.08, usd_per_hour: 0,
+    bw_gib_s: GB(100), write_bw_gib_s: GB(80), efficiency: RDMA_EFFICIENCY, latency_s: 0.0005, rdma: true, gpu_direct: true, capacity_gib: GB(16384), shared: false, bill: "provisioned", usd_per_gib_month: 0.08, usd_per_hour: 0,
     sources: [
       src("NVIDIA Vera Rubin & BlueField-4 ICMS architecture", "https://www.nvidia.com/en-us/data-center/vera-rubin/", "BlueField-4 DPU ... 800Gb/s to 1.6Tb/s ... Inference Context Memory Storage (ICMS) pod-level KV context tier"),
       ...rdmaSources,
     ],
-    assumptions: ["efficiency", "latency_s", "capacity_gib", "usd_per_gib_month"],
+    assumptions: ["efficiency", "latency_s", "capacity_gib", "usd_per_gib_month", "gpu_direct (lands in GPU memory without a host copy, as NVIDIA describes the tier; no measurement is published)"],
     note: "DPU-managed G3.5 KV context flash tier (BlueField-4 with 128 GB LPDDR5 staging) delivering GPUDirect RDMA into GPU HBM at 800 Gb/s (100 GB/s line rate × 71.1% Mooncake efficiency).",
   },
   {
     id: "fs-nvme-gen5", family: "fs", name: "Local NVMe, PCIe Gen5 (Kioxia CM7-R)",
-    bw_gib_s: GB(13.5), write_bw_gib_s: GB(6.7), efficiency: NVME_VS_FIO, latency_s: NVME_LATENCY_S, capacity_gib: GB(3840), shared: false, bill: "provisioned", usd_per_gib_month: 0.065, usd_per_hour: 0,
+    bw_gib_s: GB(13.5), write_bw_gib_s: GB(6.7), efficiency: NVME_VS_FIO, end_to_end: true, latency_s: NVME_LATENCY_S, capacity_gib: GB(3840), shared: false, bill: "provisioned", usd_per_gib_month: 0.065, usd_per_hour: 0,
     sources: [...pykvSources, src("Kioxia CM7-R", "https://americas.kioxia.com/en-us/business/ssd/enterprise-ssd/cm7-r.html", "Sustained 128 KiB Sequential Read | 10,000 MB/s | 14,000 MB/s (14,000 for 1.92–15.36 TB); Write 6,700 MB/s"), src("Nebius Compute pricing (local SSD, as a price reference)", S.pricing, "Local SSD disk | $0.065")],
     assumptions: ["capacity_gib", "usd_per_gib_month"],
     note: "Measured inside vLLM: 11.2–12.0 GB/s for large prefixes (9.0 at 1k tokens) against fio's 13.5 GB/s, ~6 ms to the first read; sequential write 6.7 GB/s. Price: Nebius's local SSD rate, as a reference for a drive in the server.",
   },
   {
     id: "fs-nvme-gen4", family: "fs", name: "Local NVMe, PCIe Gen4 (Samsung PM9A3)",
-    bw_gib_s: GB(6), write_bw_gib_s: GB(4), efficiency: NVME_VS_FIO, latency_s: NVME_LATENCY_S, capacity_gib: GB(3840), shared: false, bill: "provisioned", usd_per_gib_month: 0.065, usd_per_hour: 0,
+    bw_gib_s: GB(6), write_bw_gib_s: GB(4), efficiency: NVME_VS_FIO, end_to_end: true, latency_s: NVME_LATENCY_S, capacity_gib: GB(3840), shared: false, bill: "provisioned", usd_per_gib_month: 0.065, usd_per_hour: 0,
     sources: [...pykvSources, src("Samsung PM9A3", "https://semiconductor.samsung.com/ssd/datacenter-ssd/pm9a3/", "sequential read speeds up to 6,800 MB/s, write up to 4,000 MB/s"), src("Nebius Compute pricing (local SSD, as a price reference)", S.pricing, "Local SSD disk | $0.065")],
     assumptions: ["efficiency", "capacity_gib", "usd_per_gib_month"],
     note: "Peak is py-kvcache's fio read of this drive (6 GB/s; spec 6.8, write 4.0). The vLLM-to-fio ratio (86%) and ~6 ms were measured on a Gen5 drive.",
   },
   {
     id: "fs-nebius-local-ssd", family: "fs", name: "Nebius local SSD, 3.5 TiB (B300 VMs only)",
-    bw_gib_s: GB(6.8), write_bw_gib_s: GB(2.6), efficiency: NVME_VS_FIO, latency_s: NVME_LATENCY_S, capacity_gib: 3584, shared: false, bill: "provisioned", usd_per_gib_month: 0.065, usd_per_hour: 0,
+    bw_gib_s: GB(6.8), write_bw_gib_s: GB(2.6), efficiency: NVME_VS_FIO, end_to_end: true, latency_s: NVME_LATENCY_S, capacity_gib: 3584, shared: false, bill: "provisioned", usd_per_gib_month: 0.065, usd_per_hour: 0,
     sources: [
       src("Nebius disk types", S.types, "Local SSD disk ... 3.5 TiB ... Read: 6.8 GB/s Write: 2.6 GB/s"),
       src("Nebius local disks", S.local, "Only on the NVIDIA® B300 NVLink platform (gpu-b300-sxm) with the eight-GPU preset 8gpu-192vcpu-2768gb"),
@@ -154,13 +156,13 @@ export const VARIANTS = [
   }),
   {
     id: "fs-sata-ssd", family: "fs", name: "Enterprise SATA SSD (Samsung PM893)",
-    bw_gib_s: MBs(550), write_bw_gib_s: MBs(520), efficiency: NVME_VS_FIO, latency_s: NVME_LATENCY_S, capacity_gib: GB(3840), shared: false, bill: "provisioned", usd_per_gib_month: 0.065, usd_per_hour: 0,
+    bw_gib_s: MBs(550), write_bw_gib_s: MBs(520), efficiency: NVME_VS_FIO, end_to_end: true, latency_s: NVME_LATENCY_S, capacity_gib: GB(3840), shared: false, bill: "provisioned", usd_per_gib_month: 0.065, usd_per_hour: 0,
     sources: [src("Samsung PM893", "https://semiconductor.samsung.com/ssd/datacenter-ssd/pm893/", "sequential read/write speeds of up to 550/520 MB/s"), ...pykvSources, src("Nebius Compute pricing (local SSD, as a price reference)", S.pricing, "Local SSD disk | $0.065")],
     assumptions: ["efficiency", "capacity_gib", "usd_per_gib_month"], note: "Efficiency and latency borrowed from the NVMe measurement in vLLM.",
   },
   {
     id: "fs-hdd", family: "fs", name: "Enterprise HDD (Seagate Exos X18, 18 TB)",
-    bw_gib_s: MBs(270), efficiency: NVME_VS_FIO, latency_s: NVME_LATENCY_S + 0.00416, capacity_gib: GB(18000), shared: false, bill: "provisioned", usd_per_gib_month: 0.045, usd_per_hour: 0,
+    bw_gib_s: MBs(270), efficiency: NVME_VS_FIO, end_to_end: true, latency_s: NVME_LATENCY_S + 0.00416, capacity_gib: GB(18000), shared: false, bill: "provisioned", usd_per_gib_month: 0.045, usd_per_hour: 0,
     sources: [
       src("Seagate Exos X18 datasheet", "https://www.seagate.com/files/www-content/datasheets/pdfs/exos-x18-channel-DS2045-2-2010US-en_US.pdf", "Max. Sustained Transfer Rate OD (MB/s,MiB/s) 270/258 ... Average Latency (ms) 4.16"),
       src("AWS EBS pricing (HDD price reference)", "https://aws.amazon.com/ebs/pricing/", "st1: In a region that charges $0.045 per GB-month"),
@@ -438,7 +440,7 @@ const MODEL_SPECS = {
   "kimi-k3": {
     name: "Kimi K3", hf_id: "moonshotai/Kimi-K3", released: "MXFP4 experts, BF16 attention", arch: "MoE 2.8T / 104B active; 69 KDA linear + 24 NoPE-MLA layers",
     spec: {
-      num_layers: 93, hidden_size: 7168, total_params: 2.8e12, active_params: 104e9, weights_bytes: 1560936091448, compute_dtype: "fp8", block_size: 64, experts: moe({ layers: 92, routed: 896, per_token: 16, width: 3584, inter: 3072, bytes_per_param: MXFP4 }),
+      num_layers: 93, hidden_size: 7168, total_params: 2.8e12, active_params: 104e9, weights_bytes: 1560936091448, compute_dtype: "fp8", dense_bytes_per_param: 2, block_size: 64, experts: moe({ layers: 92, routed: 896, per_token: 16, width: 3584, inter: 3072, bytes_per_param: MXFP4 }),
       layers: [
         { type: "linear", count: 69, state_bytes: gdnStateBytes({ k_heads: 96, v_heads: 96, k_dim: 128, v_dim: 128, conv: 4 }) },
         { type: "mla", count: 24, q_heads: 96, latent: 512, rope: 0, qk_dim: 128, v_dim: 128 },
@@ -446,7 +448,7 @@ const MODEL_SPECS = {
     },
     sources: [expertSrc("moonshotai/Kimi-K3", '"num_experts": 896, "num_experts_per_token": 16, "routed_expert_hidden_size": 3584, "moe_intermediate_size": 3072, "first_k_dense_replace": 1, "mla_use_nope": true'), cfgSrc("moonshotai/Kimi-K3"), filesSrc("moonshotai/Kimi-K3", 1560936091448),
       cardSrc("moonshotai/Kimi-K3", "Total Parameters 2.8T; Activated Parameters 104B; Attention-Layer Composition 69 KDA + 24 Gated MLA; MXFP4 weights / MXFP8 activations"), VLLM_MLA_TP, VLLM_STATE_TP],
-    assumptions: ["block_size", "KDA state as Gated DeltaNet's shape, bf16", "mla_use_nope omits separate RoPE key cache (512 latent elements/layer)", "routed experts at MXFP4's 4.25 bits per parameter (the rest of the weight bytes are the dense part)"],
+    assumptions: ["block_size", "KDA state as Gated DeltaNet's shape, bf16", "mla_use_nope omits separate RoPE key cache (512 latent elements/layer)", "routed experts at MXFP4's 4.25 bits per parameter (the rest of the weight bytes are the dense part)", "dense (non-expert) weights at BF16, 2 bytes per parameter, as released"],
     note: "Weights alone are 1.56 TB: in one node only 8 B300s or VR200s hold it; other GPUs need two or more nodes.",
   },
   "deepseek-v4.1-flash": {
@@ -461,8 +463,8 @@ const MODEL_SPECS = {
       ],
     },
     sources: [expertSrc("deepseek-ai/DeepSeek-V4.1-Flash", '"n_routed_experts": 384, "num_experts_per_tok": 6, "moe_intermediate_size": 2304, "expert_dtype": "fp4"'), cfgSrc("deepseek-ai/DeepSeek-V4.1-Flash"), filesSrc("deepseek-ai/DeepSeek-V4.1-Flash", 510296708312),
-      src("LMCache validated DeepSeek V4.1 recipe", "https://docs.lmcache.ai/recipes/deepseek_v41_flash.html", "fp8_ds_mla, 128-token window and compressed/indexer groups"), src("vLLM V4.1 packed KV and index K", "https://github.com/vllm-project/vllm/blob/82c6b325b49ce361f5a295eb7d932e1b439e187d/vllm/models/deepseek_v41/attention.py", "528/584-byte KV records, 132-byte FP8 index K; only KV sources own the index K cache"), cardSrc("deepseek-ai/DeepSeek-V4.1-Flash", "these designs reduce the global KV cache footprint to 890 bytes per token ... activate only 8B parameters per token during prefill and 16B during decode ... SWA Bounded Replay reconstructs missing SWA KV states by replaying only the most recent n_win tokens, avoiding the need to persist SWA KV to SSD"), VLLM_MLA_TP],
-    assumptions: ["block_size", "its DSpark drafter: 4 drafted tokens per block of 5 and 3 layers of the model's size (the config's dspark_block_size and next-token layers); accepted tokens as measured on Qwen3-8B", "attention FLOPs (64 heads of 512 over the top 512 tokens on 40 layers, indexer on 8)", "bounded replay rebuilds the trailing window on a prefix hit; logical payload excludes page padding"],
+      src("LMCache validated DeepSeek V4.1 recipe", "https://docs.lmcache.ai/recipes/deepseek_v41_flash.html", "fp8_ds_mla, 128-token window and compressed/indexer groups"), src("vLLM V4.1 packed KV and index K", "https://github.com/vllm-project/vllm/blob/82c6b325b49ce361f5a295eb7d932e1b439e187d/vllm/models/deepseek_v41/attention.py", "528/584-byte KV records, 132-byte FP8 index K; only KV sources own the index K cache"), cardSrc("deepseek-ai/DeepSeek-V4.1-Flash", "Engram conditional memory (196B parameters, sparsely accessed via token-based lookup)"), src("vLLM recipe: DeepSeek V4.1 Flash (Engram placement)", "https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4.1-Flash", "47.2 GiB of device memory per rank at TP4 and 94.4 GiB at TP2"), cardSrc("deepseek-ai/DeepSeek-V4.1-Flash", "these designs reduce the global KV cache footprint to 890 bytes per token ... activate only 8B parameters per token during prefill and 16B during decode ... SWA Bounded Replay reconstructs missing SWA KV states by replaying only the most recent n_win tokens, avoiding the need to persist SWA KV to SSD"), VLLM_MLA_TP],
+    assumptions: ["block_size", "its DSpark drafter: 4 drafted tokens per block of 5 and 3 layers of the model's size (the config's dspark_block_size and next-token layers); accepted tokens as measured on Qwen3-8B", "attention FLOPs (64 heads of 512 over the top 512 tokens on 40 layers, indexer on 8)", "bounded replay rebuilds the trailing window on a prefix hit; logical payload excludes page padding", "Engram tables (about 203 GB of the weight files, FP8) are read a few rows per token (48 rows, about 13 KB), so a step does not read them; one copy is split across the instance's GPUs and never replicated per DP rank"],
     note: "LMCache fp8_ds_mla payload estimate. Four layers own both compressed KV and index K. All 40 layers use a 128-token live window. With bounded replay enabled, persistent caches hold only compressed KV and index K. Excludes scratch rings and page padding. Prefill uses the card's 8B active parameters, decode its 16B.",
   },
   "glm-5.3": {

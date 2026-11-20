@@ -343,3 +343,13 @@ test("replay and compareTiers support imported JSONL traces with non-zero start 
   const rows = compareTiers(c, r.layout, 1, { trace });
   assert.ok(rows.find(row => row.name === "GPU only").requests === 3);
 });
+
+test("a context that outgrows one DP-attention worker falls back to TP-attention on the same layout", () => {
+  const c = defaultConfig(s1, VARIANTS, GPUS, SOFTWARE, MODELS);
+  Object.assign(c.workload, { requestsPerMin: 30, followUpShare: 1 - 1 / 30, thinkTimeS: 60, systemTokens: 6000, inputTokens: 3000, outputTokens: 1000, durationMin: 40 });
+  Object.assign(c.sim, { model: "qwen3-235b-a22b", gpu: "h200", decodeGpu: "h200", precision: "released", attention: "dp", nodes: 2, gpusPerNode: 8,
+    cpuGiB: 128, shared: null, warmupMin: 0, transfer: "p2p-ib-ndr" });
+  const r = replay(c);
+  assert.deepEqual(r.layout, { tp: 4, pp: 1, attention: "tp" });
+  assert.ok(r.requests > 0);
+});

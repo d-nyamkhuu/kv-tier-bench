@@ -121,7 +121,7 @@ test("serving precision: FP8 halves bf16 weights and KV, FP4 is 4.5 bits a weigh
   assert.equal(prefillTflops(withPrecision(g, "fp8"), { tflops_bf16: 1, tflops_fp8: 2, tflops_fp4: 4 }), 2);
 });
 
-test("DP-attention replicates active dense weights, GPUDirect RDMA skips host bounce, NVMe pipelines chunks, and NVL72 uses NVLink", async () => {
+test("DP-attention replicates active dense weights, lower tiers stage through host memory, and NVL72 stage hops use NVLink", async () => {
   const { denseWeightBytes, effectiveLink, instanceWeightBytes, prefixBytes, served, timing } = await import("../model.js");
   const { MODELS, VARIANTS } = await import("../presets.js");
 
@@ -139,15 +139,20 @@ test("DP-attention replicates active dense weights, GPUDirect RDMA skips host bo
   assert.equal(served(ds, { precision: "fp4", tp: 1, attention: "dp", gpu: rtx }).kv_bytes_per_token, 890);
   assert.equal(served(ds, { precision: "fp8", tp: 1, attention: "dp", gpu: rtx }).kv_bytes_per_token, 1650);
 
-  // 3. Local Gen5 NVMe pipelines host DMA (~11.5 GB/s, not 9.48 GB/s); GPUDirect RDMA skips host PCIe bounce (~35.5 GB/s, not 21.3 GB/s).
+  // 3. Local Gen5 NVMe: the published rate is timed disk to GPU, so no host copy is added (~11.5 GB/s). A peer-memory
+  // hit over RDMA lands in host memory first and pays the host -> GPU copy; only a gpu_direct device skips it.
   const m = S1.models["qwen3-vl-32b"];
   const h100 = GPUS.find((g) => g.id === "h100");
   const T = timing(m, h100, SOFTWARE, 1);
   const bytes = prefixBytes(m, 32768);
   const nvme = VARIANTS.find((v) => v.id === "fs-nvme-gen5");
   const ndr = VARIANTS.find((v) => v.id === "p2p-ib-ndr");
-  assert.ok((bytes / 1e9) / T.loadFor(nvme)(32768) > 11.2, "pipelined NVMe load matches py-kvcache 11.2-12.0 GB/s");
-  assert.ok((bytes / 1e9) / T.loadFor(ndr)(32768) > 34.5, "GPUDirect RDMA skips redundant host PCIe copy");
+  assert.ok((bytes / 1e9) / T.loadFor(nvme)(32768) > 11.2, "NVMe load matches py-kvcache 11.2-12.0 GB/s");
+  const ndrBw = variantBandwidth(ndr) * GIB, hostBw = h100.host_gib_s * GIB;
+  assert.ok(Math.abs(T.loadFor(ndr)(32768) - (ndr.latency_s + SOFTWARE.cpu_load_latency_s + bytes / ndrBw + bytes / hostBw)) < 1e-12,
+    "a peer hit is host to host, then host to GPU");
+  const icms = VARIANTS.find((v) => v.id === "fs-bf4-icms");
+  assert.ok(Math.abs(T.loadFor(icms)(32768) - (icms.latency_s + bytes / (variantBandwidth(icms) * GIB))) < 1e-12, "gpu_direct skips the host copy");
 
   // 4. GB200 and VR200 NVL72 upgrade intra-rack RDMA links to rack-scale NVLink 5/6, while B200 (8-GPU domain) does not cross nodes over NVLink.
   const gb200 = GPUS.find((g) => g.id === "gb200");
@@ -157,4 +162,22 @@ test("DP-attention replicates active dense weights, GPUDirect RDMA skips host bo
   assert.ok(variantBandwidth(effectiveLink(ndr, vr200, 8, 8)) > 1200, "VR200 NVL72 intra-rack uses NVLink 6");
   assert.equal(effectiveLink(ndr, gb200, 10, 8), ndr, "80 GPUs > 72-GPU NVL72 domain falls back to scale-out RDMA");
   assert.equal(effectiveLink(ndr, b200, 2, 8), ndr, "HGX B200 8-GPU domain never spans separate nodes over NVLink");
+});
+
+test("Kimi K3's dense weights are BF16 as released, and expert-parallel comm ranks links by the rate they achieve", async () => {
+  const { decodeStep, denseWeightBytes, served, withPrecision } = await import("../model.js");
+  const { MODELS, VARIANTS } = await import("../presets.js");
+  const kimi = MODELS["kimi-k3"];
+  // The non-expert bytes of the checkpoint are its dense part (BF16); FP8 serving halves them and the total follows.
+  assert.ok(Math.abs(denseWeightBytes(kimi) / (kimi.weights_bytes * (1 - kimi.expert_share)) - 1) < 0.05);
+  const f8 = withPrecision(kimi, "fp8");
+  assert.ok(Math.abs(denseWeightBytes(f8) / denseWeightBytes(kimi) - 0.5) < 1e-9);
+  assert.ok(Math.abs((kimi.weights_bytes - f8.weights_bytes) - (denseWeightBytes(kimi) - denseWeightBytes(f8))) < 1);
+
+  const b200 = GPUS.find((g) => g.id === "b200");
+  const m = served(MODELS["minimax-m3"], { gpu: b200, precision: "fp8", tp: 8, attention: "dp" });
+  const comm = (id) => decodeStep(m, b200, 64, 8192, 1, { ep: 16, link: VARIANTS.find((v) => v.id === id) }).comm;
+  const order = ["p2p-tcp-10", "p2p-tcp-100", "p2p-tcp-400", "p2p-ib-hdr", "p2p-ib-ndr", "p2p-ib-xdr"].map(comm);
+  for (let i = 1; i < order.length; i++) assert.ok(order[i] < order[i - 1], `a faster link moves expert traffic faster: ${order}`);
+  assert.equal(comm("p2p-roce-400"), comm("p2p-ib-ndr"));
 });

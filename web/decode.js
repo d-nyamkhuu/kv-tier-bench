@@ -1,6 +1,11 @@
 // Continuous batching on an elastic pool. A group can skip directly to its
 // next completion until a newly ready request needs an earlier step boundary.
+// options.ranks: attention groups per decode instance (DP ranks, or the attention groups of a wide-EP instance; 1 for
+// plain TP). A request joins the least-loaded rank of the first instance with room, as vLLM's DP load balancer picks
+// the engine with the fewest waiting + running requests and DeepSeek's decode balancer equalizes requests per GPU;
+// SGLang's default round-robin lands in the same place under steady load.
 export function decodePool(events, options, profile) {
+  const ranks = Math.max(1, Math.floor(options.ranks ?? 1));
   const groups = [];
   let occupied = 0, peakGroups = 0;
 
@@ -54,10 +59,13 @@ export function decodePool(events, options, profile) {
       if (options.batchCap && batch > options.batchCap(peak)) return false;
       return !options.speed || profile(batch, peak).perToken <= 1 / options.speed;
     };
-    let group = groups.find(allows);
-    if (!group) {
-      group = { active: [], pending: [], generation: 0, rate: null };
-      groups.push(group);
+    const load = g => g.active.length + g.pending.length;
+    let group = null;
+    for (let first = 0; !group; first += ranks) {
+      while (groups.length < first + ranks) groups.push({ active: [], pending: [], generation: 0, rate: null });
+      for (let i = first; i < first + ranks; i++) {
+        if (allows(groups[i]) && (!group || load(groups[i]) < load(group))) group = groups[i];
+      }
     }
     Object.assign(task, { steps: 0, decodeSeconds: 0, batchSteps: 0, gpuSeconds: 0, accepted: 0, plain: 0 });
     if (!group.active.length && !group.pending.length) {

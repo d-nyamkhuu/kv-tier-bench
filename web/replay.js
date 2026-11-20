@@ -46,7 +46,10 @@ export function replay(config, budgetFraction = config.sim.gpuBudgetFraction ?? 
     const result = replayLayout(config, fit, budgetFraction, onProgress, prepared);
     if (!result.error) return result;
     const next = result.requiredContext && layout(result.requiredContext);
-    if (!next || next.pp < fit.pp || (next.pp === fit.pp && next.tp <= fit.tp)) throw new Error(result.error);
+    // A retry must grow the layout, or keep it and fall back from DP- to TP-attention (whole-instance KV per request).
+    const sameLayout = next && next.pp === fit.pp && next.tp === fit.tp;
+    if (!next || next.pp < fit.pp || (next.pp === fit.pp && next.tp < fit.tp) || (sameLayout && next.attention === fit.attention))
+      throw new Error(result.error);
     fit = next;
   }
 }
