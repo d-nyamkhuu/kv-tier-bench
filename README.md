@@ -1,234 +1,189 @@
 # kv-tier-bench
 
-How long does it take vLLM to **load a cached prefix from each KV-cache tier**, and what does that cost? Each tier
-is compared with simply **recomputing** the prefix. The tiers are GPU, CPU, disk, object storage, and a peer
-instance's CPU memory. The benchmark runs a hybrid-attention model (Qwen3.8-27B, Gated DeltaNet 3:1) and a
-standard-attention model (Qwen3-VL-32B-Instruct) side by side, on two cloud GPU VMs.
+**When GPU memory fills up during LLM serving, is it faster and cheaper to reload a cached KV prefix from a slower tier — or just recompute the prompt?**
 
-> **Status: stage s1 measured (2026-11-18), 390 of 390 points valid; p2p re-measured 2026-11-19 with a NIXL
-> tuning hook (75 of 75 valid), which made long-prefix p2p loads 5-6x faster.** Raw results are in
-> [results/s1.jsonl](results/s1.jsonl); `kvtb cost` and `kvtb charts` summarize them. The plan, decisions, day-1
-> findings and the NIXL workarounds behind the p2p and obj numbers are in [docs/plan.md](docs/plan.md).
->
-> **Stage s2 measured (2026-11-19), 1032 of 1032 points valid:** concurrent load, batches of 1-16 requests with
-> 4K-128K prefixes each, on Qwen3.5-9B (hybrid) and Qwen3-8B (standard) in Nebius us-central1. It adds the
-> Standard Object Storage class (`obj-std`) and a Nebius shared filesystem (`fs-shared`) next to s1's tiers. Raw
-> results are in [results/s2.jsonl](results/s2.jsonl) (`kvtb cost --stage s2`, `kvtb charts --stage s2`); the
-> findings are in [docs/plan.md](docs/plan.md#stage-2-concurrent-load-s2).
->
-> **Stage s3 measured (2026-11-19), 315 of 315 points valid:** a CPU-only VM as the KV store (Mooncake Store over
-> TCP, `MooncakeStoreConnector`) against p2p, on s2's models and batches in Nebius eu-south1, with s2's recompute,
-> GPU and CPU rows as baselines. Raw results are in [results/s3.jsonl](results/s3.jsonl) (`kvtb cost --stage s3`);
-> the findings are in [docs/plan.md](docs/plan.md#stage-3-a-cpu-only-kv-store-s3-measured).
+In multi-turn chat, coding agents, and shared-prompt APIs, **50–95% of input tokens are repeated prefixes**. Once active conversations outgrow GPU HBM, an inference engine like **vLLM** has to either recompute evicted prefixes from scratch or offload KV blocks to cheaper tiers: **host CPU RAM, local/network SSD, Object Storage (S3), peer GPU VM memory, or a dedicated CPU KV-store node**.
 
-## Results
+`kv-tier-bench` answers which tier wins — in **time to first token (TTFT)**, **sustained throughput**, and **$/1M tokens** — through two parts:
 
-The full write-up, with figures, method and limits, is **[docs/report.md](docs/report.md)**.
+1. **Empirical Cloud Benchmark (`src/kv_tier_bench/`, [docs/report.md](docs/report.md))** — **1,737 metric-verified data points** measured on cloud GPU VMs (NVIDIA RTX PRO 6000 Blackwell 96 GB, vLLM v0.34.0) across **7 cache tiers** and **3 stages**, comparing **standard full-attention** models (`Qwen3-VL-32B`, `Qwen3-8B`) side-by-side with **hybrid linear-attention** models (`Qwen3.8-27B`, `Qwen3.5-9B`, Gated DeltaNet 3:1).
+2. **Interactive Cluster Simulator ([`web/`](web/index.html))** — A calibrated, browser-based discrete-event simulator that replays hours of multi-turn chat and agent traffic across multi-node GPU clusters (`H100`, `H200`, `B200`, `B300`, `GB200`), modeling continuous prefill batching, multi-tier LRU eviction, interconnect contention, and `$/1M` token unit economics next to OpenRouter provider pricing.
 
-**One request at a time (s1, eu-south1).** The longest prefix each model ran. Time to first token, and the modelled
-saving against recomputing the prefix:
+---
 
-| Tier | Qwen3.8-27B, 128K tokens | Qwen3-VL-32B, 64K tokens |
-|---|---|---|
-| GPU memory | 0.15 s (99%) | 0.085 s (100%) |
-| CPU memory | 0.31 s (99%) | 0.40 s (98%) |
-| Peer VM over TCP (p2p) | 0.69 s (98%), 23 GiB/s | 1.00 s (96%), 28 GiB/s |
-| Object Storage, Enhanced | 1.3 s (87%), 10 GiB/s | 2.3 s (72%), 9 GiB/s |
-| Network disk | 6.5 s (74%), 1.3 GiB/s | 16 s (28%), 1.0 GiB/s |
-| Recompute | 30 s | 26 s |
+## Key Findings at a Glance
 
-**Batches of 1–16 requests (s2, us-central1).** Recomputing c prefixes at once takes c times one (median 0.99×), so
-recompute gains nothing from batching while every tier overlaps its loads. One 128K-token prefix:
+- **Offloading beats recomputing by up to 26× on long contexts.** Loading a 64K-token `Qwen3-VL-32B` prefix from a peer VM's RAM over TCP took **1.0 s** vs. **26 s** to recompute (**96%** modeled cost savings). At 128K tokens on `Qwen3.8-27B`, every tier — down to a plain network SSD — beat cold prefill.
+- **Prefill doesn't gain from batching; cache loads do.** Recomputing `c` prefixes concurrently took `0.99 × c` single prefills (flat tokens/s across batch sizes), whereas every storage and memory tier overlapped reads up to its link ceiling (e.g., P2P scaling from **172K → 348K tok/s** on `Qwen3.5-9B`).
+- **Model architecture (`KiB/token`) decides whether cheap storage pays off.** Standard full attention (`Qwen3-8B`: 144 KiB/tok; `Qwen3-VL-32B`: 256 KiB/tok) transfers **3.6–4.5× more KV data per token** than hybrid Gated DeltaNet models (`Qwen3.5-9B`: 32 KiB/tok; `Qwen3.8-27B`: 64 KiB/tok). On dense KV models, disk and object storage only break even at **32K–64K+ tokens**; on shorter prompts, storage fees exceed the GPU time saved.
+- **Default TCP transport settings leave 3–6× throughput on the table.** Profiling NIXL/UCX and Mooncake Store over TCP uncovered single-stream descriptor merging, busy-poll lock contention, and undersized thread/slice defaults. Tuning them made long-prefix P2P pulls **5–6× faster** (up to **28 GiB/s** over TCP) and Mooncake Store reads **3.2–4.8× faster**.
+- **A dedicated CPU-only KV store VM loses to peer GPU RAM over TCP.** Direct peer pulls from a second GPU VM's spare host RAM (`p2p`) ran a median **2.5× faster** than Mooncake Store on a dedicated 64-vCPU / 256 GiB VM (`store`). Over TCP, a separate store VM is only justified when the working set exceeds cluster-wide GPU host RAM or must outlive spot GPU preemption — and needs RDMA to clearly beat Object Storage on latency.
+- **Synthetic `fio` numbers can mislead vLLM storage choices.** A shared `virtiofs` filesystem benchmarked **4× faster** than a network SSD in 16-way `fio` (`8.2` vs. `1.9 GiB/s`), yet lost to the plain SSD on **34 of 43** vLLM test points because vLLM's filesystem connector reads 10 MiB files across 16 threads (~`0.5 GiB/s` for one 128K prefix).
 
-| Tier | Qwen3-8B (standard, 144 KiB/token) | Qwen3.5-9B (hybrid, 32 KiB/token) |
-|---|---|---|
-| GPU memory | 0.14 s (99%) | 0.12 s (99%) |
-| CPU memory | 0.50 s (98%) | 0.21 s (98%) |
-| Peer VM over TCP (p2p) | 2.1 s (90%) | 0.66 s (93%) |
-| Object Storage, Enhanced | 3.5 s (58%) | 1.2 s (73%) |
-| Object Storage, Standard | 11 s (47%) | 2.0 s (76%) |
-| Network disk | 13 s (28%) | 2.5 s (66%) |
-| Shared filesystem | 37 s (−91%) | 8.1 s (1%) |
-| Recompute | 22 s | 9.1 s |
+---
 
-- **Bytes per token decide the storage tiers.** On Qwen3-8B, Object Storage and the disk only pay off from about 32K
-  tokens (64K for the disk); below that the storage bill outweighs the faster load.
-- **The shared filesystem lost to the plain disk** at 20 of Qwen3.5-9B's 24 points and 14 of Qwen3-8B's 19, though
-  fio rated it 4× faster (8.2 against 1.9 GiB/s of 16-way reads). vLLM's fs tier reads a prefix as 10 MiB files with
-  16 threads, and one long prefix arrived at about 0.5 GiB/s.
-- **p2p in us-central1 is a floor.** It moved 10–12 GiB/s per pull against about 23 GiB/s in eu-south1 with the same
-  settings, for a reason that was not diagnosed. s3 re-ran it in eu-south1: a median 1.2× (Qwen3-8B) and 1.6×
-  (Qwen3.5-9B) faster.
+## Benchmark Results
 
-**A CPU-only KV store (s3, eu-south1).** The same batches, from Mooncake Store on a CPU-only VM against p2p from a
-second GPU VM. Batch time and end-to-end rate:
+Full methodology, per-tier hardware ceiling analysis, and cost sensitivity tables are in **[docs/report.md](docs/report.md)**. Experiment design, runbooks, and day-by-day debugging logs are in **[docs/plan.md](docs/plan.md)**.
 
-| Prefix × requests | Qwen3-8B p2p | Qwen3-8B store | Qwen3.5-9B p2p | Qwen3.5-9B store |
+| Stage | Workload | Models (KV Footprint) | Tiers Tested | Valid Points |
 |---|---|---|---|---|
-| 4K × 1 | 0.093 s, 6.1 GiB/s | 0.158 s, 3.6 GiB/s | 0.045 s, 3.3 GiB/s | 0.062 s, 2.3 GiB/s |
-| 16K × 16 | 2.4 s, 14.9 GiB/s | 7.3 s, 4.9 GiB/s | 0.50 s, 17.0 GiB/s | 1.6 s, 5.2 GiB/s |
-| 128K × 1 | 1.7 s, 10.5 GiB/s | 4.0 s, 4.5 GiB/s | 0.31 s, 12.9 GiB/s | 0.78 s, 5.2 GiB/s |
+| **Stage 1 (`s1`)** | 1 request at a time, 1K–128K prefixes | `Qwen3.8-27B` (hybrid, 64 KiB/tok)<br>`Qwen3-VL-32B` (standard, 256 KiB/tok) | GPU, CPU, Peer VM TCP (`p2p`), Object Storage Enhanced (`obj`), Network SSD (`fs`) vs. Recompute | **390 / 390** (+ 75 re-measured `p2p`) |
+| **Stage 2 (`s2`)** | Concurrent batches of 1–16 requests, 4K–128K prefixes | `Qwen3.5-9B` (hybrid, 32 KiB/tok)<br>`Qwen3-8B` (standard, 144 KiB/tok) | Stage 1 tiers + Object Storage Standard (`obj-std`) + Shared Filesystem (`fs-shared`) | **1,032 / 1,032** |
+| **Stage 3 (`s3`)** | Concurrent batches of 1–16 requests, 4K–128K prefixes | `Qwen3.5-9B` & `Qwen3-8B` | Dedicated CPU-VM Mooncake Store (`store`), GPU-hosted Mooncake (`store-p2p`), Peer VM (`p2p`) | **315 / 315** |
 
-- **p2p is a median 2.5× faster than the store**, and the gap grows with the batch: Mooncake levels off at
-  5–6 GiB/s. With Mooncake's pool on the peer GPU VM instead (store-p2p, Qwen3-8B), times matched the CPU-only VM's.
-- **Mooncake's TCP defaults** (1 I/O thread, 4 lanes, 64 KiB slices) were 3.2–4.8× slower than the tuned settings
-  in `configs/experiment.yaml`. A bigger CPU VM added pool room, not speed.
-- **At production reuse a remote memory tier pays, but not as a CPU-only VM over TCP.** From about 100 reads of a
-  prefix an hour, every remote tier saves 68–91% at 128K tokens. The GPU VM's own CPU memory saves more, and on
-  Qwen3-8B Object Storage saves at least as much as the store at 1/55 of its price per GiB. A dedicated store VM
-  needs RDMA, a hot set bigger than the GPU VMs' spare RAM, or a cache that outlives them
-  ([report](docs/report.md#cost-at-production-reuse)).
+### Stage 1: Single-Request Latency & Cost Savings
 
-Savings are modelled, not measured: the GPU at $1.80/h on demand (the runs paid spot), each prefix stored for one
-hour per read, Standard-class request fees left out. The aggregated tables behind these numbers are in
-[results/report/](results/report/) (`uv run python scripts/export-report-data.py` rebuilds them), the charts in
-[results/charts/](results/charts/).
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/figures/s1-load-time-dark.svg">
+  <img alt="Time to first token vs prefix length across KV tiers on Qwen3.8-27B and Qwen3-VL-32B" src="docs/figures/s1-load-time-light.svg">
+</picture>
 
-## What it measures
+*Median time to first token (TTFT) at each model's longest tested prefix, with modeled cost savings vs. cold recompute (Nebius `eu-south1`):*
 
-- **Tier profile.** Store and load latency and bandwidth for each tier, for prefixes of 1K–128K tokens.
-- **End-to-end.** Time to first token when a prefix comes from tier X, compared with recompute. One request at a
-  time.
-- **Cost.** $ per 1M prefix tokens served from each tier, compared with recompute. Recompute is each deployment's
-  cold prefill of a fresh prompt. `kvtb cost` prints the table together with the read time, load bandwidth and
-  store bandwidth it is built from.
+| Cache Tier | `Qwen3.8-27B` (128K prefix, 8 GiB KV) | `Qwen3-VL-32B` (64K prefix, 16 GiB KV) |
+|---|---|---|
+| **GPU memory (HBM)** | **0.15 s** (99% saved) | **0.085 s** (100% saved) |
+| **Local CPU memory** | **0.31 s** (99% saved) | **0.40 s** (98% saved) |
+| **Peer VM RAM over TCP (`p2p`)** | **0.69 s** (98% saved, 23 GiB/s) | **1.00 s** (96% saved, 28 GiB/s) |
+| **Object Storage (Enhanced)** | **1.3 s** (87% saved, 10 GiB/s) | **2.3 s** (72% saved, 9 GiB/s) |
+| **Network SSD** | **6.5 s** (74% saved, 1.3 GiB/s) | **16 s** (28% saved, 1.0 GiB/s) |
+| **Cold Recompute** | 30 s | 26 s |
 
-Each prefix is prefilled once. vLLM writes it through to every tier, and each rep then resets the tiers above the
-one under test and reads it back, so a stage needs one prefill per length rather than one per data point. A data
-point counts only if vLLM's own metrics show that the tokens came from the tier under test. Greedy output equality
-against recompute was spot-checked on `Qwen3-0.6B` p2p during NIXL tuning; the sweep-wide natural-text validity
-runner (`validity.py`) has not been built or run on the benchmarked models.
+### Stage 2: Concurrent Batch Scaling (1–16 Requests)
 
-## Stack
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/figures/s2-throughput-dark.svg">
+  <img alt="Prefix tokens served per second vs batch concurrency across KV tiers on Qwen3-8B and Qwen3.5-9B" src="docs/figures/s2-throughput-light.svg">
+</picture>
 
-- vLLM **v0.34.0**: `OffloadingConnector` with `TieringOffloadingSpec`. The secondary tiers are `fs`, `obj` and
-  `p2p`.
-- Two Nebius VMs with one RTX PRO 6000 each (TP=1), connected over TCP. vLLM runs in Docker; no Kubernetes.
-- Nebius Object Storage, Enhanced Throughput class, for the object-storage tier.
+*Single 128K-token prefix baseline in `s2` (Nebius `us-central1`), showing how dense vs. hybrid KV sizes shift tier economics:*
 
-## Layout
+| Cache Tier | `Qwen3-8B` (standard, 144 KiB/tok) | `Qwen3.5-9B` (hybrid, 32 KiB/tok) |
+|---|---|---|
+| **GPU memory (HBM)** | 0.14 s (99% saved) | 0.12 s (99% saved) |
+| **Local CPU memory** | 0.50 s (98% saved) | 0.21 s (98% saved) |
+| **Peer VM RAM over TCP (`p2p`)** | 2.1 s (90% saved) | 0.66 s (93% saved) |
+| **Object Storage (Enhanced)** | 3.5 s (58% saved) | 1.2 s (73% saved) |
+| **Object Storage (Standard)** | 11 s (47% saved) | 2.0 s (76% saved) |
+| **Network SSD** | 13 s (28% saved) | 2.5 s (66% saved) |
+| **Shared Filesystem (`virtiofs`)** | 37 s (−91%, slower than recompute) | 8.1 s (1% saved) |
+| **Cold Recompute** | 22 s | 9.1 s |
 
+> **Regional note:** `p2p` in `us-central1` hit an unexplained host/UCX ceiling of `10–12 GiB/s` despite `27 GiB/s` `iperf3` between VMs. Re-running the same models in `eu-south1` during Stage 3 restored `p2p` to a median **1.2×–1.6× faster** (up to `21.4 GiB/s` batch end-to-end).
+
+### Stage 3: Dedicated CPU KV Store (Mooncake) vs. Peer GPU RAM
+
+*Batch wall time and end-to-end transfer rate comparing native NIXL `p2p` (second GPU VM's RAM) against `MooncakeStoreConnector` on a dedicated 64-vCPU / 256 GiB CPU VM (`eu-south1`):*
+
+| Prefix × Batch | `Qwen3-8B` `p2p` | `Qwen3-8B` Mooncake Store | `Qwen3.5-9B` `p2p` | `Qwen3.5-9B` Mooncake Store |
+|---|---|---|---|---|
+| **4K × 1** | 0.093 s (6.1 GiB/s) | 0.158 s (3.6 GiB/s) | 0.045 s (3.3 GiB/s) | 0.062 s (2.3 GiB/s) |
+| **16K × 16** | 2.4 s (14.9 GiB/s) | 7.3 s (4.9 GiB/s) | 0.50 s (17.0 GiB/s) | 1.6 s (5.2 GiB/s) |
+| **128K × 1** | 1.7 s (10.5 GiB/s) | 4.0 s (4.5 GiB/s) | 0.31 s (12.9 GiB/s) | 0.78 s (5.2 GiB/s) |
+
+At production reuse (~100+ reads/hour of a 128K prefix), every remote tier cuts cost by **68–91%** against recompute — but local GPU-host RAM saves more for free, and on `Qwen3-8B` Enhanced Object Storage matches or beats the CPU store VM on latency and cost at **1/55th** the price per GiB ([cost analysis](docs/report.md#cost-at-production-reuse)).
+
+---
+
+## Systems & Engineering Highlights
+
+- **5–6× NIXL/UCX P2P Speedup (`scripts/nixl_patch/`):** Out of the box, vLLM v0.34.0's P2P tier underutilized 400 Gbps NICs over TCP for three reasons:
+  1. NIXL merges contiguous KV block descriptors by default, collapsing a 292-block 128K prefix into ~1 descriptor — below `split_batch_size=1024`, forcing single-stream TCP.
+  2. Python `nixl_agent` hardcodes `pthrDelay=0`, causing progress threads to busy-spin in `poll(0)` and starve UCX worker locks.
+  3. Each UCX TCP agent receives on a single core.
+  
+  A container `sitecustomize.py` hook disables descriptor merging, enables event-fd sleep, and stripes pulls across **32 NIXL agents**, lifting long-prefix TCP pulls to **23–28 GiB/s** (and resolving a missing `libcuobjclient.so.1` dependency in `nixl_cu13` by routing host-memory `obj` transfers through `nixl_cu12`).
+- **Write-Once, Reset-Above Measurement Protocol (`src/kv_tier_bench/measure.py`):** Prefilling every data point from scratch on 30B models would waste hours of GPU spend. Instead, each prefix is prefilled once so vLLM writes through to all configured tiers; before each repetition, upper caches are selectively cleared so reads must come from the target tier. Every run is **strictly validated against vLLM's Prometheus token-source counters** (plus Mooncake's byte counters in `s3`) — any rep with cache bleed or partial eviction is rejected.
+- **Hardware Ceiling Attribution:** Fits single-request transfer times as `time = fixed_overhead + bytes / rate` (`R² = 0.997–1.000`) against PCIe 5.0 (`58.7 GiB/s`), `iperf3`, and `fio` baselines ([ceiling breakdown](docs/report.md#how-close-to-the-ceiling)), isolating vLLM's `46–62 ms` scheduling floor and showing where P2P serializes network pulls with host-to-GPU PCIe copies.
+- **Preemption-Safe Spot Orchestration (`scripts/sweep.sh`, `scripts/vms.sh`):** Automates multi-VM Docker launches, Hugging Face weight staging, tier cache wiping (`O_DIRECT` / page-cache checks), and per-deployment JSONL checkpointing to Object Storage so interrupted spot sweeps resume cleanly without repeating completed points.
+
+---
+
+## Interactive KV-Cache Cluster Simulator (`web/`)
+
+The **[browser simulator](web/index.html)** extends the empirical single-node measurements to full multi-node production clusters using a zero-dependency discrete-event engine running in a Web Worker.
+
+### What It Models
+
+- **12 Open-Weight Architectures:** Includes `Qwen3.8-2.4T-A95B`, `Kimi K3`, `DeepSeek V4.1 Flash`, `GLM-5.3`, `GLM-5.3-Flash`, `Qwen3.8-Flash-Next`, `MiniMax-M3`, `Mistral Large 4`, `gpt-oss-120b`, `Gemma 4 31B`, plus `s1`'s `Qwen3.8-27B` and `Qwen3-VL-32B`. Automatically derives KV bytes/token, fixed recurrent/linear state, and prefill FLOPs from `config.json` across **GQA, MLA, MoE, sliding-window, sparse, and hybrid linear attention**, auto-scaling Tensor Parallelism (intra-node) and Pipeline Parallelism (inter-node) across `RTX PRO 6000`, `L40S`, `H100`, `H200`, `B200`, `B300`, `GH200`, and `GB200` GPUs.
+- **Realistic Traffic & Cache-Miss Modes:** Grounded in production prefix-cache studies — [DeepSeek's 56.3% disk hit rate](https://github.com/deepseek-ai/open-infra-index/blob/main/202502OpenSourceWeek/day_6_one_more_thing_deepseekV3R1_inference_system_overview.md), SGLang's 52–74% on Chatbot Arena, and [Alibaba's 54–62% chat/API traces](https://arxiv.org/abs/2506.02634) (85–97% for coding agents). Simulates synthetic Zipf multi-tenant workloads or real Mooncake traces, capturing cold first turns, unshared custom system prompts, context-window truncation, history edits, hosted-API TTLs (e.g., 5-minute expiry), minimum cached prompt thresholds, and round-robin / sticky / random routing.
+- **Continuous Prefill Batching & Link Contention:** Models chunked prefill steps (default `8,192` tokens/step, calibrated against `s1` and published InferenceX vLLM runs — see [docs/design/prefill-batching.md](docs/design/prefill-batching.md) and [docs/lmcache-compatibility.md](docs/lmcache-compatibility.md)), overlapping storage reads with compute while accounting for NIC/disk contention, KV transfers to decode pools, and S3 `PUT`/`GET`/`HEAD` request fees.
+- **Live Unit Economics vs. OpenRouter:** Reports mean/p50/p90/p99 TTFT, minute-by-minute tier occupancy timelines (exportable to CSV), a side-by-side single-tier comparison table, and `$/1M` uncached & cached input token costs (normalized to provider GPU utilization such as 60% busy) directly alongside dated OpenRouter market medians. Every configuration encodes cleanly into the URL hash for sharing.
+
+Five built-in presets (*Every tier in use*, *Long chats*, *Plenty of GPU memory*, *GPU cache fills*, and *SSD fills*) let you explore common bottlenecks in one click.
+
+---
+
+## Quick Start (No GPU Needed)
+
+Everything in the CLI analysis suite, test suites, and web simulator runs locally on a laptop without GPUs.
+
+### 1. Run the Interactive Web Simulator
+
+```bash
+python -m http.server -d web
+# Open http://localhost:8000 in your browser
 ```
-src/kv_tier_bench/   sizes, sweep grid, result store, tier configs, vLLM launch command, driver (`kvtb run`),
-                     validity, cost, charts
-configs/             experiment matrix and prices (with sources)
-scripts/             vms.sh (VMs and the weights filesystem, from the laptop), sweep.sh (a whole stage, run on VM A),
-                     store-up.sh (s3's Mooncake store on a CPU VM), tier cleanup, weight staging, day-1 checks, fio
-results/             raw results (JSONL), one file per stage
-docs/plan.md         decisions, protocol, budget, day-1 checks, cut order
+
+Run the simulator's Node.js test suite (calibration, discrete-event engine, pricing, and sanity checks):
+
+```bash
+node --test "web/test/*.test.js"
 ```
 
-## Quick start (no GPU needed)
+### 2. Explore Benchmark Data & CLI (`kvtb`)
+
+Requires Python 3.12+ and [`uv`](https://docs.astral.sh/uv/):
 
 ```bash
 uv sync
-uv run kvtb sizes                      # KV bytes/token and state bytes per prefix, from config.json
-uv run kvtb serve-cmd --stage s1 --model qwen3.8-27b --deploy fs --host-ip 10.0.0.5   # the `docker run` command
-uv run kvtb run --stage s1 --model qwen3.8-27b --deploy fs --dry-run   # points and jobs left to run
-uv run pytest
+
+# Inspect exact KV bytes/token and recurrent state sizes derived from model configs
+uv run kvtb sizes
+
+# Print measured latency, bandwidth, and modeled $/1M token tables for any stage
+uv run kvtb cost --stage s1 --results results/s1.jsonl
+uv run kvtb cost --stage s2 --results results/s2.jsonl
+uv run kvtb cost --stage s3 --results results/s3.jsonl
+
+# Preview the exact Docker + vLLM launch command or remaining sweep matrix
+uv run kvtb serve-cmd --stage s1 --model qwen3.8-27b --deploy fs --host-ip 10.0.0.5
+uv run kvtb run --stage s1 --model qwen3.8-27b --deploy fs --dry-run
+
+# Rebuild aggregated report JSONs and dark/light SVG figures
+uv run python scripts/export-report-data.py
+uv run python scripts/report-figures.py
+
+# Run Python lint and unit tests
+make lint && make test
 ```
 
-## Simulator (web/)
+---
 
-The [KV cache simulator](web/index.html) replays synthetic chat traffic and measures one hour, by default after a
-20-minute warm-up (a cold start from empty caches is one setting away). Adjust request rate, average turns per chat,
-the share of chats with their own system prompt, think time, steady or bursty arrivals, CPU cache capacity, and independent local SSD and S3 tiers. More settings vary
-message and reply lengths (fixed, moderate or long-tailed lognormal around the set means), split traffic across distinct
-system prompts with Zipf popularity, and set the GPU KV budget, shown in GiB per instance. Five scenarios
-set every control at once, all on two nodes with eight B200 GPUs each and InfiniBand NDR between them: Every tier in use
-(the default: MiniMax-M3 in FP8 at 480 requests per minute of typical chat traffic, 768 GiB of CPU cache, a 1.5 TiB Gen5 SSD
-per node, peer reads and S3 Standard), Long chats (15-turn chats on one shared system prompt), Plenty of GPU memory (DeepSeek V4.1 Flash, which keeps the hour in GPU memory),
-GPU cache fills (Kimi K3 with 1.5 TiB of CPU cache per node) and SSD fills (Mistral Large 4 with 64 GiB of CPU cache and
-a 768 GiB SSD per node). Choosing a model applies its serving defaults: FP8 when it was released in BF16 (as providers
-serve it; fewer GPUs per instance copy less KV across tensor-parallel ranks) and RDMA between nodes. Over TCP at
-400 Gbit/s (about 18 GiB/s in practice) the KV that long chats send to the decode GPUs saturates the link and TTFT climbs
-without bound; the page warns when TTFT is still rising at the end of the run, which can be 1, 2 or 3 hours (2 by default, so caches that fill slowly reach a steady state). 
-Production prefix caches serve about half to two thirds of prompt tokens: DeepSeek's API served 56.3% of input tokens
-from its disk cache over a day ([inference system overview](https://github.com/deepseek-ai/open-infra-index/blob/main/202502OpenSourceWeek/day_6_one_more_thing_deepseekV3R1_inference_system_overview.md)),
-SGLang measured 52–74% on Chatbot Arena, and Alibaba's chat and API traces reuse 62% and 54% with unlimited cache
-([KVCache Cache in the Wild](https://arxiv.org/abs/2506.02634)). Long sessions reach more: Character.AI reports 95% and
-coding agents 85–97%. The default workload follows the chat and API figures, and about 60% of its prompt tokens come
-from cache: chats average 1.5 turns (46% of requests come from one-turn chats; Alibaba: 54%), half the chats bring a
-system prompt of their own, since users customise them and cross-user hits are rare, the rest share 10 prompts with
-Zipf popularity, and users reply after 6 minutes on average (Alibaba: 80% of reuse within 10 minutes). The page shows
-the share of prompt tokens served from cache. Misses the simulator models: first turns, unshared system prompts
-(each shared prompt stands for one app or tenant, and caches never cross them), the uncached reply of the previous turn
-(with prompt-only saving), partial last blocks, eviction, chats that outgrow the context window and drop their oldest
-turns, follow-ups that rewrite earlier history (edited messages, compacted tool results, refreshed timestamps; off by
-default, since no rate is published), a hosted-API cache lifetime (off by default, as vLLM and LMCache keep blocks until
-evicted; 5 minutes, as Anthropic and OpenAI default to, takes the default workload from 59% to 50%), a minimum cached
-prompt length (1,024 tokens at OpenAI, up to 4,096 at Anthropic), and, for hybrid linear-attention models such as
-Kimi K3, prefixes without a saved state. Every tier
-is written as prompt chunks are computed, so a CPU or SSD tier serves hits only when it is larger than the GPU cache on
-its node; the page says so when CPU memory is not. Choosing a model, GPU or precision that the
-cluster cannot hold raises the node and GPU counts to the smallest layout that fits (a model moves to B200, then B300,
-when that needs fewer GPUs), and a later model that fits the
-original cluster returns to it. Settings that differ from the defaults are kept in the
-URL hash, so a link reopens the same setup. When a local SSD is enabled, its per-node capacity slider sets both the LRU cache limit and the billed size.
-The SSD timeline links to the first eviction and the S3 timeline links to its first read.
-Under Model and cluster, choose the model, serving precision (as released, FP8 or FP4), GPU type,
-prefill node count, GPUs per node, and inter-node link. Each arrival goes to the next prefill node group in round-robin order, rotating through the replicas within each group. Sticky and random routing are also available. The default lookup order is GPU, local CPU, local SSD, shared storage, then peer CPU. Select peer-first to swap the last two. LMCache MP eagerly saves complete prompt chunks. CPU and bounded SSD caches poll at one-second intervals and evict 20% of resident keys at 80% usage. Prompt chunks become available after prefill, and each backing tier publishes them after the modeled write. Requests compete for each private disk and network interface. Peer reads use both endpoints. AWS backing-tier prices include estimated PUT, GET and HEAD requests. A batch of uncached HEAD probes adds one metadata round trip. Synthetic think time begins after the last reply token. Trace arrivals keep their original timestamps. The peer track shows remote reads using the same CPU cache capacity. The link also carries KV to the separate decode pool and
-activations between pipeline stages. The two main results
-are average time to first token (including queueing, with p50, p90 and p99) and the hourly prefill cost: provisioned
-prefill GPUs and the backing tiers (decode GPUs are simulated, since they set reply timing, but their cost belongs to
-output tokens and is left out), also given in USD per million input and cached input
-tokens next to OpenRouter's. A progress bar follows the replay minute by minute. The breakdown under them
-shows where all prompt tokens came from (computed tokens include each new message), when GPU evictions began, how busy
-the prefill GPUs were, the realized request rate against the target, and, with S3 enabled, how many metadata checks requests made. The time series shows
-one-minute averages and downloads as CSV. Its tier detail shows cluster-wide occupancy, request counts and the median
-TTFT of requests reading each tier, for a selected minute or the whole replay. Each first-read marker jumps to that minute. Host RAM is
-outside the cost. Prefill runs in continuous batches of up to 8,192 new tokens per step by default (vLLM's
-max_num_batched_tokens), with cache lookups and loads overlapping other requests' compute; a request alone in its step
-keeps the calibrated one-at-a-time TTFT. [Prefill batching](docs/design/prefill-batching.md) gives the step model, the
-published benchmarks it was checked against, and its limits. The [LMCache compatibility notes](docs/lmcache-compatibility.md) give the versioned sources and sizing assumptions.
+## Repository Structure
 
-The tier comparison replays GPU-only, local CPU, peer CPU, NVMe and S3 alternatives on the same layout and workload settings, each adding one tier below GPU memory. Each row shows the median TTFT of the requests that read from that tier (a mean over all requests is dominated by GPU hits) and the on-demand price per GiB-month: GPU memory as the GPU-hour price × 730 ÷ its HBM, CPU and peer memory at Nebius's RAM rate ($0.0045 per GiB-hour), local NVMe at Nebius's local SSD rate ($0.065, the same for Gen4 and Gen5, since providers do not price by PCIe generation), and S3 at AWS US East list prices. SSD rates apply to provisioned capacity and S3 rates to retained data.
-
-The page sets this setup's price per million input and cached input tokens beside OpenRouter's rates for the selected model. By default it prices the prefill GPUs as if they were 60% busy, as a provider runs them (the replay's own load, often under 20% busy, would charge idle GPU hours to every token); 40%, 80% and the replay's load are options. The scaling is linear in GPU time and keeps cache-tier costs as they are. Each OpenRouter rate is the median of endpoints that list it in the dated pricing snapshot, across provider precisions. The simulator splits its hourly cost over the tokens it served: prefill GPU time by uncached and cached tokens, cache tiers to cached input, decode GPUs to output.
-
-Besides s1's two models, the page has ten current open-weight models (Qwen3.8-2.4T-A95B, Kimi K3, DeepSeek V4.1
-Flash, GLM-5.3 and GLM-5.3-Flash, Qwen3.8-Flash-Next, MiniMax-M3, Mistral Large 4, gpt-oss-120b, Gemma 4 31B). Their KV
-per token, fixed state and FLOPs are derived from each config.json by one function covering MoE, MLA, sliding-window,
-sparse and linear attention. A model too big for one node runs across nodes: tensor parallel inside each node, pipeline
-stages across them. Decode batches ready sequences, subject to KV capacity and a target of each model's p50 throughput
-on OpenRouter (recorded by hand in `openrouter.py`, since the API's throughput fields are empty). Every input is a
-published figure with its source: NVIDIA datasheets, InferenceX vLLM runs, drive and cloud-storage documents (AWS S3,
-Nebius), and KV-transfer papers. The rest are marked as assumptions. vLLM's own overheads are published nowhere, so they
-are fitted on s1, and `web/checks.js` compares the model with s1 and with published vLLM benchmarks.
-
-```bash
-uv run kvtb export-web --stage s1 --results results/s1.jsonl --out web/data/s1.json   # after new results
-uv run kvtb openrouter-prices                                                        # refresh provider prices
-python -m http.server -d web                                                         # then open localhost:8000
-node --test "web/test/*.test.js"                                                     # simulator tests
+```text
+├── src/kv_tier_bench/   # Python CLI (`kvtb`): KV sizing, sweep runner, Prometheus validator, cost & chart builders
+├── web/                 # Zero-build interactive KV-cache cluster simulator (HTML/CSS/ES modules + Web Worker)
+├── scripts/             # Cloud VM provisioning (`vms.sh`), spot-resumable sweep (`sweep.sh`), Mooncake setup,
+│   └── nixl_patch/      # Container `sitecustomize` hook: 32-agent NIXL TCP striping & UCX poll fix
+├── configs/             # Stage matrices (`experiment.yaml`) and sourced cloud pricing (`prices.yaml`)
+├── results/             # Raw validated benchmark runs (`s1.jsonl`, `s2.jsonl`, `s3.jsonl`), `fio` logs, charts
+├── docs/
+│   ├── report.md        # Full benchmark write-up, figures, ceiling math, and cost tables
+│   ├── plan.md          # Experimental protocol, VM runbook, day-1 checks, and debugging notes
+│   ├── design/          # Prefill batching step model & calibration notes
+│   └── lmcache-compatibility.md
+└── tests/               # Python unit tests (`pytest`); JS simulator tests live in `web/test/`
 ```
 
-[.github/workflows/pages.yml](.github/workflows/pages.yml) publishes `web/` to GitHub Pages on every push to
-`main`. The workflow fails until Pages is enabled with "GitHub Actions" as the source.
+---
 
-On the VMs, `scripts/sweep.sh` runs a whole stage from VM A. For each deployment it starts vLLM in Docker (on both
-VMs for p2p), runs `kvtb run` next to it, and stops it. It copies the results to the bucket after every
-deployment and resumes after preemption. The steps are in the runbook in [docs/plan.md](docs/plan.md#runbook).
+## Known Scope & Limitations
 
-## Limitations (known up front)
-
-- Nebius has no local NVMe on these GPUs. The disk tier is a network SSD (1,767 GiB, 2 GiB/s published read cap;
-  standalone `fio` in s2 measured 1.94 GiB/s 16-way random reads and 1.69 GiB/s single-stream in
-  [results/fio-kv-disk-us-central1.json](results/fio-kv-disk-us-central1.json)). Single-request reads in s1
-  (1.0–1.3 GiB/s) were limited by vLLM's fs path; concurrent batches in s2 hit the ~2 GiB/s disk cap.
-- Object-store reads are of freshly written objects: each prefix is read back seconds to minutes after it is
-  stored, possibly while the storage service still has it cached. A prefix stored hours earlier may load slower.
-- Text-only prompts. The linear-attention state is stored in bf16, which is **not** the HF default of fp32.
-- GPUDirect Storage runs in compatibility mode on rented VMs, so no GDS numbers are claimed.
-- Each length is stored once per job, and its 5 reps re-read the same stored prefix. The reps show how repeatable
-  a read is, not how it varies between prefixes.
-- Disk numbers are only valid if the disk tier uses O_DIRECT. With buffered I/O, reads can come from the OS page
-  cache, so disk numbers are published only once day 1 shows direct I/O (or the page cache is dropped before
-  each disk read).
-- Stage s1 measures single requests; s2 and s3 measure concurrent batches of 1–16 requests, but with no background
-  decode traffic or mixed/trace-driven load running during the reads.
-- One hardware point only: RTX PRO 6000 at TP=1. No H100 or tensor-parallel numbers.
-- The p2p tier runs over TCP between two VMs. It is not RDMA, and there is no InfiniBand anywhere in
-  this benchmark. The p2p numbers are "vLLM v0.34.0 + a NIXL tuning hook" (`scripts/nixl_patch`: 32 NIXL agents per
-  process, progress threads that sleep, posts off the scheduler thread). The earlier config (16 UCX streams, no hook) loaded
-  long prefixes 5-6x slower; its rows are kept in [results/s1-p2p-16stream.jsonl](results/s1-p2p-16stream.jsonl).
+- **Cloud TCP & Network Block Storage:** Measured on Nebius `RTX PRO 6000 Blackwell` VMs (`TP=1`) connected over TCP (no InfiniBand/RDMA, no local NVMe on this VM SKU). Disk numbers reflect a 1,767 GiB non-replicated network SSD (`2 GiB/s` read cap, verified with `O_DIRECT` and `fio`).
+- **Object Storage Warmth:** Prefixes are read back seconds to minutes after write; cold objects evicted from provider-side front-end caches hours later may exhibit higher latency.
+- **Isolated Prefill/Load Benchmarks:** Cloud sweeps (`s1`–`s3`) isolate prefix loading without concurrent background decode traffic (mixed prefill/decode contention is modeled in [`web/`](web/index.html)).
+- **Modeled Cost Assumptions:** Dollar savings combine **measured** wall times with **modeled** Nebius on-demand pricing (`$1.80/GPU-h`, 1-hour retention in `s1`/`s2`, parameterized reuse rates in `s3`; Standard S3 per-request fees omitted in `s2` tables, included in the web simulator).
+- **Precision & Modality:** Text-only prompts; hybrid linear-attention recurrent state is stored in `bf16` rather than Hugging Face's `fp32` default.
