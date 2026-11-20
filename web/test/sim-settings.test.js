@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { defaultConfig, validate } from "../config.js";
+import { defaultConfig } from "../config.js";
 import { GPUS, MODELS, SOFTWARE, VARIANTS } from "../presets.js";
 import { minutesCsv, replay } from "../replay.js";
 import { synthetic } from "../sim.js";
 import {
-  advancedHash, advancedOverrides, applySettings, decodeSettings, DEFAULT_SETTINGS, encodeSettings, readAdvancedHash,
-  fitCluster, SCENARIOS, scenarioFor, usdPerHour, withOverrides,
+  applySettings, cpuSizingNote, decodeSettings, DEFAULT_SETTINGS, encodeSettings,
+  fitCluster, SCENARIOS, scenarioFor, usdPerHour,
 } from "../sim-settings.js";
 
 const s1 = JSON.parse(readFileSync(new URL("../data/s1.json", import.meta.url)));
@@ -51,6 +51,14 @@ test("the scenarios show the pressure each one names", () => {
   assert.ok(gpu.firstEviction != null, "the default GPU cache fills");
   assert.equal(ample.firstEviction, null, "the large-memory scenario never evicts");
   assert.ok(disk.firstDiskEviction != null && disk.share.disk > 0, "the SSD scenario fills and serves the SSD");
+  assert.ok(gpu.share.cpu > 0.02, "CPU memory larger than the GPU cache serves hits");
+  const tiers = run("tiers");
+  for (const tier of ["gpu", "cpu", "disk", "p2p", "shared", "miss"]) assert.ok(tiers.share[tier] > 0.01, `the default draws on ${tier}: ${tiers.share[tier]}`);
+  assert.equal(cpuSizingNote(DEFAULT_SETTINGS, tiers), null, "the default sizes CPU memory past twice the GPU cache");
+  for (const s of SCENARIOS) {
+    assert.equal(s.settings.gpu, "b200", `${s.id} runs on B200`);
+    assert.equal(fitCluster(config(), s.settings), null, `${s.id} fits its own cluster`);
+  }
 });
 
 test("a model that does not fit grows the cluster to the smallest layout that holds it", () => {
@@ -63,28 +71,6 @@ test("a model that does not fit grows the cluster to the smallest layout that ho
   assert.ok(grown && !grown.error && grown.nodes > 1, JSON.stringify(grown));
   assert.equal(fitCluster(c, { ...big, ...grown }), null, "the grown cluster holds the model");
   assert.match(fitCluster(c, { ...big, gpu: "l40s" }).error, /does not fit/);
-});
-
-test("the advanced-lab hand-off produces a valid config with the fitted layout", () => {
-  const c = config();
-  const settings = { ...DEFAULT_SETTINGS, cpu: 0, gpuBudget: 50, diskSize: null, disk: "fs-nvme-gen5" };
-  const overrides = advancedOverrides(settings, { tp: 2, pp: 1 });
-  const next = withOverrides(c, readAdvancedHash(advancedHash(overrides)));
-  assert.deepEqual(validate(next), []);
-  assert.equal(next.sim.tp, 2);
-  assert.equal(next.sim.p2p, null, "no peer tier without CPU cache");
-  assert.equal(next.sim.gpuBudgetFraction, 0.5);
-  assert.equal(next.sim.disk, "fs-nvme-gen5", "the whole drive keeps the product");
-  assert.equal(next.sim.diskCapacityGiB, undefined, "no size override hides behind the lab's Size control");
-  const sized = withOverrides(c, advancedOverrides({ ...settings, diskSize: 64 }, { tp: 2, pp: 1 }));
-  assert.deepEqual(validate(sized), []);
-  assert.equal(sized.sim.disk, "lab-disk");
-  assert.equal(sized.variants.find(v => v.id === "lab-disk").capacity_gib, 64);
-  assert.equal(sized.sim.diskCapacityGiB, undefined);
-  assert.equal(next.workload.thinkTimeS, 300);
-  assert.equal(readAdvancedHash("#from-simulator=%7Bnot-json"), null);
-  // Unknown ids keep the lab's own values.
-  assert.equal(withOverrides(c, { sim: { model: "nope", gpu: "nope" } }).sim.model, c.sim.model);
 });
 
 test("hourly costs never use exponent notation", () => {
@@ -167,4 +153,25 @@ test("a warmed-up replay bins the measured hour from its start and reports servi
   assert.ok(r.gpuCostPerHour > 100 && r.prefillGpus === 16 && r.decodeGpus > 0);
   assert.ok(Math.abs(r.gpuCostPerHour - r.prefillCostPerHour - r.decodeCostPerHour) < 1e-9);
   assert.ok(r.utilization > 0 && r.utilization < 1);
+});
+
+test("the CPU note appears when CPU memory is below twice the GPU cache and the GPU cache evicts", () => {
+  // Kimi K3 FP8 on 2 x 8 H200: one TP8 PP2 instance with 619 GiB of KV, about 310 GiB per node
+  const kimi = { ...DEFAULT_SETTINGS, model: "kimi-k3", precision: "fp8", gpu: "h200", cpu: 128, disk: "" };
+  const result = { firstEviction: -60, gpuGiB: 619.1, instances: 1, share: { cpu: 0 } };
+  assert.equal(cpuSizingNote(kimi, result), "CPU memory is smaller than the GPU cache (310 GiB per node), so it served only 0.0% of tokens. Try 619 GiB or more.");
+  assert.match(cpuSizingNote({ ...kimi, cpu: 384 }, { ...result, share: { cpu: 0.048 } }), /^CPU memory is under twice .* 4\.8% of tokens/);
+  assert.doesNotMatch(cpuSizingNote(kimi, { ...result, gpuGiB: 3000 }), /Try/); // twice is past the slider
+  assert.equal(cpuSizingNote({ ...kimi, cpu: 640 }, result), null); // at least twice the GPU cache
+  assert.equal(cpuSizingNote({ ...kimi, cpu: 0 }, result), null);
+  assert.equal(cpuSizingNote(kimi, { ...result, firstEviction: null }), null); // the GPU never filled
+});
+
+test("a replay reports progress by simulated minute, rising and below 1", () => {
+  const c = config();
+  const seen = [];
+  replay(c, applySettings(c, SCENARIOS.find(s => s.id === "ample").settings), { onProgress: f => seen.push(f) });
+  assert.ok(seen.length >= 60, `${seen.length} progress reports`);
+  assert.ok(seen.every((f, i) => f > 0 && f < 1 && (i === 0 || f >= seen[i - 1])));
+  assert.ok(seen.at(-1) > 0.95);
 });

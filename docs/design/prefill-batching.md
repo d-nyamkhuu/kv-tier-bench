@@ -215,5 +215,3 @@ From `web/test/sim.test.js` and replays of the page's scenarios (cold start, one
   208–215 ms, and the FP8 rate gives 192–201 ms. One idle point cannot tell a wrong FP4 rate from a different MFU or
   overhead, so this is a fit, not a measured FP4 rate. TensorRT-LLM's disaggregated prefill outruns the FP8 rate
   (8.2 requests/s where the simulation saturates near 5.5), so some engines get part of the FP4 speed-up.
-- The advanced lab's costs at 60% busy, and its market reference, still load the GPUs on the one-at-a-time model:
-  their busy-share search assumes busy time grows in proportion to load, which batching breaks.

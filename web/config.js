@@ -31,8 +31,7 @@ export const DEFAULT_SIM = {
   spec: "none", specTau: null, specCustom: { draft: 7, tau: 3, layers: 5, parallel: true }, decodeEp: null, decodeOverlap: false,
   warmupMin: 20, retentionH: 1, simBlockTokens: 256, peerFirst: false, saveDecode: false,
   // prefillBatchTokens: vLLM's max_num_batched_tokens for continuous prefill batching (8192 is the vLLM, TensorRT-LLM
-  // and SGLang default; the simulator page uses it). null runs one request at a time, which the lab's target-busy
-  // costs assume.
+  // and SGLang default; the simulator page sets it). null runs one request at a time.
   prefillBatchTokens: null,
   // the variants the trade-off map combines, per slot (plus "off")
   candidates: { disk: ["fs-nvme-gen5", "fs-nebius-nrd"], p2p: ["p2p-tcp-100", "p2p-roce-400"], shared: ["obj-aws-s3-standard", "obj-aws-s3-express"] },

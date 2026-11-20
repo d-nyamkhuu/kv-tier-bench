@@ -13,7 +13,6 @@
 <header><nav aria-label="Main navigation">
   <a class="brand" href="./"><img src="./layers.svg" width="32" height="32" alt=""> KV Tier Bench</a>
   <a class="active" href="./" aria-current="page">Simulator</a>
-  <a class="advanced" href="./advanced.html">Advanced lab <svg aria-hidden="true" viewBox="0 0 16 16"><path d="M3 13 13 3M4 3h9v9"/></svg></a>
 </nav></header>
 <main>
   <div class="intro">
@@ -72,29 +71,25 @@
         <select id="spread"><option value="fixed">Fixed at the set lengths</option><option value="moderate">Varied around them (moderate)</option><option value="long">Long-tailed (a few very long)</option></select>
         <div id="detail-controls"></div>
         <div id="memory-controls"></div>
-        <p class="chart-note">Like vLLM's max_num_batched_tokens (default 8,192): each prefill step serves waiting requests together up to this many new tokens and splits longer prompts across steps. Larger steps clear queues faster but make every request in them wait for the whole step.</p>
-        <p id="gpu-budget-note" class="chart-note"></p>
         <label class="select-field" for="cache-admission">Save to backing tiers</label>
         <select id="cache-admission"><option value="prompt">Complete prompt chunks</option><option value="reply">Include generated reply chunks</option></select>
         <label class="select-field" for="lookup-policy">Priority after local SSD</label>
         <select id="lookup-policy"><option value="stock">S3 before peer (LMCache MP)</option><option value="peer">Peer before S3</option></select>
-        <p class="chart-note" id="peer-policy"></p>
       </details>
       <button id="reset" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 10a9 9 0 1 1 1 7m-1-7V4m0 6h6"/></svg>Reset defaults</button>
     </form>
-    <a id="advanced-link" class="handoff" href="./advanced.html">Open this setup in the advanced lab <svg aria-hidden="true" viewBox="0 0 16 16"><path d="M3 13 13 3M4 3h9v9"/></svg></a>
     </aside>
     <article aria-label="Simulation results" id="results" aria-busy="true">
+      <div id="progress" class="progress indeterminate" role="progressbar" aria-label="Simulation progress" aria-valuemin="0" aria-valuemax="100"><span></span></div>
       <div class="metrics">
         <section><h2>60-minute average TTFT</h2><strong id="ttft">—</strong><p id="ttft-change" class="run-change"></p><p id="ttft-detail">Time to first token</p></section>
         <section><h2>Hourly serving cost</h2><strong id="cost">—</strong><p id="cost-change" class="run-change"></p><p id="cost-detail">GPUs and cache tiers</p></section>
       </div>
-      <p id="status" role="status">Simulating…</p>
+      <p id="status" role="status" class="busy">Simulating…</p>
       <section class="sources" aria-labelledby="sources-heading"><h2 id="sources-heading">Where prompt tokens came from</h2>
         <div id="bar" aria-hidden="true"></div><ul id="legend" aria-label="Share of prompt tokens by source"></ul>
-        <p class="chart-note" id="computed-note"></p>
-        <p id="pressure"></p>
-        <p id="s3-note" hidden></p>
+        <p id="run-facts" class="chart-note"></p>
+        <p id="cpu-note" class="chart-note" hidden></p>
       </section>
       <section class="timeline" aria-labelledby="timeline-heading">
         <div class="section-heading"><h2 id="timeline-heading">TTFT over the hour</h2>
@@ -106,7 +101,6 @@
         <div class="track-heading"><h3 id="minute-heading">Average TTFT by minute</h3><strong id="minute-ttft">—</strong></div>
         <canvas id="chart" tabindex="0" role="img" aria-label="Average time to first token by minute. Use the arrow keys to inspect a minute."></canvas>
         <div id="read-events" class="track-note" aria-label="First storage reads"></div>
-        <p class="chart-note" id="read-explanation" hidden></p>
         <p id="minute-time" class="track-note"></p>
         <details id="tier-details" class="tier-details"><summary>Tier detail: occupancy, reads and TTFT by tier</summary>
         <section id="reader-summary" hidden aria-labelledby="reader-heading">
@@ -117,35 +111,25 @@
             <thead><tr><th scope="col">Tier</th><th scope="col">Requests</th><th scope="col">Median TTFT</th><th scope="col">Median MiB restored</th></tr></thead>
             <tbody id="reader-rows"></tbody>
           </table>
-          <p class="chart-note">TTFT runs from arrival to first token. Each request counts once per tier it reads. GPU hits reuse KV in place and restore 0 MiB.</p>
         </section>
         <div class="occupancy-scale">
           <label for="occupancy-scale">Occupancy scale</label>
           <select id="occupancy-scale"><option value="percent">Percent of KV capacity</option><option value="gib">GiB used</option></select>
         </div>
-        <p class="chart-note">New chunks are written to each enabled backing tier. A tier can hold data before its first read.</p>
         <div id="tier-tracks"></div>
-        <p class="chart-note">Requests are grouped by arrival minute. Read markers show when payload transfer begins. SSD hits model physical reads from a private drive with no OS page cache. Occupancy is measured across the cluster at minute end.</p>
         </details>
       </section>
       <section id="tier-comparison" aria-labelledby="tier-comparison-title">
         <h2 id="tier-comparison-title">Latency and storage price by tier</h2>
-        <p class="chart-note">Each row replays your workload settings with the same GPUs. Peer, SSD and S3 each add one tier alongside your configured local CPU cache. Both SSDs use the per-node size setting. S3 rows include the metadata round trip each request makes for chunks it does not hold locally.</p>
         <p id="comparison-status" class="track-note" role="status"></p>
         <table id="tier-bars" hidden aria-labelledby="tier-comparison-title">
           <thead><tr><th scope="col">Cache option</th><th scope="col">60-minute average TTFT</th><th scope="col">USD / GB-month</th></tr></thead>
           <tbody></tbody>
         </table>
-        <p class="chart-note">SSD rates apply to provisioned capacity on each node. S3 rates apply to stored bytes. A GB is one billion bytes. Request and transfer fees are separate.</p>
       </section>
-      <section class="market-pricing"><h2>OpenRouter input pricing</h2>
-        <div id="openrouter-input-prices" aria-live="polite">Loading prices…</div>
+      <section class="market-pricing"><h2>Price per 1M tokens</h2>
+        <div id="openrouter-input-prices" aria-live="polite">Waiting for the replay…</div>
       </section>
-      <details><summary>Simulation assumptions</summary>
-        <p>By default the replay warms the caches for 20 minutes and then measures 60 minutes; a cold start measures the first 60 minutes from empty caches. Each point is the average TTFT of requests arriving in that minute, including queueing. Varied lengths draw each message and reply from a lognormal distribution with the set mean (coefficient of variation 0.5, or 1.5 when long-tailed). Distinct system prompts share the set length, and each new chat picks one with Zipf popularity. Bursty arrivals start new chats at twice the mean rate for 2 minutes of every 6 and half of it otherwise. LMCache MP eagerly saves complete prompt chunks by default. Host memory and bounded local SSDs check occupancy every second. At 80% capacity the controller evicts the oldest 20% of resident entries. GPU cache uses its own capacity limit.</p>
-        <p>The model uses the smallest fitting parallel layout on the selected hardware, preferring a single node per instance. Decode runs on separate nodes of the same GPU type. Conversations share a system prompt and grow by the message and reply lengths set in workload details. Think time starts at the last token of the previous reply. Longer replies or queues can reduce the number of follow-ups arriving within the hour. Decode batches form from requests ready at each step. The random seed is fixed across runs.</p>
-        <p>Prompt KV becomes available after prefill. Each private SSD and object-store adapter makes a batch readable after its modeled write completes. Optional reply chunks become eligible after the last token. Concurrent transfers queue for the same disk or network interface. Peer reads occupy both nodes’ interfaces. The hourly estimate adds the costs of all enabled backing tiers. Each block is looked up in GPU memory, local CPU memory, local SSD, then S3 and peer CPU in the selected order. Missing blocks are recomputed. The SSD slider sets provisioned cache capacity per node. Each node is billed for that capacity at the selected SSD rate. Object storage uses the write rate and one hour of retention, plus transfer fees and estimated PUT, GET and HEAD charges at US East (N. Virginia) rates. A cold metadata lookup adds one round trip for a parallel batch of HEAD requests. Each object group and rank is billed separately. Costs include the work required to finish requests admitted during the hour. The serving cost adds the provisioned prefill GPUs and the decode GPUs needed at peak, at on-demand prices, to the backing tiers. Host memory is outside this estimate. Prefill runs in continuous batches: each step serves waiting requests first come, first served up to the batch budget, splitting longer prompts across steps, and costs one read of the model weights (at most the calibrated 52 ms per-request overhead) plus the compute of its tokens. The rest of that overhead delays each request without occupying the GPU, so a request alone in its step keeps the measured one-at-a-time TTFT. Cache lookups and loads run without blocking other requests, as LMCache's multi-process connector does by default.</p>
-      </details>
     </article>
   </div>
 </main>

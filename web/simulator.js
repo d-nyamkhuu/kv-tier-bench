@@ -1,17 +1,18 @@
 import { defaultConfig } from "./config.js";
 import { GPUS, MODELS, SOFTWARE, VARIANTS } from "./presets.js";
 import { PRECISION_LABELS } from "./model.js";
-import { loadOpenRouterPrices, showInputPrices } from "./openrouter.js";
+import { loadOpenRouterPrices, showTokenPrices } from "./openrouter.js";
 import { tierStyles, timeline } from "./replay-chart.js";
 import { minutesCsv } from "./replay.js";
 import {
-  advancedHash, advancedOverrides, applySettings, decodeSettings, DEFAULT_SETTINGS, encodeSettings, fitCluster, SCENARIOS, scenarioFor, usdPerHour,
+  applySettings, CPU_SLIDER_MAX_GIB, cpuSizingNote, decodeSettings, DEFAULT_SETTINGS, encodeSettings, fitCluster, SCENARIOS, scenarioFor, usdPerHour,
 } from "./sim-settings.js";
-import { $, el, fmt, gibf, pctf, secs } from "./ui.js";
+import { $, el, gibf, pctf, secs } from "./ui.js";
 
 const controls = $("controls"), backing = $("backing");
 const plot = timeline();
 let market;
+let showPrices = () => {}, simulatedPrices = null; // the token-price table, set up in start()
 let config, worker, revision = 0, timer;
 let comparisonVisible = false, comparisonLayout = null, lastResult = null;
 // `shown` is the result on screen. `baseline` is the result before the change in progress: a slider drag
@@ -52,7 +53,7 @@ function slider(group, key, label, { min, max, step, stops, units }) {
   sliders.set(key, { value, set, refresh });
 }
 
-const cpuSizes = [0, 4, 8, 16, 32, 64, 96, 128, 192, 256, 384, 512];
+const cpuSizes = [0, 8, 16, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, CPU_SLIDER_MAX_GIB];
 // Powers of two give small working sets room on the slider. The final stop uses the drive preset.
 const diskSizes = [0.25, 0.5, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, null];
 slider("workload-controls", "rate", "Target request rate", { min: 10, max: 600, step: 10, units: " req/min" });
@@ -78,13 +79,6 @@ const FIELDS = {
   admission: ["cache-admission"], prefix: ["prefix", "slider"], input: ["input", "slider"],
   output: ["output", "slider"], gpuBudget: ["gpu-budget", "slider"],
 };
-const LABELS = {
-  model: "model", precision: "precision", gpu: "GPU", nodes: "nodes", gpusPerNode: "GPUs per node", interconnect: "inter-node link",
-  rate: "request rate", turns: "turns per chat", pause: "think time", pattern: "arrival pattern", routing: "routing",
-  cpu: "CPU cache", disk: "local disk", diskSize: "SSD capacity", lookup: "lookup order", backing: "object storage",
-  start: "measurement start", spread: "length variation", prompts: "system prompts", batch: "prefill batch", admission: "saved chunks", prefix: "system prompt length",
-  input: "message length", output: "reply length", gpuBudget: "GPU KV budget",
-};
 
 function readSettings() {
   const settings = {};
@@ -108,15 +102,15 @@ function writeSettings(settings) {
   }
 }
 
-function showScenario(settings, changed = []) {
+function showScenario(settings) {
   const active = scenarioFor(settings);
   for (const button of $("scenario-buttons").children) button.setAttribute("aria-pressed", String(button.dataset.id === active?.id));
   const note = $("scenario-note");
   if (!active) {
-    note.textContent = "Custom settings. Choose a scenario to start again from a known setup.";
+    note.textContent = "Custom settings.";
     return;
   }
-  note.textContent = active.description + (changed.length ? ` Changed: ${changed.map(key => LABELS[key]).join(", ")}.` : "");
+  note.textContent = active.description;
 }
 
 function setCluster({ nodes, gpusPerNode }) {
@@ -140,13 +134,32 @@ function refit(id) {
     ownCluster = null;
     return;
   }
-  const fit = fitCluster(config, settings);
-  if (!fit) { if (!ownCluster) showFit(); return; }
+  let fit = fitCluster(config, settings);
+  let switched = "";
+  // A new model the current GPU cannot hold in this cluster moves to B200 (then B300) when that needs fewer GPUs than
+  // growing the cluster on the current GPU, or when no layout of the current GPU holds it at all.
+  if (fit && id === "model") {
+    const from = config.gpus.find(g => g.id === settings.gpu);
+    const count = f => f == null ? settings.nodes * settings.gpusPerNode : f.error ? Infinity : f.nodes * f.gpusPerNode;
+    for (const gpu of ["b200", "b300"].filter(g => g !== settings.gpu)) {
+      const next = fitCluster(config, { ...settings, gpu });
+      if (next?.error || count(next) >= count(fit)) continue;
+      const name = config.models[settings.model].name, to = config.gpus.find(g => g.id === gpu).name;
+      switched = fit.error
+        ? `${name} does not fit any cluster of ${from?.name ?? settings.gpu}, so the GPU changed to ${to}. `
+        : `${name} needs ${count(fit)} ${from?.name ?? settings.gpu} GPUs but ${count(next)} ${to} GPUs, so the GPU changed to ${to}. `;
+      $("gpu").value = gpu;
+      Object.assign(settings, { gpu });
+      fit = next;
+      break;
+    }
+  }
+  if (!fit) { if (switched || !ownCluster) showFit(switched.trim() || undefined); return; }
   if (fit.error) { showFit(fit.error); return; }
   ownCluster ??= { nodes: settings.nodes, gpusPerNode: settings.gpusPerNode };
   setCluster(fit);
   const gpu = config.gpus.find(g => g.id === settings.gpu);
-  showFit(`Raised to ${fit.nodes} node${fit.nodes === 1 ? "" : "s"} × ${fit.gpusPerNode} GPUs, the smallest cluster that holds ${config.models[settings.model].name} on ${gpu.name}.`);
+  showFit(switched + `Raised to ${fit.nodes} node${fit.nodes === 1 ? "" : "s"} × ${fit.gpusPerNode} GPUs, the smallest cluster that holds ${config.models[settings.model].name} on ${gpu.name}.`);
 }
 
 function useSettings(settings) {
@@ -160,7 +173,7 @@ function useSettings(settings) {
   const changed = Object.keys(FIELDS).filter(key => before[key] !== after[key]);
   // A changed setting inside a closed section would otherwise be invisible.
   if (changed.some(key => ["start", "spread", "prompts", "batch", "prefix", "input", "output", "gpuBudget", "admission", "lookup"].includes(key))) $("detail-controls").closest("details").open = true;
-  showScenario(after, changed);
+  showScenario(after);
   schedule();
 }
 
@@ -199,10 +212,28 @@ function renderComparison(rows) {
   $("comparison-status").textContent = `The tick marks the current setup’s average TTFT of ${secs(currentMean)}.`;
 }
 
+// The bar under the results header: indeterminate until the worker reports its first minute, hidden when done.
+function showProgress(fraction) {
+  const bar = $("progress");
+  if (fraction == null) {
+    bar.hidden = true;
+    $("status").classList.remove("busy");
+    return;
+  }
+  bar.hidden = false;
+  $("status").classList.add("busy");
+  bar.classList.toggle("indeterminate", fraction <= 0);
+  const percent = Math.round(fraction * 100);
+  bar.firstElementChild.style.width = fraction > 0 ? percent + "%" : "";
+  if (fraction > 0) bar.setAttribute("aria-valuenow", String(percent)); else bar.removeAttribute("aria-valuenow");
+  $("status").textContent = fraction > 0 ? `Simulating… ${percent}%` : "Simulating…";
+}
+
 function runWorker(id) {
   worker = new Worker(new URL("./replay-worker.js", import.meta.url), { type: "module" });
   worker.onmessage = ({ data }) => {
     if (data.id !== revision) return;
+    if (data.kind === "progress") { showProgress(data.fraction); return; }
     if (data.kind === "comparison") {
       if (data.error) $("comparison-status").textContent = data.error;
       else renderComparison(data.result);
@@ -238,7 +269,7 @@ function schedule() {
   history.replaceState(null, "", hash ? "#" + hash : location.pathname + location.search);
   $("results").setAttribute("aria-busy", "true");
   $("status").className = "";
-  $("status").textContent = "Simulating…";
+  showProgress(0);
   timer = setTimeout(() => runWorker(id), 120);
 }
 
@@ -282,35 +313,23 @@ function render(result) {
   const { p50, p90, p99 } = result.ttft;
   $("ttft-detail").textContent = `p50 ${secs(p50)} · p90 ${secs(p90)} · p99 ${secs(p99)}` +
     (result.warmupMin ? ` · after a ${result.warmupMin}-minute warm-up` : " · from empty caches");
-  const ops = result.s3Requests;
   const gpus = result.gpuCostPerHour, cache = result.costPerHour;
   const hourly = (gpus ?? 0) + cache;
   $("cost").textContent = usdPerHour(hourly) + " / h";
   const decodeGpus = Math.round(result.decodeGpus);
-  const perThousand = result.requests && gpus != null ? hourly * (result.minutes.length / 60) / result.requests * 1000 : null;
+  const price = result.tokenPrices, usd = x => x == null ? "–" : usdPerHour(x);
   $("cost-detail").textContent = (gpus == null
     ? `${$("gpu").selectedOptions[0].text} has no listed price, so GPUs are left out · `
     : `GPUs ${usdPerHour(gpus)}/h (${result.prefillGpus} prefill + ${decodeGpus} decode) · `)
-    + `cache tiers ${usdPerHour(cache)}/h` + (perThousand == null ? "" : ` · ${usdPerHour(perThousand)} per 1,000 requests`);
+    + `cache tiers ${usdPerHour(cache)}/h`
+    + (price ? ` · per 1M tokens: ${usd(price.input)} input, ${usd(price.cachedInput)} cached, ${usd(price.output)} output` : "");
+  showPrices(price);
   const { tp, pp } = result.layout;
   const sim = config.sim;
-  const explanation = $("read-explanation");
-  const { shared, disk } = result.firstPayloadReadS;
-  explanation.hidden = !(sim.disk && sim.nodes > pp && shared != null && (disk == null || shared < disk));
-  const routing = sim.routing === "round-robin" ? "With round-robin routing, a request" : "A request";
-  explanation.textContent = explanation.hidden ? "" : `Each node has a private SSD. ${routing} can reach a node missing the prefix and read it from S3 while its SSD still has room.`;
   $("cluster-summary").textContent = `${config.models[sim.model].name} · ${PRECISION_LABELS[sim.precision]} · ${sim.nodes} nodes × ${sim.gpusPerNode} ${$("gpu").selectedOptions[0].text}`;
-  let peerNote = "Peer reads require CPU cache on another node outside this pipeline group.";
-  if (result.order.includes("p2p")) {
-    peerNote = sim.shared && !sim.peerFirst
-      ? "If S3 and a peer both hold the missing chunk, S3 serves it."
-      : "After a local miss, the request can fetch matching chunks from another node’s CPU cache.";
-  }
-  $("peer-policy").textContent = peerNote;
   $("layout").textContent = `${result.instances} prefill ${result.instances === 1 ? "instance" : "instances"} · ${tp} GPU${tp === 1 ? "" : "s"} per stage · ${pp} pipeline stage${pp === 1 ? "" : "s"} per instance`;
   kvPerInstanceGiB = result.gpuGiB / (settings.gpuBudget / 100);
   sliders.get("gpu-budget").refresh();
-  $("gpu-budget-note").textContent = `Each model instance has ${gibf(+kvPerInstanceGiB.toPrecision(3))} of KV cache after weights and runtime reserve. Lower the budget to model memory used by other workloads.`;
   plot(result);
   const entries = [
     ...result.order.filter(key => key === "p2p" || key in result.tiers)
@@ -323,29 +342,18 @@ function render(result) {
   })));
   $("legend").replaceChildren(...entries.map(([name, share, color]) =>
     el("li", {}, el("i", { class: "swatch", style: "background:" + color }), name + " · " + (share > 0 && share < 0.001 ? "<0.1%" : pctf(share, 1)))));
-  const model = config.models[sim.model];
-  $("computed-note").textContent = "Computed tokens include each new message"
-    + (sim.saveDecode ? "" : " and the previous reply, whose KV stays on the decode GPUs unless reply chunks are saved (Workload and memory details)")
-    + "."
-    + (model.read_fixed_bytes > 0 ? ` ${model.name} can resume only from a recurrent state saved at the end of an earlier prompt, so a new chat cannot reuse the shared prefix.` : "")
-    + " The rest is history that no tier still held.";
-  const eviction = result.firstEviction == null ? "GPU memory held every cached block throughout this run."
-    : result.firstEviction < 0 ? "The GPU cache was already evicting blocks during the warm-up."
-    : "The GPU cache first evicted a block in minute " + (Math.floor(result.firstEviction / 60) + 1) + ".";
+  // One short line of facts; the design docs carry the explanations.
   const requests = result.minutes.reduce((sum, m) => sum + m.count, 0);
-  const realized = requests / result.minutes.length;
-  const ramp = realized < settings.rate * 0.95
-    ? ` Each follow-up waits for the previous reply plus the think time, so traffic builds up${result.warmupMin ? " even after the warm-up" : " from a cold start"}: ${result.minutes[0].count} requests in the first measured minute and ${result.minutes.at(-1).count} in the last.`
-    : "";
-  const busy = result.utilization;
-  const load = busy < 0.3 ? "mostly idle, so requests rarely queue" : busy < 0.7 ? "moderately loaded" : busy < 0.95 ? "heavily loaded, so queueing grows quickly" : "saturated, so the queue grows without bound";
-  $("pressure").textContent = `${eviction} The prefill GPUs were busy ${pctf(busy, 0)} of the time: ${load}. Requests spent ${secs(result.wait)} in the prefill queue on average. The replay served ${requests.toLocaleString("en-US")} requests, ${fmt(realized, 3)} per minute against the ${settings.rate}/min target.${ramp}`;
-  const store = config.variants.find(v => v.id === sim.shared);
-  $("s3-note").hidden = !store;
-  $("s3-note").textContent = store
-    ? `Before loading, each request asks ${store.short ?? store.name} about chunks it does not hold locally, including its new message, which was never saved. A check costs one round trip of ${secs(store.latency_s ?? 0)}, so object storage can raise TTFT even when most tokens come from GPU memory. Over the hour, requests sent ${ops.head.toLocaleString("en-US")} HEAD, ${ops.get.toLocaleString("en-US")} GET and ${ops.put.toLocaleString("en-US")} PUT requests, costing ${usdPerHour(result.requestCostPerHour)}/h.`
-    : "";
-  $("advanced-link").href = "./advanced.html" + advancedHash(advancedOverrides(settings, result.layout));
+  const realized = Math.round(requests / result.minutes.length);
+  const filled = result.firstEviction == null ? "GPU cache never full"
+    : result.firstEviction < 0 ? "GPU cache full during warm-up" : `GPU cache full from minute ${Math.floor(result.firstEviction / 60) + 1}`;
+  $("run-facts").textContent = [filled, `prefill busy ${pctf(result.utilization, 0)}`,
+    `${realized.toLocaleString("en-US")} of ${settings.rate} req/min served`,
+    ...(sim.shared ? [`S3 requests ${usdPerHour(result.requestCostPerHour)}/h`] : [])].join(" · ");
+  const cpuNote = cpuSizingNote(settings, result);
+  $("cpu-note").hidden = !cpuNote;
+  $("cpu-note").textContent = cpuNote ?? "";
+  showProgress(null);
   $("status").textContent = "";
   $("results").setAttribute("aria-busy", "false");
 }
@@ -360,10 +368,11 @@ function failed(message) {
   $("ttft").textContent = "—";
   $("cost").textContent = "—";
   plot(null);
-  $("read-explanation").hidden = true;
-  $("s3-note").hidden = true;
-  for (const id of ["bar", "legend", "computed-note", "pressure", "cost-detail", "ttft-change", "cost-change", "gpu-budget-note", "peer-policy", "cluster-summary"]) $(id).replaceChildren();
+  $("cpu-note").hidden = true;
+  showPrices(null);
+  for (const id of ["bar", "legend", "run-facts", "cost-detail", "ttft-change", "cost-change", "cluster-summary"]) $(id).replaceChildren();
   $("layout").textContent = message;
+  showProgress(null);
   $("status").className = "error";
   $("status").textContent = "Simulation unavailable. " + message;
   $("results").setAttribute("aria-busy", "false");
@@ -382,11 +391,8 @@ async function start() {
   options("gpus-per-node", counts(8));
   options("interconnect", VARIANTS.filter(v => v.family === "p2p").map(v => [v.id, v.name]));
   const priceHost = $("openrouter-input-prices");
-  const updatePrices = () => showInputPrices(priceHost, market, $("model").value);
-  controls.addEventListener("input", updatePrices);
-  $("reset").addEventListener("click", updatePrices);
-  $("scenario-buttons").addEventListener("click", updatePrices);
-  loadOpenRouterPrices().then(snapshot => { market = snapshot; updatePrices(); });
+  showPrices = simulated => { simulatedPrices = simulated; showTokenPrices(priceHost, market, $("model").value, simulated); };
+  loadOpenRouterPrices().then(snapshot => { market = snapshot; showPrices(simulatedPrices); });
   const initial = decodeSettings(location.hash);
   writeSettings(initial);
   showScenario(readSettings());

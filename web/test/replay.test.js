@@ -200,13 +200,13 @@ test("minute 49 counts each prefill replica's KV headroom once across pipeline s
   }
 });
 
-test("disk pressure on the default hardware reproduces the advanced lab's TTFT, tier hits and storage bill", () => {
+test("disk pressure on the default hardware matches the same topology entered directly: TTFT, tier hits and storage bill", () => {
   const defaults = setup();
   assert.equal(defaults.sim.gpusPerNode, 8);
   const c = deepSeekCluster(defaults.sim.gpusPerNode);
   c.sim.cpuGiB = 4;
   const r = replay(c, 0.01);
-  // Enter the equivalent topology, disk size, and GPU headroom directly for the lab.
+  // Enter the equivalent topology, disk size, and GPU headroom directly.
   const lab = structuredClone(c);
   Object.assign(lab.sim, { tp: 4, pp: 1, diskCapacityGiB: null, gpuBudgetFraction: 0.01 });
   lab.variants.find(v => v.id === lab.sim.disk).capacity_gib = 8;

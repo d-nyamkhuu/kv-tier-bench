@@ -1,13 +1,14 @@
-import { labFrom, labId } from "./lab.js";
 import { fitFor } from "./scenario.js";
 
-// The simulator page's settings as plain data: defaults, scenarios, the URL hash, the replay config and the
-// hand-off to the advanced lab. DOM-free; simulator.js, app.js and the tests use it.
+// The simulator page's settings as plain data: defaults, scenarios, the URL hash and the replay config.
+// DOM-free; simulator.js and the tests use it.
 
+// The default uses every tier: MiniMax-M3 on two B200 nodes fills its GPU cache within the hour, and each tier
+// below is larger than the one above, since a tier written as chunks are computed serves hits only then.
 export const DEFAULT_SETTINGS = Object.freeze({
-  model: "deepseek-v4.1-flash", precision: "released", gpu: "b200", nodes: 2, gpusPerNode: 8, interconnect: "p2p-tcp-400",
-  rate: 120, turns: 5, pause: 5, pattern: "steady", routing: "round-robin",
-  cpu: 128, disk: "", diskSize: 8, lookup: "stock", backing: "obj-aws-s3-standard",
+  model: "minimax-m3", precision: "released", gpu: "b200", nodes: 2, gpusPerNode: 8, interconnect: "p2p-tcp-400",
+  rate: 480, turns: 10, pause: 5, pattern: "steady", routing: "round-robin",
+  cpu: 1536, disk: "fs-nvme-gen5", diskSize: 2048, lookup: "peer", backing: "obj-aws-s3-standard",
   start: "warm", spread: "moderate", prompts: 1, batch: 8192,
   admission: "prompt", prefix: 6000, input: 800, output: 400, gpuBudget: 100,
 });
@@ -16,23 +17,29 @@ export const DEFAULT_SETTINGS = Object.freeze({
 export const LENGTH_SPREAD = { fixed: 0, moderate: 0.5, long: 1.5 };
 export const WARMUP_MIN = 20;
 
-// Each scenario is a complete set of settings, so choosing one never leaves a hidden value behind.
-const QWEN = { ...DEFAULT_SETTINGS, model: "qwen3.8-27b", gpu: "rtx-pro-6000", cpu: 96 };
+// Each scenario is a complete set of settings, so choosing one never leaves a hidden value behind. All run large
+// models on two B200 nodes, with CPU and SSD tiers sized past the GPU cache on their node where they should serve hits.
+const LIGHT = { ...DEFAULT_SETTINGS, rate: 120, turns: 5, cpu: 128, disk: "", diskSize: 8, lookup: "stock" };
 export const SCENARIOS = [
   {
-    id: "ample", name: "Plenty of GPU memory",
-    description: "DeepSeek V4.1 Flash compresses KV to about 1.6 KB per token, so two B200 nodes keep the whole hour in GPU memory.",
+    id: "tiers", name: "Every tier in use",
+    description: "MiniMax-M3 (428B) at 480 req/min: every tier serves hits.",
     settings: { ...DEFAULT_SETTINGS },
   },
   {
+    id: "ample", name: "Plenty of GPU memory",
+    description: "DeepSeek V4.1 Flash: the whole hour fits in GPU memory.",
+    settings: { ...LIGHT, model: "deepseek-v4.1-flash" },
+  },
+  {
     id: "gpu", name: "GPU cache fills",
-    description: "Qwen3.8-27B on RTX PRO 6000 GPUs stores about 64 KiB of KV per token, so the GPU cache fills partway through the hour and older chats are served from CPU memory and S3.",
-    settings: QWEN,
+    description: "Kimi K3 (2.8T) at 480 req/min: the GPU cache fills in minutes.",
+    settings: { ...LIGHT, model: "kimi-k3", rate: 480, cpu: 1536 },
   },
   {
     id: "disk", name: "SSD fills",
-    description: "Qwen3.8-27B with only 8 GiB of CPU cache per node: evicted chunks move to a 64 GiB local SSD, which fills and starts evicting within the hour.",
-    settings: { ...QWEN, cpu: 8, disk: "fs-nvme-gen5", diskSize: 64 },
+    description: "Mistral Large 4 (1T) at 480 req/min: the SSD fills within the hour.",
+    settings: { ...LIGHT, model: "mistral-large-4", rate: 480, cpu: 64, disk: "fs-nvme-gen5", diskSize: 768 },
   },
 ];
 
@@ -106,60 +113,22 @@ export function applySettings(config, settings) {
   return settings.gpuBudget / 100;
 }
 
-// The advanced lab's config fields for the same setup. The lab turns peer reads on as a tier of its own, which the
-// simulator enables whenever another node holds CPU cache. `layout` is the {tp, pp} the replay fitted. An SSD size
-// travels as `diskGiB` and becomes the lab's own edited drive, whose Size control the user can still change.
-export function advancedOverrides(settings, layout) {
-  const config = { workload: {}, sim: {} };
-  applySettings(config, settings);
-  const { diskCapacityGiB, ...rest } = config.sim;
-  const sim = { ...rest, p2p: settings.cpu > 0 ? settings.interconnect : null, gpuBudgetFraction: settings.gpuBudget / 100 };
-  if (layout) Object.assign(sim, { tp: layout.tp, pp: layout.pp });
-  if (sim.disk && diskCapacityGiB != null) sim.diskGiB = diskCapacityGiB;
-  return { workload: config.workload, sim };
-}
-
-export const advancedHash = overrides => "#from-simulator=" + encodeURIComponent(JSON.stringify(overrides));
-
-// The overrides in an advanced-lab URL hash, or null.
-export function readAdvancedHash(hash) {
-  const match = /^#from-simulator=(.+)$/.exec(String(hash ?? ""));
-  if (!match) return null;
-  try {
-    const overrides = JSON.parse(decodeURIComponent(match[1]));
-    return overrides && typeof overrides === "object" ? overrides : null;
-  } catch {
-    return null;
-  }
-}
-
-// A copy of `config` with the simulator's choices, keeping only fields the config already has and ids it knows.
-export function withOverrides(config, overrides) {
-  const next = structuredClone(config);
-  const known = {
-    model: id => id in next.models, gpu: id => next.gpus.some(g => g.id === id), decodeGpu: id => next.gpus.some(g => g.id === id),
-    disk: id => id == null || next.variants.some(v => v.id === id), shared: id => id == null || next.variants.some(v => v.id === id),
-    p2p: id => id == null || next.variants.some(v => v.id === id), stageLink: id => next.variants.some(v => v.id === id),
-    transfer: id => next.variants.some(v => v.id === id),
-  };
-  for (const part of ["workload", "sim"]) {
-    for (const [key, value] of Object.entries(overrides?.[part] ?? {})) {
-      if (!(key in next[part]) && key !== "gpuBudgetFraction") continue;
-      if (known[key] && !known[key](value)) continue;
-      next[part][key] = value;
-    }
-  }
-  // A size override on the product would hide behind the lab's Size control, so the size goes on a lab drive instead.
-  delete next.sim.diskCapacityGiB;
-  const size = overrides?.sim?.diskGiB;
-  const drive = next.variants.find(v => v.id === next.sim.disk);
-  if (drive && Number.isFinite(size) && size > 0) {
-    const edited = { ...labFrom(drive.lab ? next.variants.find(v => v.id === drive.from) ?? drive : drive, "disk"), capacity_gib: size };
-    edited.edited = ["capacity_gib"];
-    next.variants = [...next.variants.filter(v => v.id !== labId("disk")), edited];
-    next.sim.disk = edited.id;
-  }
-  return next;
+// A note when CPU memory is too small to serve hits, or null. Every computed chunk is copied to GPU and CPU memory as
+// it is computed (LMCache's write-through store), and both evict least recently used first. So a CPU tier smaller
+// than the GPU cache holds only chunks the GPU still has. Below twice the GPU cache it holds little the GPU dropped.
+// Twice is SGLang HiCache's default host size. Shown only once the GPU cache evicts: before that, nothing needs CPU.
+export const CPU_SLIDER_MAX_GIB = 2048; // DGX B200 ships with 2 TB of system memory
+export function cpuSizingNote(settings, result) {
+  if (!(settings.cpu > 0) || result.firstEviction == null || !(result.gpuGiB > 0)) return null;
+  const gpuPerNode = (result.gpuGiB * (result.instances ?? 1)) / settings.nodes;
+  if (settings.cpu >= 2 * gpuPerNode) return null;
+  const gib = x => (x >= 10 ? Math.round(x).toLocaleString("en-US") : x.toFixed(1)) + " GiB";
+  const below = settings.cpu < gpuPerNode;
+  const share = result.share?.cpu ?? 0;
+  const served = share > 0 && share < 0.001 ? "under 0.1%" : (share * 100).toFixed(1) + "%";
+  const target = 2 * gpuPerNode;
+  return `CPU memory is ${below ? "smaller than" : "under twice"} the GPU cache (${gib(gpuPerNode)} per node), so it served only ${served} of tokens.`
+    + (target <= CPU_SLIDER_MAX_GIB ? ` Try ${gib(target)} or more.` : "");
 }
 
 // USD per hour for display: whole cents above $1, three decimals below, and never exponent notation.

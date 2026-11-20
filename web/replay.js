@@ -15,7 +15,8 @@ function readerStats(samples) {
   return stats;
 }
 
-export function replay(config, budgetFraction = config.sim.gpuBudgetFraction ?? 1) {
+// onProgress(fraction) reports the share of simulated minutes done (warm-up included), below 1 until the run returns.
+export function replay(config, budgetFraction = config.sim.gpuBudgetFraction ?? 1, { onProgress } = {}) {
   const sim = config.sim;
   const gpu = config.gpus.find(g => g.id === sim.gpu);
   const layout = context => fitFor(config, sim.model, gpu, sim.attention, sim.precision, sim, context);
@@ -28,7 +29,7 @@ export function replay(config, budgetFraction = config.sim.gpuBudgetFraction ?? 
     throw new Error(`${config.models[sim.model].name} does not fit this cluster. ${advice}`);
   }
   for (;;) {
-    const result = replayLayout(config, fit, budgetFraction);
+    const result = replayLayout(config, fit, budgetFraction, onProgress);
     if (!result.error) return result;
     const next = result.requiredContext && layout(result.requiredContext);
     if (!next || next.pp < fit.pp || (next.pp === fit.pp && next.tp <= fit.tp)) throw new Error(result.error);
@@ -36,7 +37,7 @@ export function replay(config, budgetFraction = config.sim.gpuBudgetFraction ?? 
   }
 }
 
-function replayLayout(config, fit, budgetFraction) {
+function replayLayout(config, fit, budgetFraction, onProgress) {
   const warmupS = (config.sim.warmupMin ?? 0) * 60, skip = Math.round(warmupS / 60);
   const minutes = Array.from({ length: config.workload.durationMin - skip }, () => ({
     count: 0, seconds: 0, loads: 0, waits: 0, transfers: 0, backingTokens: 0, peerBytes: 0, promptTokens: 0, reads: {}, readerSeconds: {}, samples: {},
@@ -66,6 +67,7 @@ function replayLayout(config, fit, budgetFraction) {
     }
   }
   function observeMinuteEnd(index, snapshot) {
+    onProgress?.(Math.min(0.99, (index + 1) / (config.workload.durationMin || 1)));
     if (index < skip) return;
     const usedGiB = {};
     for (const [tier, state] of Object.entries(snapshot)) {
@@ -96,6 +98,8 @@ function replayLayout(config, fit, budgetFraction) {
     gpuCostPerHour: [config.sim.gpu, config.sim.decodeGpu ?? config.sim.gpu].every(id => config.gpus.find(g => g.id === id)?.usd_per_hour > 0)
       ? perHour(prefill + decode) : null,
     prefillCostPerHour: perHour(prefill), decodeCostPerHour: perHour(decode),
+    // USD per 1M input, cached-input and output tokens (sim.js price sheet); null when a GPU has no listed price
+    tokenPrices: result.priced ? { input: result.price.input, cachedInput: result.price.cachedInput, output: result.price.output } : null,
     prefillGpus: result.prefillGpus, decodeGpus: result.decodeGpus, requests: result.requests,
     minutes: minutes.map(m => {
       // An idle minute retains resident bytes and has no latency observation.

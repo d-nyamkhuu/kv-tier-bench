@@ -28,19 +28,24 @@ const dollars = new Intl.NumberFormat("en-US", {
   style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 8,
 });
 
-export function showInputPrices(host, snapshot, modelId) {
+// USD per 1M tokens, as OpenRouter lists them: this setup's simulated price sheet (null while none is available)
+// next to the median OpenRouter endpoint rates for the same model.
+export function showTokenPrices(host, snapshot, modelId, simulated) {
   const model = snapshot?.models?.[modelId];
-  if (!model?.providers?.length) {
-    host.textContent = snapshot ? "No OpenRouter rates listed for this model in the snapshot." : "OpenRouter pricing is unavailable.";
+  const stats = model?.providers?.length ? providerStats(model.providers) : null;
+  const cell = x => el("td", { text: x == null || !Number.isFinite(x) ? "–" : dollars.format(+x.toPrecision(3)) });
+  const rows = [];
+  if (simulated) rows.push(el("tr", {}, el("th", { scope: "row", text: "This setup" }), cell(simulated.input), cell(simulated.cachedInput), cell(simulated.output)));
+  if (stats) rows.push(el("tr", {}, el("th", { scope: "row", text: `OpenRouter median (${stats.n} endpoints)` }), cell(stats.input?.median), cell(stats.cached?.median), cell(stats.output?.median)));
+  if (!rows.length) {
+    host.textContent = snapshot ? "No prices for this model: its GPU has no listed price and OpenRouter lists no endpoints." : "Waiting for the replay…";
     return;
   }
-
-  const stats = providerStats(model.providers);
-  const rate = (label, field) => el("span", {}, label + " ",
-    el("strong", { text: field ? dollars.format(field.median) : "Unlisted" }));
   host.replaceChildren(
-    el("p", { class: "input-rates" }, rate("Regular input", stats.input), rate("Cached input", stats.cached)),
-    el("p", { class: "price-source" }, "USD per 1M input tokens · Median endpoint rates across precisions · ",
-      el("a", { href: model.url, target: "_blank", rel: "noopener", text: "OpenRouter providers" }), " · " + snapshot.fetched),
+    el("table", { class: "reader-table token-prices" },
+      el("thead", {}, el("tr", {}, ...["", "Input", "Cached input", "Output"].map(t => el("th", { scope: "col", text: t })))),
+      el("tbody", {}, ...rows)),
+    el("p", { class: "price-source" }, "USD per 1M tokens",
+      ...(stats ? [" · OpenRouter median across endpoints · ", el("a", { href: model.url, target: "_blank", rel: "noopener", text: "providers" }), " · " + snapshot.fetched] : [])),
   );
 }

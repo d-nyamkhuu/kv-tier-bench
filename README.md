@@ -134,20 +134,24 @@ The [KV cache simulator](web/index.html) replays synthetic chat traffic and meas
 20-minute warm-up (a cold start from empty caches is one setting away). Adjust request rate, average turns per chat,
 think time, steady or bursty arrivals, CPU cache capacity, and independent local SSD and S3 tiers. More settings vary
 message and reply lengths (fixed, moderate or long-tailed lognormal around the set means), split traffic across distinct
-system prompts with Zipf popularity, and set the GPU KV budget, shown in GiB per instance. Three scenarios
-set every control at once: Plenty of GPU memory (the default: DeepSeek V4.1 Flash on two nodes with eight B200 GPUs each,
-128 GiB of CPU cache per node and S3 Standard), GPU cache fills (the advanced lab's Qwen3.8-27B on RTX PRO 6000 GPUs) and
-SSD fills (the same with 8 GiB of CPU cache and a 64 GiB Gen5 SSD per node). Choosing a model, GPU or precision that the
-cluster cannot hold raises the node and GPU counts to the smallest layout that fits, and a later model that fits the
+system prompts with Zipf popularity, and set the GPU KV budget, shown in GiB per instance. Four scenarios
+set every control at once, all on two nodes with eight B200 GPUs each: Every tier in use (the default: MiniMax-M3 at
+480 requests per minute with 1.5 TiB of CPU cache, a 2 TiB Gen5 SSD per node, peer reads and S3 Standard), Plenty of GPU
+memory (DeepSeek V4.1 Flash, which keeps the hour in GPU memory), GPU cache fills (Kimi K3 with 1.5 TiB of CPU cache
+per node) and SSD fills (Mistral Large 4 with 64 GiB of CPU cache and a 768 GiB SSD per node). Every tier is written as
+prompt chunks are computed, so a CPU or SSD tier serves hits only when it is larger than the GPU cache on its node; the
+page says so when CPU memory is below twice the GPU cache. Choosing a model, GPU or precision that the
+cluster cannot hold raises the node and GPU counts to the smallest layout that fits (a model no layout of the GPU holds
+moves to B200, then B300), and a later model that fits the
 original cluster returns to it. Settings that differ from the defaults are kept in the
-URL hash, so a link reopens the same setup, and the Advanced lab link opens the lab with the same model, cluster, workload
-and tiers. When a local SSD is enabled, its per-node capacity slider sets both the LRU cache limit and the billed size.
+URL hash, so a link reopens the same setup. When a local SSD is enabled, its per-node capacity slider sets both the LRU cache limit and the billed size.
 The SSD timeline links to the first eviction and the S3 timeline links to its first read.
 Under Model and cluster, choose the model, serving precision (as released, FP8 or FP4), GPU type,
 prefill node count, GPUs per node, and inter-node link. Each arrival goes to the next prefill node group in round-robin order, rotating through the replicas within each group. Sticky and random routing are also available. The default lookup order is GPU, local CPU, local SSD, shared storage, then peer CPU. Select peer-first to swap the last two. LMCache MP eagerly saves complete prompt chunks. CPU and bounded SSD caches poll at one-second intervals and evict 20% of resident keys at 80% usage. Prompt chunks become available after prefill, and each backing tier publishes them after the modeled write. Requests compete for each private disk and network interface. Peer reads use both endpoints. AWS backing-tier prices include estimated PUT, GET and HEAD requests. A batch of uncached HEAD probes adds one metadata round trip. Synthetic think time begins after the last reply token. Trace arrivals keep their original timestamps. The peer track shows remote reads using the same CPU cache capacity. The link also carries KV to the separate decode pool and
 activations between pipeline stages. The two main results
 are average time to first token (including queueing, with p50, p90 and p99) and the hourly serving cost: provisioned
-prefill GPUs, the decode GPUs needed at peak and the backing tiers, also given per 1,000 requests. The breakdown under them
+prefill GPUs, the decode GPUs needed at peak and the backing tiers, also given in USD per million input, cached input and
+output tokens. A progress bar follows the replay minute by minute. The breakdown under them
 shows where all prompt tokens came from (computed tokens include each new message), when GPU evictions began, how busy
 the prefill GPUs were, the realized request rate against the target, and, with S3 enabled, how many metadata checks requests made. The time series shows
 one-minute averages and downloads as CSV. Its tier detail shows cluster-wide occupancy, request counts and the median
@@ -155,36 +159,21 @@ TTFT of requests reading each tier, for a selected minute or the whole replay. E
 outside the cost. Prefill runs in continuous batches of up to 8,192 new tokens per step by default (vLLM's
 max_num_batched_tokens), with cache lookups and loads overlapping other requests' compute; a request alone in its step
 keeps the calibrated one-at-a-time TTFT. [Prefill batching](docs/design/prefill-batching.md) gives the step model, the
-published benchmarks it was checked against, and its limits. The advanced lab defaults to one request at a time and
-has a batch-budget field; its costs at 60% busy always load the GPUs one request at a time. The [LMCache compatibility notes](docs/lmcache-compatibility.md) give the versioned sources and sizing assumptions.
+published benchmarks it was checked against, and its limits. The [LMCache compatibility notes](docs/lmcache-compatibility.md) give the versioned sources and sizing assumptions.
 
 The tier comparison replays GPU-only, local CPU, peer CPU, NVMe and S3 alternatives on the same layout and workload settings. Its bars show mean TTFT and the storage rate per decimal GB-month. SSD rates apply to provisioned capacity and S3 rates to retained data.
 
-Both pages show OpenRouter regular and cached input rates in USD per million tokens for the selected model. Each rate is the median of endpoints that list it in the dated pricing snapshot, across provider precisions.
+The page sets this setup's price per million input, cached input and output tokens beside OpenRouter's rates for the selected model. Each OpenRouter rate is the median of endpoints that list it in the dated pricing snapshot, across provider precisions. The simulator splits its hourly cost over the tokens it served: prefill GPU time by uncached and cached tokens, cache tiers to cached input, decode GPUs to output.
 
-The [advanced lab](web/advanced.html) has its own saved configuration and full model, GPU, cluster, tier,
-workload, and pricing controls. It estimates the serving cost per 1,000 requests, including provisioned GPUs,
-and per million input, cached input, and output tokens. Its tier lab lets you pick local disk, peer nodes or shared storage, start
-from a real product, and drag its latency, bandwidth, size and price. A sensitivity chart sweeps one of those against
-TTFT and the 60%-busy cost, with the tier switched off as a reference (a slow tier can lose to recomputing, since vLLM
-always loads a cached prefix), and an across-models chart runs every model with and without your tiers at the same
-traffic. Each tier shows how many tokens (and, for models with a fixed state, how many prompts) it holds.
 Besides s1's two models, the page has ten current open-weight models (Qwen3.8-2.4T-A95B, Kimi K3, DeepSeek V4.1
-Flash, GLM-5.3 and GLM-5.3-Flash, Qwen3.8-Flash-Next, MiniMax-M3, Mistral Large 4, gpt-oss-120b, Gemma 4 31B). Their KV per token, fixed
-state and FLOPs are derived from each config.json by one function covering MoE, MLA, sliding-window, sparse and linear
-attention. A model too big for one node (Qwen3.8-2.4T, or Kimi K3 on anything smaller than 8 B300s) runs across nodes:
-tensor parallel inside each node, pipeline stages across them. The page also sets each model's modeled $ per 1M tokens beside every provider's price on
-[OpenRouter](https://openrouter.ai) (a dated snapshot in `web/data/openrouter.json`), from a reference deployment of 8
-instances loaded until the prefill GPUs are busy 60% of the time. Decode batches ready sequences, subject to KV capacity and a target of each model's p50 throughput on
-OpenRouter (recorded by hand in `openrouter.py`, since the API's throughput fields are empty); an MoE step reads only the experts its batch picked. Decode can add speculative decoding (MTP, EAGLE-3, DFlash, DSpark or
-custom numbers) and expert parallelism over more GPUs than one node, with all-to-all traffic at DeepEP's measured rates;
-both are checked against published runs (Kimi K2.5 on B200 and GB200, DeepSeek-V3 in production, EAGLE-3 and DFlash). A third chart plots every tier
-combination with its Pareto frontier, its cost at 60% busy or at your load, and a diagram shows the cluster. The workload can be synthetic conversations,
-a [Mooncake](https://github.com/kvcache-ai/Mooncake) trace, or an uploaded trace. Every input is a published figure
-with its source: NVIDIA datasheets, InferenceX vLLM runs, drive and cloud-storage documents (AWS S3, Nebius), and
-KV-transfer papers. The rest are marked as assumptions. vLLM's own overheads are published nowhere, so they are fitted
-on s1. s1 is otherwise the reference: the page compares the model with s1 and with published vLLM benchmarks. Every
-number is editable in the page, and the config imports and exports as JSON.
+Flash, GLM-5.3 and GLM-5.3-Flash, Qwen3.8-Flash-Next, MiniMax-M3, Mistral Large 4, gpt-oss-120b, Gemma 4 31B). Their KV
+per token, fixed state and FLOPs are derived from each config.json by one function covering MoE, MLA, sliding-window,
+sparse and linear attention. A model too big for one node runs across nodes: tensor parallel inside each node, pipeline
+stages across them. Decode batches ready sequences, subject to KV capacity and a target of each model's p50 throughput
+on OpenRouter (recorded by hand in `openrouter.py`, since the API's throughput fields are empty). Every input is a
+published figure with its source: NVIDIA datasheets, InferenceX vLLM runs, drive and cloud-storage documents (AWS S3,
+Nebius), and KV-transfer papers. The rest are marked as assumptions. vLLM's own overheads are published nowhere, so they
+are fitted on s1, and `web/checks.js` compares the model with s1 and with published vLLM benchmarks.
 
 ```bash
 uv run kvtb export-web --stage s1 --results results/s1.jsonl --out web/data/s1.json   # after new results

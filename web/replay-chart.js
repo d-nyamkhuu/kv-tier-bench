@@ -221,9 +221,9 @@ export function timeline() {
       }
       let note;
       if (key === "gpu") {
-        note = `KV budget is ${result.instances} instance${result.instances === 1 ? "" : "s"} × ${fmt(result.gpuGiB, 4)} GiB after weights and runtime reserve. Global KV uses ${fmt(result.kvBytesPerToken, 5)} bytes/token.${result.replayTokens ? ` Each hit rebuilds up to ${result.replayTokens} tokens of live window (${fmt(result.windowBytes / 2 ** 20, 3)} MiB per active request).` : ""} Replay chunks contain ${result.blockTokens} tokens.`;
+        note = `${result.instances} × ${fmt(result.gpuGiB, 4)} GiB of KV · ${fmt(result.kvBytesPerToken, 5)} bytes/token`;
       } else if (peer) {
-        note = "Reads from another node’s CPU cache over the interconnect. Its bytes are already included in CPU memory.";
+        note = "Share of requests reading another node’s CPU cache";
       }
       container.append(el("section", { class: "tier-track" },
         el("div", { class: "track-heading" }, el("h3", {}, el("i", { style: "background:" + color }), name), amount),

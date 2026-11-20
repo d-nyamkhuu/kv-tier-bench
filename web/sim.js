@@ -567,8 +567,10 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
         if (!batchTokens) busy += loads + isolated / pp;
         const over = T.overhead(req.n), hh = Math.min(h, req.n);
         const rebuild = usable < h ? isolated - T.ttft(req.n, h, 0) : 0;
-        busyCached += loads + rebuild + (over * hh) / req.n;
-        busyLoads += loads;
+        // Batched prefill loads blocks while other requests compute (LMCache MP), so load time costs no GPU time.
+        const gpuLoads = batchTokens ? 0 : loads;
+        busyCached += gpuLoads + rebuild + (over * hh) / req.n;
+        busyLoads += gpuLoads;
         busyUncached += isolated - rebuild - (over * hh) / req.n;
         cachedTokens += hh;
         promptTokens += req.n; outputTokens += out;
