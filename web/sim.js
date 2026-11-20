@@ -7,7 +7,7 @@
 
 import { Events } from "./events.js";
 import { decodePool } from "./decode.js";
-import { decodeStep, GIB, perSeqBytes, timing, variantBandwidth } from "./model.js";
+import { decodeStep, GIB, perSeqBytes, timing, variantBandwidth, writeBandwidth } from "./model.js";
 
 // Byte-bounded LRU: a doubly linked list (oldest at head) indexed by a Map, so every operation is O(1).
 export class LRU {
@@ -32,6 +32,16 @@ export class LRU {
     if (!this.head || this.used < 0.8 * this.cap) return;
     const count = Math.max(1, Math.floor(this.map.size * 0.2));
     for (let i = 0; i < count; i++) this.#evictOldest();
+  }
+  // Remove `id` if present (used by lifetime expiration, not counted as a capacity eviction).
+  delete(id) {
+    const n = this.map.get(id);
+    if (!n) return false;
+    this.#unlink(n);
+    this.map.delete(id);
+    this.used -= n.bytes;
+    this.onEvict?.(id);
+    return true;
   }
   // Drop entries from the least recently used end while `stale(id)` holds: a cache lifetime, not an eviction.
   expire(stale) {
@@ -257,14 +267,18 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
   let diskReadBytes = 0, sharedReadBytes = 0, sharedWriteBytes = 0;
   const holders = new Map(); // block -> number of nodes whose CPU tier holds it (p2p lookups)
   const hook = { onAdd: (k) => holders.set(k, (holders.get(k) ?? 0) + 1), onEvict: (k) => { const c = holders.get(k) - 1; if (c) holders.set(k, c); else holders.delete(k); } };
-  // one entry per cache group of pp nodes (a node when pp = 1)
+  // one entry per cache group of pp nodes (a node when pp = 1).
+  // Full-duplex lanes: frontend Ethernet (S3 and TCP links) is separate from dedicated RDMA rails (IB/RoCE).
   const nodes = Array.from({ length: Math.max(1, Math.floor(cl.nodes / pp)) }, () => ({
-    diskLane: { free: 0 }, nic: { free: 0 }, diskWritten: 0,
+    diskLane: { free: 0 }, ethTx: { free: 0 }, ethRx: { free: 0 }, rdmaTx: { free: 0 }, rdmaRx: { free: 0 }, diskWritten: 0,
     knownObjects: s3 ? new Set() : null,
     knownWindows: s3 && externalState ? new Set() : null,
     cpu: new LRU(gib((cfg.cpuGiB ?? 0) * pp), cfg.p2p ? hook : {}),
     disk: cfg.disk ? new LRU(gib(cfg.disk.capacity_gib == null ? null : cfg.disk.capacity_gib * pp)) : null,
   }));
+  const txLane = (node, v) => (v?.rdma ? node.rdmaTx : node.ethTx);
+  const rxLane = (node, v) => (v?.rdma ? node.rdmaRx : node.ethRx);
+  const linkRails = (v) => (v?.per_gpu ? cl.tp : 1);
   const inst = nodes.flatMap((node, ni) => Array.from({ length: perNode }, () => ({ node: ni, gpu: new LRU(gib(cfg.gpuGiB)), running: false, queue: [], head: 0, waiting: [], stepping: false })));
   const shared = cfg.shared ? new LRU(gib(cfg.shared.capacity_gib)) : null;
 
@@ -342,17 +356,21 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
   };
   const pool = dec && decodePool(events, dec, profile);
 
-  // Last read or write of each block, for the cache lifetime. Lookups check it, and once a second every tier drops
-  // expired blocks from its least recently used end so they stop taking space.
+  // Last read or write of each block, kept in strict oldest-first Map insertion order for O(1) lifetime expiration
+  // across every tier (so a GPU-hot block at an LRU's head never blocks expiring stale entries behind it).
   const lifetime = cfg.cacheLifetimeS > 0 ? cfg.cacheLifetimeS : null;
   const lastUse = lifetime ? new Map() : null;
+  const touchUse = (id, now) => { if (!lifetime) return; lastUse.delete(id); lastUse.set(id, now); };
   const expired = (id, now) => now - (lastUse.get(id) ?? -Infinity) > lifetime;
   let lastExpiry = 0;
   function expireAll(now) {
-    const stale = id => { if (!expired(id, now)) return false; lastUse.delete(id); return true; };
-    for (const instance of inst) instance.gpu.expire(stale);
-    for (const n of nodes) { n.cpu.expire(stale); n.disk?.expire(stale); }
-    shared?.expire(stale);
+    for (const [id, ts] of lastUse) {
+      if (now - ts <= lifetime) break;
+      lastUse.delete(id);
+      for (const instance of inst) instance.gpu.delete(id);
+      for (const n of nodes) { n.cpu.delete(id); n.disk?.delete(id); }
+      shared?.delete(id);
+    }
   }
 
   let lastPoll = 0;
@@ -467,23 +485,24 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
       if (shared) sharedReadBytes += readBytes("shared");
       if (s3) operations.get += ranks * (k.shared + Number(last === "shared" && !!m.read_fixed_bytes));
     }
-    // S3 size metadata is local to each adapter. A successful HEAD or PUT
-    // primes it. L2 probes can accompany a disk/peer hit and a prefix miss.
+    // S3 size metadata is local to each adapter and primed by a PUT or HEAD.
+    // A prefix directory / Bloom filter avoids stalling local hits or brand-new prompt misses on S3 404s:
+    // HEAD probes run only for objects actually present in S3 that are not already satisfied by a higher-priority tier.
     let headNeeded = false;
     const metadata = [];
     if (s3) {
-      for (let j = 0; j < ids.length; j++) {
+      for (let j = 0; j < where.length; j++) {
         const id = ids[j];
-        if (!here.gpu.has(id) && !node.cpu.has(id) && !node.knownObjects.has(id)) {
+        if (where[j] !== "shared") continue;
+        if (!node.knownObjects.has(id) && shared.has(id)) {
           headNeeded = true;
           if (measured) operations.head += ranks;
-          if (shared.has(id)) metadata.push([node.knownObjects, id]);
+          metadata.push([node.knownObjects, id]);
         }
-        if (node.knownWindows && (j === ids.length - 1 || j === where.length - 1) &&
-            here.gpu.bytes(id) <= blockBytes && node.cpu.bytes(id) <= backingBlock && !node.knownWindows.has(id)) {
+        if (node.knownWindows && j === where.length - 1 && !node.knownWindows.has(id) && shared.bytes(id) > backingBlock) {
           headNeeded = true;
           if (measured) operations.head += ranks;
-          if (shared.bytes(id) > backingBlock) metadata.push([node.knownWindows, id]);
+          metadata.push([node.knownWindows, id]);
         }
       }
     }
@@ -496,10 +515,10 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
     for (const tier of lower) {
       if (!k[tier.key]) continue;
       const bytes = readBytes(tier.key);
-      const bw = variantBandwidth(tier.v) * GIB * pp;
+      const bw = variantBandwidth(tier.v) * GIB * pp * linkRails(tier.v);
       const payloads = tier.key === "p2p"
-        ? [...peerBytes].map(([owner, size]) => ({ seconds: size / bw, lanes: [owner.nic, node.nic] }))
-        : [{ seconds: bytes / bw, lanes: [tier.key === "disk" ? node.diskLane : node.nic] }];
+        ? [...peerBytes].map(([owner, size]) => ({ seconds: size / bw, lanes: [txLane(owner, tier.v), rxLane(node, tier.v)] }))
+        : [{ seconds: bytes / bw, lanes: [tier.key === "disk" ? node.diskLane : node.ethRx] }];
       phases.push({ tier: tier.key, latency: tier.v.latency_s ?? 0, payloads, host: loadCpu(k[tier.key] * B, last === tier.key, bytes) });
     }
     const afterHead = start + (headNeeded ? cfg.shared.latency_s ?? 0 : 0);
@@ -561,7 +580,7 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
         if (transfer) {
           const latency = cfg.transfer.latency_s ?? 0;
           events.at(now + latency, 1, ready => {
-            const done = reserve(ready, transfer - latency, [node.nic]);
+            const done = reserve(ready, transfer - latency, [txLane(node, cfg.transfer)]);
             events.at(done, 1, beginDecode);
           });
         } else beginDecode(now);
@@ -604,13 +623,17 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
           decodeGpuSeconds += task.gpuSeconds * cl.tp;
         }
         if (!batchTokens) busy += loads + isolated / pp;
-        const over = T.overhead(req.n), hh = Math.min(h, req.n);
+        // In batched prefill, requestDelay is host/scheduling delay off the GPU; only stepFloor + per-token work
+        // occupies GPU time, so split prefill GPU cost on GPU-occupying overhead rather than full request_overhead_s.
+        const gpuOver = batchTokens ? stepFloor + cfg.software.per_token_overhead_s * req.n : T.overhead(req.n);
+        const gpuIsolated = batchTokens ? isolated - requestDelay : isolated;
+        const hh = Math.min(h, req.n);
         const rebuild = usable < h ? isolated - T.ttft(req.n, h, 0) : 0;
         // Batched prefill loads blocks while other requests compute (LMCache MP), so load time costs no GPU time.
         const gpuLoads = batchTokens ? 0 : loads;
-        busyCached += gpuLoads + rebuild + (over * hh) / req.n;
+        busyCached += gpuLoads + rebuild + (gpuOver * hh) / req.n;
         busyLoads += gpuLoads;
-        busyUncached += isolated - rebuild - (over * hh) / req.n;
+        busyUncached += Math.max(0, gpuIsolated - rebuild - (gpuOver * hh) / req.n);
         cachedTokens += hh;
         promptTokens += req.n; outputTokens += out;
         for (const kk of keys) if (kk !== "miss") tokens[kk] += k[kk] * B;
@@ -621,15 +644,17 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
     // A disaggregated prefill worker never generates the reply. A trace
     // supplies only prompt hashes, so it cannot identify generated chunks.
     const allIds = !ids.length || req.hashes || (dec && !cfg.saveDecode) ? ids : blocksOf({ ...req, n: req.n + (req.out ?? 0) }, B);
-    if (lifetime) for (const id of allIds) lastUse.set(id, start);
+    if (lifetime) for (const id of allIds) touchUse(id, start);
     const gpuCount = dec ? ids.length : allIds.length;
     const externalCount = cfg.saveDecode ? allIds.length : ids.length;
+    const sysEnd = req.sys > 0 ? Math.floor(req.sys / B) - 1 : -1;
     function publish(from, to, time) {
       const writes = [];
       let writeBytes = 0;
       for (let j = to - 1; j >= from; j--) {
         const id = allIds[j];
-        const checkpoint = j === ids.length - 1 || j === where.length - 1;
+        // Hybrid models checkpoint recurrent state at the prompt end, matched prefix end, and shared system-prompt boundary.
+        const checkpoint = j === ids.length - 1 || j === where.length - 1 || (sysEnd >= 0 && j === sysEnd);
         if (j < gpuCount) here.gpu.put(id, blockBytes + (checkpoint || j === gpuCount - 1 ? m.read_fixed_bytes : 0));
         if (j >= externalCount) continue;
         const state = checkpoint || j === externalCount - 1 ? externalState : 0;
@@ -654,10 +679,10 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
       if (!writes.length) return;
 
       // The cache batch becomes readable on each backing tier after its own
-      // asynchronous write. Foreground reads and background writes use the same lane.
+      // asynchronous write. SSD writes use write bandwidth; S3 uploads use the frontend TX lane.
       const writeTo = (variant, lane, commit) => {
         events.at(time + (variant.latency_s ?? 0), 1, ready => {
-          const done = reserve(ready, writeBytes / (variantBandwidth(variant) * GIB * pp), [lane]);
+          const done = reserve(ready, writeBytes / (writeBandwidth(variant) * GIB * pp), [lane]);
           events.at(done, 0, commit);
         });
       };
@@ -667,7 +692,7 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
         if (measured) node.diskWritten += node.disk.added - before;
         if (firstDiskEvictionS == null && node.disk.evictions) firstDiskEvictionS = done;
       });
-      if (shared) writeTo(cfg.shared, node.nic, () => {
+      if (shared) writeTo(cfg.shared, node.ethTx, () => {
         const before = shared.added;
         for (const { id, bytes, state, prior } of writes) {
           shared.put(id, bytes);
@@ -730,25 +755,28 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
   const decodeGpus = !dec ? 0 : dec.pooled ? decodeNeed : Math.ceil(pool.peakGroups * scaleUp * cl.tp / decodeWidth) * decodeWidth;
   const prefillUsd = prefillGpus * usdH(cfg.gpu) * windowH;
   const decodeUsd = decodeGpus * usdH(dec?.gpu) * windowH;
+  const effRetentionH = lifetime ? Math.min(cfg.retentionH ?? Infinity, lifetime / 3600) : (cfg.retentionH ?? Math.max(windowH, 1));
   const storageOf = (v, writtenBytes, copies, scale) => {
-    if (!v) return { storage: 0, fixed: 0 };
+    if (!v) return { storage: 0, fixed: 0, provisioned: 0 };
     const price = v.usd_per_gib_month ?? 0;
-    let gibHeld;
-    if (v.bill === "provisioned" && v.capacity_gib != null) gibHeld = v.capacity_gib * copies;
-    else { // bytes stored: what is written per hour, kept for the retention time (capped by capacity)
+    let gibHeld, isProvisioned = false;
+    if (v.bill === "provisioned" && v.capacity_gib != null) { gibHeld = v.capacity_gib * copies; isProvisioned = true; }
+    else { // bytes stored: what is written per hour, kept for the effective retention time (capped by capacity)
       const writtenGiB = writtenBytes / GIB * scale;
-      gibHeld = (writtenGiB / Math.max(windowH, 1e-9)) * (cfg.retentionH ?? 24);
+      gibHeld = (writtenGiB / Math.max(windowH, 1e-9)) * effRetentionH;
       if (v.capacity_gib != null) gibHeld = Math.min(gibHeld, v.capacity_gib * copies);
     }
-    return { storage: gibHeld * price * (windowH / 730), fixed: (v.usd_per_hour ?? 0) * copies * windowH };
+    const storage = gibHeld * price * (windowH / 730);
+    return { storage, fixed: (v.usd_per_hour ?? 0) * copies * windowH, provisioned: isProvisioned ? storage : 0 };
   };
   // per-GB fees (S3 Express): what was written after the warm-up, and what was read
   const fees = (v, writtenBytes, readBytes) => (v ? ((v.usd_per_gib_written ?? 0) * writtenBytes + (v.usd_per_gib_read ?? 0) * readBytes) / GIB * scaleUp : 0);
-  const diskCost = { storage: 0, fixed: 0 };
+  const diskCost = { storage: 0, fixed: 0, provisioned: 0 };
   for (const node of nodes) {
     const cost = storageOf(cfg.disk, node.diskWritten, pp * scaleUp, scaleUp);
     diskCost.storage += cost.storage;
     diskCost.fixed += cost.fixed;
+    diskCost.provisioned += cost.provisioned;
   }
   diskCost.storage += fees(cfg.disk, nodes.reduce((sum, n) => sum + n.diskWritten, 0), diskReadBytes);
   const sharedCost = storageOf(cfg.shared, sharedStored, 1, scaleUp);
@@ -759,6 +787,7 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
   const p2pFixed = cfg.p2p ? (cfg.p2p.usd_per_hour ?? 0) * realNodes * windowH : 0;
   const storageUsd = diskCost.storage + sharedCost.storage;
   const fixedUsd = diskCost.fixed + sharedCost.fixed + p2pFixed;
+  const provisionedTierUsd = diskCost.provisioned + sharedCost.provisioned + fixedUsd;
   const total = prefillUsd + decodeUsd + storageUsd + fixedUsd;
   const stats = (xs) => {
     const so = [...xs].sort((a, b) => a - b);
@@ -793,9 +822,11 @@ export function simulate(workload, cfg, observeRequest, observeMinuteEnd) {
       const parts = tok.cachedInput ? Object.fromEntries(Object.entries({
         loads: busy ? (prefillUsd * busyLoads) / busy : 0, overhead: busy ? (prefillUsd * (busyCached - busyLoads)) / busy : 0, storage: storageUsd, fixed: fixedUsd,
       }).map(([k, v]) => [k, (v / scaleUp / tok.cachedInput) * 1e6])) : null;
-      // the prefill-GPU part of the cached-input price; the rest is cache tiers, which do not scale with GPU load
+      // the prefill-GPU and fixed-provisioned-tier parts of the cached-input price (both scale with cluster busy share);
+      // usage-billed S3 storage/requests/transfers do not scale with GPU load
       const cachedPrefill = tok.cachedInput ? ((prefillUsd * (1 - split)) / scaleUp / tok.cachedInput) * 1e6 : null;
-      return { usd, tokens: tok, input: per1M("input"), cachedInput: per1M("cachedInput"), cachedPrefill, output: per1M("output"), cachedParts: parts };
+      const cachedFixed = tok.cachedInput ? (provisionedTierUsd / scaleUp / tok.cachedInput) * 1e6 : null;
+      return { usd, tokens: tok, input: per1M("input"), cachedInput: per1M("cachedInput"), cachedPrefill, cachedFixed, output: per1M("output"), cachedParts: parts };
     })(),
     firstGpuEvictionS: durationS != null && firstGpuEvictionS >= durationS ? null : firstGpuEvictionS,
     firstDiskEvictionS: durationS != null && firstDiskEvictionS >= durationS ? null : firstDiskEvictionS,

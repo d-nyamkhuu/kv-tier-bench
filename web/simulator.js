@@ -348,7 +348,7 @@ function render(result) {
   stats("cost-stats", [["Prefill GPUs", gpus == null ? "unpriced" : usdPerHour(gpus) + "/h"], ["Cache tiers", usdPerHour(cache) + "/h"]]);
   $("cost-detail").textContent = gpus == null
     ? `${$("gpu").selectedOptions[0].text} has no listed price, so GPUs are left out`
-    : `${result.prefillGpus} prefill GPUs at on-demand prices; decode GPUs are not included`;
+    : `${result.prefillGpus} prefill GPUs at on-demand prices · ${result.decodeGpus} decode GPU${result.decodeGpus === 1 ? "" : "s"} (${usdPerHour(result.decodeCostPerHour)}/h) simulated for output timing and excluded`;
   showPrices(pricesAt(result.tokenPrices, result.utilization, settings.priceAt));
   const { tp, pp } = result.layout;
   const sim = config.sim;

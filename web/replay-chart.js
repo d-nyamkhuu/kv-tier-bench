@@ -46,7 +46,7 @@ function drawTrack(track, selected) {
   }
   ctx.strokeStyle = color; ctx.lineWidth = 2.2; ctx.beginPath();
   let connected = occupancy;
-  if (occupancy) ctx.moveTo(x(0), y(0));
+  if (occupancy) ctx.moveTo(x(0), y(track.startValue ?? 0));
   values.forEach((v, i) => {
     if (v == null) { connected = false; return; }
     if (connected) ctx.lineTo(x(i + 1), y(v));
@@ -144,10 +144,12 @@ export function timeline() {
   }
   function setOccupancyScale(track) {
     const asPercent = track.capacity != null && $("occupancy-scale").value === "percent";
+    const init = track.initialGiB ?? 0;
+    track.startValue = asPercent ? init / track.capacity * 100 : init;
     track.values = minutes.map(m => asPercent ? m.usedGiB[track.key] / track.capacity * 100 : m.usedGiB[track.key]);
     track.unit = asPercent ? "%" : " GiB";
     // A tier that stays nearly empty gets a zoomed percent axis rather than a flat line at 0%.
-    track.max = asPercent ? Math.min(100, niceMax(Math.max(1, ...track.values))) : niceMax(Math.max(...track.values));
+    track.max = asPercent ? Math.min(100, niceMax(Math.max(1, track.startValue, ...track.values))) : niceMax(Math.max(track.startValue, ...track.values));
   }
   $("occupancy-scale").onchange = () => {
     tracks.filter(track => track.occupancy).forEach(setOccupancyScale);
@@ -230,7 +232,7 @@ export function timeline() {
         canvas, el("div", { class: "track-note" }, reads, eviction, event), note && el("p", { class: "track-note", text: note })));
       const cells = Array.from({ length: 3 }, () => el("td"));
       $("reader-rows").append(el("tr", {}, el("th", { scope: "row", text: name }), cells));
-      const track = { key, capacity, canvas, amount, reads, cells, occupancy: !peer, color, firstRead };
+      const track = { key, capacity, initialGiB: result.initialUsedGiB?.[key] ?? 0, canvas, amount, reads, cells, occupancy: !peer, color, firstRead };
       if (peer) {
         track.values = minutes.map(m => m.count ? 100 * (m.reads.p2p ?? 0) / m.count : null);
         track.max = Math.min(100, niceMax(Math.max(1, ...track.values)));

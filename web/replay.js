@@ -44,6 +44,9 @@ function replayLayout(config, fit, budgetFraction, onProgress) {
   }));
   const runSamples = {};
   const tiers = {};
+  let initialUsedGiB = null;
+  // Tier depth order (shallowest to deepest) for attributing a request's end-to-end TTFT to its bottleneck tier.
+  const tierRank = ["gpu", "cpu", "disk", ...(config.sim.peerFirst ? ["p2p", "shared"] : ["shared", "p2p"])];
   function observeRequest(req, ttft, blocks, blockSize, loads, wait, transfer, peerBytes, readBytes) {
     const minute = minutes[Math.floor((req.t - warmupS) / 60)];
     minute.count++;
@@ -54,13 +57,15 @@ function replayLayout(config, fit, budgetFraction, onProgress) {
     minute.transfers += transfer;
     minute.promptTokens += req.n;
     minute.backingTokens += ((blocks.shared ?? 0) + (blocks.disk ?? 0)) * blockSize;
-    for (const [tier, count] of Object.entries(blocks)) {
-      if (!count) continue;
-      minute.reads[tier] = (minute.reads[tier] ?? 0) + 1;
-      minute.readerSeconds[tier] = (minute.readerSeconds[tier] ?? 0) + ttft;
-      const bytes = readBytes(tier);
+    // Attribute each request's TTFT to the deepest (slowest) tier it read so GPU median TTFT isn't polluted by S3 hits.
+    let deepest = null;
+    for (const tier of tierRank) if (blocks[tier] > 0) deepest = tier;
+    if (deepest) {
+      minute.reads[deepest] = (minute.reads[deepest] ?? 0) + 1;
+      minute.readerSeconds[deepest] = (minute.readerSeconds[deepest] ?? 0) + ttft;
+      const bytes = readBytes(deepest);
       for (const scope of [minute.samples, runSamples]) {
-        const sample = scope[tier] ??= { times: [], bytes: [] };
+        const sample = scope[deepest] ??= { times: [], bytes: [] };
         sample.times.push(ttft);
         sample.bytes.push(bytes);
       }
@@ -68,11 +73,14 @@ function replayLayout(config, fit, budgetFraction, onProgress) {
   }
   function observeMinuteEnd(index, snapshot) {
     onProgress?.(Math.min(0.99, (index + 1) / (config.workload.durationMin || 1)));
-    if (index < skip) return;
     const usedGiB = {};
     for (const [tier, state] of Object.entries(snapshot)) {
       tiers[tier] = state.capacityGiB;
       usedGiB[tier] = state.usedGiB;
+    }
+    if (index < skip) {
+      if (index === skip - 1) initialUsedGiB = usedGiB;
+      return;
     }
     minutes[index - skip].usedGiB = usedGiB;
   }
@@ -84,9 +92,9 @@ function replayLayout(config, fit, budgetFraction, onProgress) {
   const { storage, fixed, prefill, decode } = result.usd;
   const perHour = usd => usd * 3600 / result.windowS;
   const shift = time => time == null ? null : time - warmupS;
-  let resident = Object.fromEntries(Object.keys(tiers).map(key => [key, 0]));
+  let resident = initialUsedGiB ? { ...initialUsedGiB } : Object.fromEntries(Object.keys(tiers).map(key => [key, 0]));
   return {
-    readerStats: readerStats(runSamples), warmupMin: skip,
+    readerStats: readerStats(runSamples), warmupMin: skip, initialUsedGiB: initialUsedGiB ?? Object.fromEntries(Object.keys(tiers).map(key => [key, 0])),
     firstPayloadReadS: Object.fromEntries(Object.entries(result.firstPayloadReadS).map(([key, time]) => [key, shift(time)])),
     layout: fit, instances: result.instances, gpuGiB: result.kvGiB, kvBytesPerToken: result.kvBytesPerToken, order: result.order,
     mean: result.ttft.mean, ttft: result.ttft, wait: result.wait, share: result.share, utilization: result.utilization,
@@ -100,7 +108,7 @@ function replayLayout(config, fit, budgetFraction, onProgress) {
     prefillCostPerHour: perHour(prefill), decodeCostPerHour: perHour(decode),
     // USD per 1M input, cached-input and output tokens (sim.js price sheet); null when a GPU has no listed price
     tokenPrices: result.priced ? { input: result.price.input, cachedInput: result.price.cachedInput, cachedPrefill: result.price.cachedPrefill,
-      output: result.price.output } : null,
+      cachedFixed: result.price.cachedFixed, output: result.price.output } : null,
     prefillGpus: result.prefillGpus, decodeGpus: result.decodeGpus, requests: result.requests,
     minutes: minutes.map(m => {
       // An idle minute retains resident bytes and has no latency observation.

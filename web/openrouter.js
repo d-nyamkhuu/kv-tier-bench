@@ -62,7 +62,9 @@ export function showTokenPrices(host, snapshot, modelId, simulated) {
       el("thead", {}, el("tr", {}, ...["", ...kinds.map(k => k[2])].map(t => el("th", { scope: "col", text: t })))),
       el("tbody", {}, ...rows)),
     el("p", { class: "price-source" }, "USD per 1M input tokens",
-      simulated?.utilization > 0 ? ` · replay prefill GPUs ${pct(simulated.utilization)} busy` : "",
+      simulated?.utilization > 0
+        ? ` · replay prefill GPUs ${pct(simulated.utilization)} busy` + (simulated.target && simulated.utilization > simulated.target ? ` (above ${pct(simulated.target)} target)` : "")
+        : "",
       ...(stats ? [` · OpenRouter: ${stats.n} endpoints, ranges under the medians · `, el("a", { href: model.url, target: "_blank", rel: "noopener", text: "providers" }), " · " + snapshot.fetched]
         : [" · OpenRouter lists no endpoints for this model"])),
   );

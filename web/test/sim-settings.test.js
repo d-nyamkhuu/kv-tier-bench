@@ -177,9 +177,9 @@ test("a replay reports progress by simulated minute, rising and below 1", () => 
 
 test("a saturated inter-node link is flagged as rising TTFT, and RDMA with FP8 keeps the default flat", () => {
   const run = settings => { const c = config(); return replay(c, applySettings(c, settings)); };
-  // MiniMax-M3 as released (TP8) over TCP 400: decode KV transfers of 15-turn chats outgrow the link
+  // MiniMax-M3 as released (TP8) over TCP 200: decode KV transfers of 15-turn chats outgrow the full-duplex link
   const long = { ...DEFAULT_SETTINGS, hours: 1, turns: 15, ownPrompt: 0, prompts: 1, pause: 2 };
-  const tcp = risingTtft(run({ ...long, precision: "released", interconnect: "p2p-tcp-400", cpu: 1536, diskSize: 2048 }));
+  const tcp = risingTtft(run({ ...long, precision: "released", interconnect: "p2p-tcp-200", cpu: 1536, diskSize: 2048 }));
   assert.ok(tcp && tcp.to > 2 * tcp.from, JSON.stringify(tcp));
   assert.equal(tcp.cause, "transfer");
   assert.equal(risingTtft(run(long)), null);
@@ -192,13 +192,31 @@ test("the measured period sets the replay length", () => {
   assert.equal(c.workload.durationMin, 180 + 20);
 });
 
-test("prices scale the prefill-GPU part to the chosen busy share and keep cache tiers", () => {
+test("prices scale prefill GPUs and provisioned tiers to the chosen busy share, keeping variable tiers fixed", () => {
   const prices = { input: 2, cachedInput: 0.5, cachedPrefill: 0.4 };
   const at60 = pricesAt(prices, 0.15, "0.6");
   assert.ok(Math.abs(at60.input - 0.5) < 1e-12);
-  assert.ok(Math.abs(at60.cachedInput - (0.1 + 0.1)) < 1e-12, "0.4 x 0.25 of prefill plus 0.1 of cache tiers");
+  assert.ok(Math.abs(at60.cachedInput - (0.1 + 0.1)) < 1e-12, "0.4 x 0.25 of prefill plus 0.1 of variable cache tiers");
+  const withSsd = pricesAt({ input: 2, cachedInput: 0.5, cachedPrefill: 0.3, cachedFixed: 0.1 }, 0.15, "0.6");
+  assert.ok(Math.abs(withSsd.cachedInput - ((0.3 + 0.1) * 0.25 + 0.1)) < 1e-12, "provisioned SSD scales with utilization too");
   assert.deepEqual(pricesAt(prices, 0.15, "actual"), { input: 2, cachedInput: 0.5, target: null, utilization: 0.15 });
   assert.equal(pricesAt(null, 0.15, "0.6"), null);
+});
+
+test("SWA and hybrid models hit shared system prompts under fixed lengths, and warm starts record initial occupancy", () => {
+  for (const model of ["gemma-4-31b", "gpt-oss-120b", "kimi-k3"]) {
+    const c = config();
+    const s = { ...DEFAULT_SETTINGS, model, ...modelDefaults(c.models[model]), turns: 1, ownPrompt: 0, prompts: 1, spread: "fixed", rate: 60, hours: 1, start: "cold", backing: "", disk: "" };
+    const r = replay(c, applySettings(c, s));
+    assert.ok(1 - r.share.miss > 0.8, `${model} shared system prompt hit share: ${1 - r.share.miss}`);
+  }
+  const cWarm = config();
+  const rWarm = replay(cWarm, applySettings(cWarm, { ...DEFAULT_SETTINGS, hours: 1, start: "warm" }));
+  assert.ok(rWarm.initialUsedGiB.gpu > 0, `warm start should capture non-zero initial GPU occupancy: ${rWarm.initialUsedGiB.gpu}`);
+  // Plenty of GPU memory scenario actually serves hits from GPU memory (no S3 spillover)
+  const cAmple = config();
+  const rAmple = replay(cAmple, applySettings(cAmple, SCENARIOS.find(s => s.id === "ample").settings));
+  assert.ok(rAmple.share.gpu > 0.55 && (rAmple.share.shared ?? 0) === 0, JSON.stringify(rAmple.share));
 });
 
 test("each model's serving defaults: FP8 when released in BF16, RDMA between nodes", () => {

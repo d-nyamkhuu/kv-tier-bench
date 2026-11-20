@@ -93,40 +93,40 @@ export const VARIANTS = [
   // ---------------------------------------------------------------------------------------------- local disk (fs)
   {
     id: "fs-nvme-gen5", family: "fs", name: "Local NVMe, PCIe Gen5 (Kioxia CM7-R)",
-    bw_gib_s: GB(13.5), efficiency: NVME_VS_FIO, latency_s: NVME_LATENCY_S, capacity_gib: GB(3840), shared: false, bill: "provisioned", usd_per_gib_month: 0.065, usd_per_hour: 0,
-    sources: [...pykvSources, src("Kioxia CM7-R", "https://americas.kioxia.com/en-us/business/ssd/enterprise-ssd/cm7-r.html", "Sustained 128 KiB Sequential Read | 10,000 MB/s | 14,000 MB/s (14,000 for 1.92–15.36 TB)"), src("Nebius Compute pricing (local SSD, as a price reference)", S.pricing, "Local SSD disk | $0.065")],
+    bw_gib_s: GB(13.5), write_bw_gib_s: GB(6.7), efficiency: NVME_VS_FIO, latency_s: NVME_LATENCY_S, capacity_gib: GB(3840), shared: false, bill: "provisioned", usd_per_gib_month: 0.065, usd_per_hour: 0,
+    sources: [...pykvSources, src("Kioxia CM7-R", "https://americas.kioxia.com/en-us/business/ssd/enterprise-ssd/cm7-r.html", "Sustained 128 KiB Sequential Read | 10,000 MB/s | 14,000 MB/s (14,000 for 1.92–15.36 TB); Write 6,700 MB/s"), src("Nebius Compute pricing (local SSD, as a price reference)", S.pricing, "Local SSD disk | $0.065")],
     assumptions: ["capacity_gib", "usd_per_gib_month"],
-    note: "Measured inside vLLM: 11.2–12.0 GB/s for large prefixes (9.0 at 1k tokens) against fio's 13.5 GB/s, ~6 ms to the first read. Price: Nebius's local SSD rate, as a reference for a drive in the server.",
+    note: "Measured inside vLLM: 11.2–12.0 GB/s for large prefixes (9.0 at 1k tokens) against fio's 13.5 GB/s, ~6 ms to the first read; sequential write 6.7 GB/s. Price: Nebius's local SSD rate, as a reference for a drive in the server.",
   },
   {
     id: "fs-nvme-gen4", family: "fs", name: "Local NVMe, PCIe Gen4 (Samsung PM9A3)",
-    bw_gib_s: GB(6), efficiency: NVME_VS_FIO, latency_s: NVME_LATENCY_S, capacity_gib: GB(3840), shared: false, bill: "provisioned", usd_per_gib_month: 0.065, usd_per_hour: 0,
-    sources: [...pykvSources, src("Samsung PM9A3", "https://semiconductor.samsung.com/ssd/datacenter-ssd/pm9a3/", "sequential read speeds up to 6,800 MB/s"), src("Nebius Compute pricing (local SSD, as a price reference)", S.pricing, "Local SSD disk | $0.065")],
+    bw_gib_s: GB(6), write_bw_gib_s: GB(4), efficiency: NVME_VS_FIO, latency_s: NVME_LATENCY_S, capacity_gib: GB(3840), shared: false, bill: "provisioned", usd_per_gib_month: 0.065, usd_per_hour: 0,
+    sources: [...pykvSources, src("Samsung PM9A3", "https://semiconductor.samsung.com/ssd/datacenter-ssd/pm9a3/", "sequential read speeds up to 6,800 MB/s, write up to 4,000 MB/s"), src("Nebius Compute pricing (local SSD, as a price reference)", S.pricing, "Local SSD disk | $0.065")],
     assumptions: ["efficiency", "capacity_gib", "usd_per_gib_month"],
-    note: "Peak is py-kvcache's fio read of this drive (6 GB/s; spec 6.8). The vLLM-to-fio ratio (86%) and ~6 ms were measured on a Gen5 drive.",
+    note: "Peak is py-kvcache's fio read of this drive (6 GB/s; spec 6.8, write 4.0). The vLLM-to-fio ratio (86%) and ~6 ms were measured on a Gen5 drive.",
   },
   {
     id: "fs-nebius-local-ssd", family: "fs", name: "Nebius local SSD, 3.5 TiB (B300 VMs only)",
-    bw_gib_s: GB(6.8), efficiency: NVME_VS_FIO, latency_s: NVME_LATENCY_S, capacity_gib: 3584, shared: false, bill: "provisioned", usd_per_gib_month: 0.065, usd_per_hour: 0,
+    bw_gib_s: GB(6.8), write_bw_gib_s: GB(2.6), efficiency: NVME_VS_FIO, latency_s: NVME_LATENCY_S, capacity_gib: 3584, shared: false, bill: "provisioned", usd_per_gib_month: 0.065, usd_per_hour: 0,
     sources: [
       src("Nebius disk types", S.types, "Local SSD disk ... 3.5 TiB ... Read: 6.8 GB/s Write: 2.6 GB/s"),
       src("Nebius local disks", S.local, "Only on the NVIDIA® B300 NVLink platform (gpu-b300-sxm) with the eight-GPU preset 8gpu-192vcpu-2768gb"),
       src("Nebius Compute pricing", S.pricing, "Local SSD disk | $0.065"),
       ...pykvSources,
     ],
-    assumptions: ["efficiency"], note: "Ephemeral. Efficiency and latency are the vLLM filesystem-connector results on a Gen5 NVMe drive (py-kvcache), applied to Nebius's peak.",
+    assumptions: ["efficiency"], note: "Ephemeral. Efficiency and latency are the vLLM filesystem-connector results on a Gen5 NVMe drive (py-kvcache), applied to Nebius's read (6.8 GB/s) and write (2.6 GB/s) peaks.",
   },
   nebiusDisk({
-    id: "fs-nebius-nrd", name: "Nebius network SSD, non-replicated, 1767 GiB", bw_gib_s: 2, capacity_gib: 1767, usd_per_gib_month: 0.053,
+    id: "fs-nebius-nrd", name: "Nebius network SSD, non-replicated, 1767 GiB", bw_gib_s: 2, write_bw_gib_s: 1.5, capacity_gib: 1767, usd_per_gib_month: 0.053,
     sources: [
-      src("Nebius disk types", S.types, "Network SSD NRD ... Read/write bandwidth 2 GiB/s"),
+      src("Nebius disk types", S.types, "Network SSD NRD ... Read bandwidth 2 GiB/s, write 1.5 GiB/s"),
       src("Nebius disk types", S.types, "2048 MiB/s ÷ 110 MiB/s ≈ 18.62, rounding up to 19 units. Minimum disk size = 19 × 93 GiB = 1767 GiB"),
       src("Nebius Compute pricing", S.pricing, "Network SSD Non-replicated disk | $0.053"),
     ],
-    note: "The smallest size that reaches the documented 2 GiB/s. Nebius calls its limits upper bounds and says encryption can cost up to 15%.",
+    note: "The smallest size that reaches the documented 2 GiB/s read / 1.5 GiB/s write. Nebius calls its limits upper bounds and says encryption can cost up to 15%.",
   }),
   nebiusDisk({
-    id: "fs-nebius-io-m3", name: "Nebius network SSD IO M3 (3× mirrored), 1767 GiB", bw_gib_s: 2, capacity_gib: 1767, usd_per_gib_month: 0.118,
+    id: "fs-nebius-io-m3", name: "Nebius network SSD IO M3 (3× mirrored), 1767 GiB", bw_gib_s: 2, write_bw_gib_s: 1.5, capacity_gib: 1767, usd_per_gib_month: 0.118,
     sources: [
       src("Nebius disk types", S.types, "Network SSD IO M3 ... multiples of 93 GiB ... Read/write bandwidth 2 GiB/s ... Read bandwidth per unit 110 MiB/s"),
       src("Nebius Compute pricing", S.pricing, "Network SSD IO M3 disk | $0.118"),
@@ -142,7 +142,7 @@ export const VARIANTS = [
   }),
   {
     id: "fs-sata-ssd", family: "fs", name: "Enterprise SATA SSD (Samsung PM893)",
-    bw_gib_s: MBs(550), efficiency: NVME_VS_FIO, latency_s: NVME_LATENCY_S, capacity_gib: GB(3840), shared: false, bill: "provisioned", usd_per_gib_month: 0.065, usd_per_hour: 0,
+    bw_gib_s: MBs(550), write_bw_gib_s: MBs(520), efficiency: NVME_VS_FIO, latency_s: NVME_LATENCY_S, capacity_gib: GB(3840), shared: false, bill: "provisioned", usd_per_gib_month: 0.065, usd_per_hour: 0,
     sources: [src("Samsung PM893", "https://semiconductor.samsung.com/ssd/datacenter-ssd/pm893/", "sequential read/write speeds of up to 550/520 MB/s"), ...pykvSources, src("Nebius Compute pricing (local SSD, as a price reference)", S.pricing, "Local SSD disk | $0.065")],
     assumptions: ["efficiency", "capacity_gib", "usd_per_gib_month"], note: "Efficiency and latency borrowed from the NVMe measurement in vLLM.",
   },
@@ -208,14 +208,14 @@ export const VARIANTS = [
     ["p2p-roce-200", "RDMA, RoCE 200 GbE", 200, "roce"],
     ["p2p-roce-400", "RDMA, RoCE 400 GbE", 400, "roce"],
   ].map(([id, name, gbit, kind]) => ({
-    id, family: "p2p", name,
+    id, family: "p2p", name, rdma: true, per_gpu: kind === "ib",
     link_gbit_s: gbit, efficiency: RDMA_EFFICIENCY, cap_gib_s: null, latency_s: RDMA_LATENCY_S, usd_per_hour: 0,
     sources: [...rdmaSources, ...(kind === "ib"
       ? [src("Nebius GPU clusters", S.ib, "Each GPU in a VM is connected through a network interface card (NIC) that provides 400 Gbps")]
       : [src("Nebius VM types", S.vmTypes, "RTX PRO 6000 ... BlueField-3 400 Gbps")])],
     assumptions: kind === "ib" ? ["efficiency", "usd_per_hour"] : ["usd_per_hour"],
-    note: "Efficiency is Mooncake's end-to-end KV transfer inside vLLM over RoCE (71%; a raw NIXL benchmark reaches 99%). Latency is the intercept of that transfer table (~1 ms)." +
-      (kind === "ib" ? " The RoCE efficiency is used for InfiniBand." : ""),
+    note: "Efficiency is Mooncake's end-to-end KV transfer inside vLLM over RoCE (71%; a raw NIXL benchmark reaches 99%). Latency is the intercept of that transfer table (~1 ms). Dedicated RDMA fabric separate from frontend S3 Ethernet." +
+      (kind === "ib" ? " One InfiniBand NIC per GPU (scales with TP); the RoCE efficiency is used for InfiniBand." : ""),
   })),
 ].map((v) => ({ capacity_gib: null, shared: false, bill: "stored", usd_per_gib_month: null, usd_per_gib_written: 0, usd_per_gib_read: 0, short: SHORT[v.id] ?? v.name, ...v }));
 
@@ -318,13 +318,13 @@ export const GPUS = [
     note: "No published prefill benchmark: prefill_mfu is fitted on s1. NVIDIA's 1 PFLOP has no dense/sparse footnote; 500 dense fits s1 (at 250 the fit would need over 100% of peak).",
   }),
   gpu({
-    id: "l40s", name: "L40S", prefill_mfu: RTX_MFU, pcie_only: true, tflops_bf16: 362.05, mem_gib: usable(48), mem_bw_tb_s: 0.864, host_gib_s: GEN4_HOST, usd_per_hour: 1.55,
+    id: "l40s", name: "L40S", prefill_mfu: HOPPER_MFU, pcie_only: true, tflops_bf16: 362.05, mem_gib: usable(48), mem_bw_tb_s: 0.864, host_gib_s: GEN4_HOST, usd_per_hour: 1.55,
     sources: [
       src("NVIDIA L40S", NV.l40s, "BFLOAT16 Tensor Core TFLOPS 362.05 I 733* ... 48GB GDDR6 with ECC ... 864GB/s ... PCIe Gen4 x16"),
       GEN4_MEASURED,
       src("Nebius prices", NEBIUS_PRICES, "L40S Intel: from $1.55 (GPU $1.35 + vCPU + RAM)"),
     ],
-    assumptions: ["prefill_mfu", "mbu"], note: "48 GB holds neither model's bf16 weights. prefill_mfu: the RTX PRO 6000's.",
+    assumptions: ["prefill_mfu", "mbu"], note: "48 GB holds neither s1 model's bf16 weights. prefill_mfu: Hopper's published InferenceX figure (59.2%).",
   }),
   gpu({
     id: "h100", name: "H100 SXM", prefill_mfu: HOPPER_MFU, tflops_bf16: 989.4, mem_gib: usable(80), mem_bw_tb_s: 3.35, host_gib_s: GEN5_HOST, usd_per_hour: 4.5, nvlink_gb_s: 900,
@@ -414,7 +414,7 @@ const MODEL_SPECS = {
   "deepseek-v4.1-flash": {
     name: "DeepSeek V4.1 Flash", hf_id: "deepseek-ai/DeepSeek-V4.1-Flash", drafters: ["dspark"], drafter_params: { dspark: { draft: 4, layers: 3 } }, drafter_source: '"num_nextn_predict_layers": 3, "dspark_block_size": 5, "dspark_n_routed_experts": 128, "dspark_num_experts_per_tok": 3', kv_layout: "deepseek-v41", released: "FP8, FP4 experts, fp8_ds_mla KV", arch: "MoE 552B / 8B active in prefill; CSA2 compressed sparse attention, FP8 KV",
     spec: {
-      num_layers: 40, hidden_size: 5120, kv_dtype_bytes: 1, total_params: 552e9, active_params: 8e9, weights_bytes: 510296708312, compute_dtype: "fp8", block_size: 64, decode_active_params: 16e9, experts: moe({ layers: 40, routed: 384, per_token: 6, width: 5120, inter: 2304 }),
+      num_layers: 40, hidden_size: 5120, kv_dtype_bytes: 1, total_params: 552e9, active_params: 8e9, weights_bytes: 510296708312, compute_dtype: "fp8", block_size: 64, decode_active_params: 16e9, experts: moe({ layers: 40, routed: 384, per_token: 6, width: 5120, inter: 2304, bytes_per_param: MXFP4 }),
       layers: [
         { type: "given", kv_bytes_per_token: (528 + 132) * (3 / 2 + 1), copies_per_tp: true },
         { type: "swa", count: 40, kv_heads: 1, q_heads: 0, k_dim: 528, v_dim: 0, window: 128 },

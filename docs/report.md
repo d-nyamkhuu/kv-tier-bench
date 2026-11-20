@@ -253,11 +253,12 @@ vLLM's 5–6 GiB/s sits below the benchmark's 7.6 GiB/s into GPU memory. That is
 path being the limit, but the remaining gap was not traced.
 
 The bigger CPU VM was still needed, for room. On the 48 GiB pool, Mooncake's master (which evicts from 90% full,
-with a 10 s lease by default) evicted parts of large batches before they were read: 2 of the 50 batches recorded
-were invalid. The run in the tables used a 200 GiB pool and a 60 s lease.
+with a 10 s lease by default) evicted parts of large batches before they were read: 5 of the 53 batches recorded
+were invalid (2 partial hits from eviction, plus 3 HTTP 500s on 64K × 4 before TCP queue limits were raised). The
+run in the tables used a 200 GiB pool and a 60 s lease.
 
 Writing to the store also slows the prefill that writes it. At the same lengths, the write phase took up to 1.11×
-p2p's on Qwen3-8B and 1.14–1.22× on Qwen3.5-9B from 16K up. The cost model counts reads only, so this is not in the
+p2p's on Qwen3-8B and 1.14–1.25× on Qwen3.5-9B from 16K up. The cost model counts reads only, so this is not in the
 savings below.
 
 ### Cost at production reuse
@@ -287,13 +288,13 @@ Object Storage times are s2's, from us-central1.
 | Qwen3.5-9B | 1 read/h | 10 | 100 | 1,000 | Memory free |
 |---|---|---|---|---|---|
 | 4K, local CPU memory | 82% | 82% | 82% | 82% | 82% |
-| 4K, p2p | −1,065% | −40% | 62% | 72% | 74% |
-| 4K, store | −1,075% | −51% | 52% | 62% | 63% |
-| 4K, Object Storage | 40% | 59% | 61% | 61% | 61% |
+| 4K, p2p | −1,303% | −64% | 60% | 72% | 74% |
+| 4K, store | −1,314% | −74% | 50% | 62% | 63% |
+| 4K, Object Storage | 36% | 58% | 61% | 61% | 61% |
 | 128K, local CPU memory | 98% | 98% | 98% | 98% | 98% |
-| 128K, p2p | −625% | 24% | 89% | 96% | 97% |
-| 128K, store | −631% | 19% | 84% | 91% | 91% |
-| 128K, Object Storage | 74% | 85% | 87% | 87% | 87% |
+| 128K, p2p | −630% | 24% | 89% | 96% | 97% |
+| 128K, store | −635% | 19% | 84% | 91% | 91% |
+| 128K, Object Storage | 73% | 85% | 87% | 87% | 87% |
 
 - **From about 100 reads an hour, the price of the memory stops mattering for long prefixes.** At 1,000 reads the
   store is within a point of its free-memory saving.
@@ -328,8 +329,8 @@ only it serves save that much GPU time. Measured against recompute:
 
 | Prefix | Qwen3-8B: hits per hour | Bandwidth that takes | Qwen3.5-9B: hits per hour | Bandwidth that takes |
 |---|---|---|---|---|
-| 4K | 134,000 | 21 GiB/s | 39,000 | 1.3 GiB/s |
-| 32K | 3,100 | 3.9 GiB/s | 3,000 | 0.8 GiB/s |
+| 4K | 134,000 | 21 GiB/s | 39,000 | 1.6 GiB/s |
+| 32K | 3,100 | 3.9 GiB/s | 3,000 | 0.9 GiB/s |
 | 128K | 240 | 1.2 GiB/s | 510 | 0.6 GiB/s |
 
 The store moved at most 5.0 GiB/s (Qwen3-8B) and 6.0 GiB/s (Qwen3.5-9B) to one reader; several readers at once
@@ -368,7 +369,7 @@ prefix, local memory, p2p and Object Storage pass, and the store misses by 4 ms.
   - a link fast enough (RDMA) for memory to clearly beat Object Storage.
 
 **Not in the model:**
-- **The write cost.** Writing to the store makes the prefill 1.11–1.22× slower.
+- **The write cost.** Writing to the store makes the prefill 1.11–1.25× slower.
 - **Bandwidth under load.** The store with many readers at once was not measured.
 - **A real hit-rate curve.** No production trace says how many hits each tier serves at a given capacity.
 - **Larger models.** Recompute here is cheap: an 8–9B model on one GPU. A larger model, or one on 8 GPUs, saves far
@@ -376,9 +377,10 @@ prefix, local memory, p2p and Object Storage pass, and the store misses by 4 ms.
 
 ### Checks on s3
 
-- **Validity.** All 105 points have 3 valid batches. Three store-p2p batches (32K × 8, 64K × 4, 128K × 2) failed
-  their first attempt, because the 96 GiB pool on A had evicted part of the batch, and passed on retry. The store
-  runs with the default and partly tuned settings, and on the smaller CPU VM, are kept apart in
+- **Validity.** All 105 points have 3 valid batches. Six earlier rows in `results/s3.jsonl` were invalid and passed
+  on retry: three `store` reps on Qwen3-8B 64K × 4 hit HTTP 500 before TCP queue limits were raised, and three
+  `store-p2p` batches (32K × 8, 64K × 4, 128K × 2) lost part of the batch to eviction from the 96 GiB pool on A. The
+  store runs with the default and partly tuned settings, and on the smaller CPU VM, are kept apart in
   [results/](../results/) as `s3-store-*.jsonl`.
 - **The reused baselines.** s3's write phase prefills each prefix on A, the same work as a recompute. For p2p it took
   1–7% longer than s2's recompute at the same lengths (7% only at 4K on Qwen3-8B, 3% or less elsewhere), and within
@@ -446,7 +448,9 @@ What the comparison shows:
   - in s1 and s2, each prefix stored for one hour per read;
   - in s3, the RAM behind p2p and the store at $6.02 per GiB-month, over a range of reads per hour and a 5-minute
     cache lifetime, with the free-RAM case alongside;
-  - storage billed on bytes used;
+  - storage billed on bytes used (exact KV + unpadded linear-attention state from `config.json`: 74.8 MiB on
+    Qwen3.8-27B and 25.1 MiB on Qwen3.5-9B, matching `MooncakeStoreConnector`; `OffloadingConnector` pads the state
+    to whole KV blocks — 84 MiB and 30 MiB — adding ~3–6% at the shortest prefixes);
   - Standard Object Storage request fees ($0.0034 per 1,000 writes) left out.
 
   Prices are from docs.nebius.com, November 2026, and live in [configs/prices.yaml](../configs/prices.yaml).

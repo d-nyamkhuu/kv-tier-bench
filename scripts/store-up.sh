@@ -62,13 +62,14 @@ store "set -e; mkdir -p ~/mooncake; [[ -d ~/mooncake/venv ]] || python3 -m venv 
   ~/mooncake/venv/bin/pip install -q '$PKG'"  # a no-op once that version is there
 stop_all
 # Eviction (the master's defaults: from 90% full, 5% at a time) keeps the pool from filling over a sweep; a stopped
-# client drops its segment, so a restart starts empty.
+# client drops its segment, so a restart starts empty. Pass exact binary bytes to match tierconfig.py's GiB sizing.
+POOL_BYTES=$((POOL_GIB * 1024 * 1024 * 1024))
 store "cd ~/mooncake && B=~/mooncake/venv/bin
   export $MC_ENV
   nohup \$B/mooncake_master $([[ $PORT == 50051 ]] || echo "--port=$PORT") --default_kv_lease_ttl=$LEASE_MS < /dev/null > master.log 2>&1 & echo \$! > master.pid
   sleep 2
   [[ $MASTER_ONLY == 1 ]] && exit 0
-  nohup \$B/mooncake_client --global_segment_size=${POOL_GIB}GB --master_server_address=$STORE_IP:$PORT \
+  nohup \$B/mooncake_client --global_segment_size=$POOL_BYTES --master_server_address=$STORE_IP:$PORT \
     --metadata_server=$METADATA --protocol=$PROTOCOL --host=$STORE_IP --tenant_id=$TENANT < /dev/null > client.log 2>&1 &
   echo \$! > client.pid"
 sleep 5

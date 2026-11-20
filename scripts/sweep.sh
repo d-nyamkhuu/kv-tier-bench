@@ -131,12 +131,15 @@ run_deploy() {  # run_deploy <model> <deploy>: one deployment, from vLLM start t
   if two_vms "$dep"; then stop peer; fi
 }
 
-# p2p first, for every model: it is the only deployment that needs VM B
-if [[ " $DEPLOYS " == *" p2p "* ]]; then
-  for model in $MODELS; do run_deploy "$model" p2p; done
-  echo "== p2p done for every model: VM B ($PEER) is no longer needed and can be stopped"
+# Two-VM deployments (p2p, store-p2p) first, for every model, so VM B can be stopped before the rest
+peer_deploys=$(for d in $DEPLOYS; do two_vms "$d" && echo -n "$d " || true; done)
+if [[ -n $peer_deploys ]]; then
+  for model in $MODELS; do
+    for dep in $peer_deploys; do run_deploy "$model" "$dep"; done
+  done
+  echo "== two-VM deployments ($peer_deploys) done for every model: VM B ($PEER) is no longer needed and can be stopped"
 fi
-rest=$(for d in $DEPLOYS; do [[ $d == p2p ]] || echo -n "$d "; done)
+rest=$(for d in $DEPLOYS; do two_vms "$d" || echo -n "$d "; done)
 if [[ -n $rest ]]; then
   for model in $MODELS; do
     for dep in $rest; do run_deploy "$model" "$dep"; done

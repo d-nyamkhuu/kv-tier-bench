@@ -203,3 +203,32 @@ def test_reads_split_the_engine_ttft_into_queue_and_prefill():
     assert row["engine_ttft_s"] == pytest.approx(0.02)
     assert row["engine_queue_s"] == pytest.approx(0.015) and row["engine_prefill_s"] == pytest.approx(0.005)
     assert run(Point("s1", "m", "cpu", 1000, 0), FakeEngine())["engine_queue_s"] is None  # engine without them
+
+
+def test_warm_up_settles_writer_before_returning():
+    class AsyncCascade(FakeEngine):
+        pending = 0
+
+        async def complete(self, tokens, max_tokens=1, kv_transfer_params=None):
+            res = await super().complete(tokens, max_tokens, kv_transfer_params)
+            if tokens != measure.POKE:
+                self.pending = 2  # cascade finishes two scrapes after the prefill
+            return res
+
+        async def metrics(self):
+            if self.pending > 0:
+                self.pending -= 1
+                self.written += 100
+            return await super().metrics() + [
+                Sample(C.M_TIER_ACTIVE_CASCADES, (("tier", "1:fs"),), 1.0 if self.pending else 0.0)
+            ]
+
+    eng = AsyncCascade()
+    asyncio.run(measure.warm_up(eng, block_size=64))
+    assert eng.pending == 0
+
+
+def test_p2p_job_does_not_record_writer_tier_write_bytes():
+    a, b = FakeEngine(host="10.0.0.1"), FakeEngine(host="10.0.0.2")
+    row = asyncio.run(measure.run_point(Point("s1", "m", "p2p", 1000, 0), 64, a, reader=b, source_host="10.0.0.1"))
+    assert row["valid"] and row["write_bytes"] is None and row["write_time_s"] is None

@@ -96,11 +96,16 @@ test("serving precision: FP8 halves bf16 weights and KV, FP4 is 4.5 bits a weigh
   assert.equal(f8.weights_bytes, g.total_params);
   assert.equal(f4.weights_bytes, (g.total_params * 4.5) / 8);
   assert.equal(f8.kv_bytes_per_token, g.kv_bytes_per_token / 2);
-  assert.equal(f8.read_fixed_bytes, g.read_fixed_bytes / 2); // Gemma's fixed part is all sliding-window KV
+  assert.equal(f8.state_window_bytes, g.state_window_bytes / 2); // Gemma's fixed part is sliding-window KV, not linear state
+  assert.equal(f8.state_bytes_per_prefix, g.state_bytes_per_prefix / 2);
+  assert.equal(g.read_fixed_bytes, 0);
   assert.equal(withPrecision(g, "released"), g);
   const ds = MODELS["deepseek-v4.1-flash"]; // released FP8 with FP4 experts and packed FP8 KV
   assert.equal(withPrecision(ds, "fp8").weights_bytes, ds.weights_bytes);
   assert.equal(withPrecision(ds, "fp8").kv_bytes_per_token, ds.kv_bytes_per_token);
+  assert.ok(ds.expert_share < 0.8, `FP4 experts share of 510 GB weights: ${ds.expert_share}`);
+  const l40s = GPUS.find((x) => x.id === "l40s");
+  assert.ok(l40s.prefill_mfu < 0.7, `L40S prefill MFU should not borrow RTX's 0.878: ${l40s.prefill_mfu}`);
   const kimi = MODELS["kimi-k3"]; // linear-attention state stays bf16
   assert.equal(withPrecision(kimi, "fp8").read_fixed_bytes, kimi.read_fixed_bytes);
   // FP4 computes at FP4 on Blackwell, at FP8 where there are no FP4 tensor cores

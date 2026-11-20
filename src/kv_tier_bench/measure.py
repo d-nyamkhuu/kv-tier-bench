@@ -162,14 +162,22 @@ def read_params(tier: str, source_host: str | None, kv_request_id: str) -> dict 
     return {"kv_load_tiers": tiers} if tiers is not None else None
 
 
-async def warm_up(writer: Engine, block_size: int, reader: Engine | None = None, source_host: str | None = None):
+async def warm_up(
+    writer: Engine,
+    block_size: int,
+    reader: Engine | None = None,
+    source_host: str | None = None,
+    store: bool = False,
+):
     """One throwaway request per engine before anything is measured, so no measured row pays first-request costs.
 
-    For p2p, the reader's warm-up is a pull from the writer, so the first measured pull doesn't pay for setting up
-    the peer connection either. Best effort: the pull may still recompute if the writer's copy hasn't landed yet.
+    Settles the writer's async cascade before returning (and before a p2p reader pulls), so warm-up writes do not
+    leak into the first measured job's `write_bytes` or cause the reader's warm-up pull to miss.
     """
     prompt = prompt_tokens(WARMUP_SEED, 2 * block_size + 1)
+    before = await writer.metrics()
     await writer.complete(prompt, kv_transfer_params={"max_load_tokens": 0})
+    await settle(writer, before, expect_bytes=0, store=store)
     if reader is not None:  # p2p pulls by source host; store-p2p's reader finds the prefix in the writer's pool
         params = read_params("p2p", source_host, "warmup") if source_host else None
         await reader.complete(prompt, kv_transfer_params=params)
@@ -253,15 +261,19 @@ async def run_job(
         common["write_s_each"] = writes
     dropped = prom.delta(before_write, settled, C.M_TIER_STORES_DROPPED)
     # the store side, once per job: how long the cascade took after the prefill, and what the tier reports
-    label = tier_label(settled, C.M_TIER_WRITE_BYTES, index)
-    labels = {"tier": label} if label else {}
     common["settle_s"] = settle_s
-    common["write_bytes"] = prom.delta(before_write, settled, C.M_TIER_WRITE_BYTES, **labels)
-    common["write_time_s"] = prom.delta(before_write, settled, C.M_TIER_WRITE_TIME, **labels)
     if is_store:  # the store's own counters; a key that failed to store counts as a dropped store
         dropped = store_op(before_write, settled, C.M_STORE_FAILED_KEYS, "save_put", ok=False)
         common["write_bytes"] = store_op(before_write, settled, C.M_STORE_BYTES, "save_put")
         common["write_time_s"] = store_op(before_write, settled, C.M_STORE_TIME + "_sum", "save_put")
+    elif secondary:
+        label = tier_label(settled, C.M_TIER_WRITE_BYTES, index)
+        labels = {"tier": label} if label else {}
+        common["write_bytes"] = prom.delta(before_write, settled, C.M_TIER_WRITE_BYTES, **labels)
+        common["write_time_s"] = prom.delta(before_write, settled, C.M_TIER_WRITE_TIME, **labels)
+    else:  # p2p / base do not cascade on write; 1:p2p write_bytes counts previous jobs' peer sends
+        common["write_bytes"] = None
+        common["write_time_s"] = None
 
     # 3. reads: every rep re-reads the same stored prefix(es) from each tier, all of a batch at once
     rows = []

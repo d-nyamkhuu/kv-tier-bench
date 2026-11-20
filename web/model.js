@@ -36,7 +36,8 @@ export function deriveArch(spec) {
   const B = spec.kv_dtype_bytes ?? 2;
   const tps = [1, 2, 4, 8];
   const perTok = Object.fromEntries(tps.map((tp) => [tp, 0]));
-  let fixed = 0, windowBytes = 0, quad = 0, quadLayers = 0, linearLayers = 0;
+  const winByTp = Object.fromEntries(tps.map((tp) => [tp, 0]));
+  let linearBytes = 0, maxSwaWindow = 0, quad = 0, quadLayers = 0, linearLayers = 0;
   const windows = [];
   const attend = (g, width) => {
     if (g.topk) windows.push({ width: g.count * width, tokens: g.topk });
@@ -54,17 +55,18 @@ export function deriveArch(spec) {
       for (const tp of tps) perTok[tp] += g.count * (own * (g.latent + g.rope) * B + (g.index_bytes ?? 0)) * tp;
       attend(g, (g.q_heads * (g.qk_dim + g.v_dim)) / 2);
     } else if (g.type === "swa") {
-      const w = g.count * g.kv_heads * kvDims(g) * B * g.window;
-      fixed += w; windowBytes += w;
+      for (const tp of tps) winByTp[tp] += g.count * Math.max(1, Math.floor(g.kv_heads / tp)) * tp * kvDims(g) * B * g.window;
+      maxSwaWindow = Math.max(maxSwaWindow, g.window);
       windows.push({ width: (g.count * g.q_heads * (g.k_dim + g.v_dim)) / 2, tokens: g.window });
     } else if (g.type === "linear") {
-      fixed += g.count * g.state_bytes;
+      linearBytes += g.count * g.state_bytes;
       linearLayers += g.count;
     } else if (g.type === "given") {
       for (const tp of tps) perTok[tp] += g.kv_bytes_per_token * (g.copies_per_tp ? tp : 1);
     } else throw new Error(`unknown layer type ${g.type}`);
   }
   const fullLayers = quadLayers || (quad > 0 ? 1 : 0);
+  const windowBytes = winByTp[1];
   return {
     hybrid: linearLayers > 0,
     params: spec.active_params ?? spec.total_params,
@@ -75,9 +77,14 @@ export function deriveArch(spec) {
     attn_windows: windows,
     kv_bytes_per_token: perTok[1],
     kv_bytes_per_token_by_tp: perTok,
-    state_bytes_per_prefix: fixed,
-    read_fixed_bytes: fixed,
-    state_window_bytes: windowBytes, // the sliding-window KV in the fixed part (KV precision applies to it)
+    // Total live per-sequence fixed state (linear recurrent state + sliding-window KV), for GPU memory & decode.
+    state_bytes_per_prefix: linearBytes + windowBytes,
+    // Only hybrid linear-attention layers carry an opaque recurrent-state checkpoint on prefix reads.
+    // Sliding-window KV is normal token KV already covered by prefix blocks (not a recurrent checkpoint).
+    read_fixed_bytes: linearBytes,
+    state_window_bytes: windowBytes, // the sliding-window KV in the fixed part (KV precision & TP apply to it)
+    state_window_bytes_by_tp: winByTp,
+    max_swa_window: maxSwaWindow,
     kv_dtype_bytes: B,
     block_size: spec.block_size,
     compute_dtype: spec.compute_dtype ?? "bf16",
@@ -127,7 +134,10 @@ export const curve = (rows) => rows.map((r) => [r.tokens, r.ttft_s]).sort((a, b)
 // Bytes a prefix of `tokens` occupies in a tier: KV for every token plus a fixed part (the hybrid model's
 // linear-attention state snapshot).
 // `state` false: the KV blocks only (a hit spread over tiers reads the state from the tier holding its last block).
-const windowFraction = (m, tokens) => m.kv_layout === "deepseek-v41" ? Math.min(tokens / 128, 1) : 1;
+const windowFraction = (m, tokens) => {
+  const w = m.kv_layout === "deepseek-v41" ? 128 : (m.max_swa_window ?? 0);
+  return w > 0 ? Math.min(tokens / w, 1) : 1;
+};
 export const prefixBytes = (m, tokens, state = true) => (tokens > 0 ? (state ? m.read_fixed_bytes : 0) + m.kv_bytes_per_token * tokens : 0);
 
 // Weighted least squares of y = L + c*x with weights 1/y^2 (relative error), L >= 0. Returns {L, c}.
@@ -218,6 +228,12 @@ export function variantBandwidth(v) {
   return v.bw_gib_s * (v.efficiency ?? 1);
 }
 
+// Effective write bandwidth of a variant: uses published sequential write speed when it differs from read.
+export function writeBandwidth(v) {
+  if (v.write_bw_gib_s != null) return v.write_bw_gib_s * (v.efficiency ?? 1);
+  return variantBandwidth(v);
+}
+
 // Tensor parallelism inside a node (over NVLink, or PCIe without it): speed-up vs TP1, divided by TP. From vLLM runs of
 // Llama 3.3 70B FP8, 8k in / 1k out, concurrency 4, median TTFT (prefill) and TPOT (decode), mean of H200 and B200
 // (SemiAnalysis InferenceX, run 2025-10-29). TTFT includes fixed overhead, so these understate pure compute scaling.
@@ -239,8 +255,12 @@ export const TP_SYNC_PER_LAYER_S = Object.fromEntries(Object.entries(TP_EFF.deco
 // KV heads, and a latent (MLA) cache copied on every GPU. "dp" (data-parallel attention, how MLA models are served
 // at scale: vLLM --data-parallel-size with --enable-expert-parallel): each GPU keeps whole KV for its own requests,
 // so nothing is copied and bytes per token are TP1's.
-export const withTp = (m, tp = 1, attention = "tp") =>
-  ({ ...m, kv_bytes_per_token: attention === "dp" ? m.kv_bytes_per_token : m.kv_bytes_per_token_by_tp?.[tp] ?? m.kv_bytes_per_token });
+export function withTp(m, tp = 1, attention = "tp") {
+  const kv = attention === "dp" ? m.kv_bytes_per_token : m.kv_bytes_per_token_by_tp?.[tp] ?? m.kv_bytes_per_token;
+  const oldWin = m.state_window_bytes ?? 0;
+  const win = attention === "dp" ? oldWin : m.state_window_bytes_by_tp?.[tp] ?? oldWin;
+  return { ...m, kv_bytes_per_token: kv, state_window_bytes: win, state_bytes_per_prefix: m.state_bytes_per_prefix + (win - oldWin) };
+}
 
 // GPU KV cache of one instance (TP GPUs in each of `pp` nodes), as grid.gpu_kv_budget: memory x vLLM's
 // --gpu-memory-utilization, minus the weights (split across all its GPUs) and activations per GPU. <= 0: it does not fit.
@@ -248,7 +268,11 @@ export function gpuKvGiB(m, gpu, sw, tp = 1, pp = 1) {
   return pp * tp * (gpu.mem_gib * sw.gpu_memory_utilization - sw.activation_gib_per_gpu) - m.weights_bytes / GIB;
 }
 
-export const perSeqBytes = (m, ctxTokens) => m.state_bytes_per_prefix * windowFraction(m, ctxTokens) + m.kv_bytes_per_token * ctxTokens;
+export const perSeqBytes = (m, ctxTokens) => {
+  const win = m.state_window_bytes ?? 0;
+  const fixedNonWin = Math.max(0, m.state_bytes_per_prefix - win);
+  return fixedNonWin + win * windowFraction(m, ctxTokens) + m.kv_bytes_per_token * ctxTokens;
+};
 
 // The share of an MoE model's routed experts a decode batch touches: each of `batch` tokens picks per_token of
 // routed experts, independently and evenly (an assumption: real routers are skewed, which touches fewer).
@@ -365,8 +389,11 @@ export function withPrecision(m, precision = "released") {
     compute_dtype: order[p.compute] > order[m.compute_dtype ?? "bf16"] ? p.compute : m.compute_dtype ?? "bf16",
     kv_bytes_per_token: m.kv_bytes_per_token * kvScale,
     kv_bytes_per_token_by_tp: m.kv_bytes_per_token_by_tp && Object.fromEntries(Object.entries(m.kv_bytes_per_token_by_tp).map(([k, v]) => [k, v * kvScale])),
-    state_bytes_per_prefix: m.state_bytes_per_prefix - win, read_fixed_bytes: m.read_fixed_bytes - win,
-    state_window_bytes: (m.state_window_bytes ?? 0) * kvScale, kv_dtype_bytes: Math.min(m.kv_dtype_bytes ?? 2, 1),
+    state_bytes_per_prefix: m.state_bytes_per_prefix - win,
+    read_fixed_bytes: Math.max(0, m.read_fixed_bytes - (m.hybrid ? 0 : win)),
+    state_window_bytes: (m.state_window_bytes ?? 0) * kvScale,
+    state_window_bytes_by_tp: m.state_window_bytes_by_tp && Object.fromEntries(Object.entries(m.state_window_bytes_by_tp).map(([k, v]) => [k, v * kvScale])),
+    kv_dtype_bytes: Math.min(m.kv_dtype_bytes ?? 2, 1),
   };
 }
 
@@ -386,14 +413,16 @@ export function served(m, { precision = "released", tp = 1, attention = "tp", gp
 // Pipeline parallelism across nodes (`pp` stages, TP inside each node, as vLLM deploys a model too big for one node):
 // a request passes the stages one after another, so its prefill takes as long as on one TP group holding every layer,
 // plus a hop per stage boundary: the link's latency + the hidden states (hidden_size x 2 bytes per token) / its
-// bandwidth. Cache loads and KV transfers move each stage's layers on its own node at once: pp times the bandwidth.
-export const stageHop = (m, link) => (link ? (n) => (link.latency_s ?? 0) + (n * (m.hidden_size ?? 0) * 2) / (variantBandwidth(link) * GIB) : () => 0);
+// bandwidth. Cache loads and KV transfers move each stage's layers on its own node at once: pp times the bandwidth
+// (and per-GPU InfiniBand NICs scale with tp as well).
+const linkRails = (v, tp) => (v?.per_gpu ? tp : 1);
+export const stageHop = (m, link, tp = 1) => (link ? (n) => (link.latency_s ?? 0) + (n * (m.hidden_size ?? 0) * 2) / (variantBandwidth(link) * linkRails(link, tp) * GIB) : () => 0);
 
 // The per-model timing functions the simulator calls, for one instance of `gpu`: TP GPUs, in `pp.stages` nodes
 // joined by `pp.link`. `sw`: the software constants.
 export function timing(m, gpu, sw, tp = 1, eff = TP_EFF, { stages = 1, link = null } = {}) {
   const peak = prefillTflops(m, gpu) * 1e12 * gpu.prefill_mfu * tp * tpEff(eff.prefill, tp);
-  const hop = stageHop(m, link);
+  const hop = stageHop(m, link, tp);
   const flops = (n) => (n > 0 ? (2 * m.params * n + attnFlops(m, n) / sw.attn_eff_ratio) / peak : 0);
   const hops = (n) => (n > 0 ? (stages - 1) * hop(n) : 0); // the hidden states of the n tokens computed
   const compute = (n) => flops(n) + hops(n);
@@ -403,14 +432,14 @@ export function timing(m, gpu, sw, tp = 1, eff = TP_EFF, { stages = 1, link = nu
   const cpuLoad = (k, state = true, bytes = prefixBytes(m, k, state)) => (k > 0 ? sw.cpu_load_latency_s + bytes / host : 0);
   const loadFor = (v) => {
     if (!v) return () => 0;
-    const bw = variantBandwidth(v) * GIB * stages;
+    const bw = variantBandwidth(v) * GIB * stages * linkRails(v, tp);
     const L = v.latency_s ?? 0;
     return (k, state = true, bytes = prefixBytes(m, k, state)) => (k > 0 ? cpuLoad(k, state, bytes) + L + bytes / bw : 0);
   };
   // prefill -> decode KV transfer over a network variant, GPU to GPU
   const transferFor = (v) => {
     if (!v) return () => 0;
-    const bw = variantBandwidth(v) * GIB * stages;
+    const bw = variantBandwidth(v) * GIB * stages * linkRails(v, tp);
     const L = v.latency_s ?? 0;
     return (k) => (k > 0 ? L + (m.prefix_replay_tokens ? perSeqBytes(m, k) : prefixBytes(m, k)) / bw : 0);
   };

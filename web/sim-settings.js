@@ -46,8 +46,8 @@ export const SCENARIOS = [
   },
   {
     id: "ample", name: "Plenty of GPU memory",
-    description: "DeepSeek V4.1 Flash: the whole hour fits in GPU memory.",
-    settings: forModel({ ...LIGHT, model: "deepseek-v4.1-flash" }),
+    description: "DeepSeek V4.1 Flash with sticky routing: the whole hour fits and hits in GPU memory.",
+    settings: forModel({ ...LIGHT, model: "deepseek-v4.1-flash", routing: "sticky", backing: "" }),
   },
   {
     id: "gpu", name: "GPU cache fills",
@@ -128,6 +128,7 @@ export function applySettings(config, settings) {
     p2p: settings.interconnect, stageLink: settings.interconnect, transfer: settings.interconnect,
     cpuGiB: settings.cpu, shared: settings.backing || null, disk: settings.disk || null,
     diskCapacityGiB: settings.diskSize, warmupMin, cacheLifetimeS: settings.lifetime > 0 ? settings.lifetime * 60 : null,
+    retentionH: settings.lifetime > 0 ? settings.lifetime / 60 : (settings.hours || 1),
     minCacheTokens: settings.minCache || 0, prefillBatchTokens: settings.batch > 0 ? settings.batch : null,
   });
   return settings.gpuBudget / 100;
@@ -178,10 +179,12 @@ export function pricesAt(prices, utilization, priceAt) {
   const target = Number(priceAt);
   if (!(target > 0) || !(utilization > 0)) return { input: prices.input, cachedInput: prices.cachedInput, target: null, utilization };
   const scale = utilization / target;
-  const tiers = (prices.cachedInput ?? 0) - (prices.cachedPrefill ?? 0);
+  // Fixed hourly costs (prefill GPUs and provisioned SSDs) scale with utilization; usage-billed S3 does not.
+  const scaled = (prices.cachedPrefill ?? 0) + (prices.cachedFixed ?? 0);
+  const variable = (prices.cachedInput ?? 0) - scaled;
   return {
     input: prices.input == null ? null : prices.input * scale,
-    cachedInput: prices.cachedInput == null ? null : (prices.cachedPrefill ?? 0) * scale + tiers,
+    cachedInput: prices.cachedInput == null ? null : scaled * scale + variable,
     target, utilization,
   };
 }

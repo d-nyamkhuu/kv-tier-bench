@@ -71,8 +71,9 @@ async def run_deployment(
     counts["skipped"] = len(points) - left
     log(f"{left} points in {len(jobs)} jobs to run, {counts['skipped']} already done, block size {block_size}")
     if left:
+        is_store = any(j.deployment in STORE_DEPLOYMENTS for j in jobs)
         try:
-            await warm_up(peers.writer, block_size, peers.reader, peers.source_host)
+            await warm_up(peers.writer, block_size, peers.reader, peers.source_host, store=is_store)
         except (httpx.TransportError, TimeoutError) as e:
             raise Abort(f"warm-up: {type(e).__name__}: {e}") from e
         except httpx.HTTPStatusError as e:  # the measured reads record such errors per point

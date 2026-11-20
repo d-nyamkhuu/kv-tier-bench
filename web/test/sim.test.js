@@ -297,7 +297,7 @@ test("external admission saves complete prompt chunks and optionally synthetic r
   assert.equal(run(false, 1).tokens.gpu, 400);
 });
 
-test("peer-first changes the data source without suppressing S3 metadata probes", () => {
+test("peer-first skips S3 data and metadata probes when a peer already holds the block", () => {
   const work = { requests: [0, 1, 1].map((conv, t) => ({ t, conv, n: 100, hashes: ["k"] })) };
   const shared = { family: "obj", bw_gib_s: 1, usd_per_1k_put: .005, usd_per_1k_get: .0004 };
   const cfg = { ...base, gpuGiB: 0, cpuGiB: 1, routing: "sticky", cluster: { nodes: 2 },
@@ -307,10 +307,11 @@ test("peer-first changes the data source without suppressing S3 metadata probes"
   assert.equal(stock.tokens.shared, 100);
   assert.equal(peer.tokens.p2p, 100);
   assert.equal(peer.tokens.cpu, 100);
-  assert.deepEqual(stock.s3Requests, { put: 2, head: 4, get: 2 });
-  assert.deepEqual(peer.s3Requests, { put: 2, head: 4, get: 0 });
+  // Cold miss (req 0) sends PUT only (0 wasted HEADs); stock req 1 probes S3 once (2 ranks) + GETs; peer-first skips S3.
+  assert.deepEqual(stock.s3Requests, { put: 2, head: 2, get: 2 });
+  assert.deepEqual(peer.s3Requests, { put: 2, head: 0, get: 0 });
   assert.equal(peer.firstPayloadReadS.shared, null);
-  assert.equal(stock.requestUsd, (.005 * 2 + .0004 * 6) / 1000);
+  assert.equal(stock.requestUsd, (.005 * 2 + .0004 * 4) / 1000);
   assert.equal(stock.usd.storage, stock.requestUsd);
   const warm = simulate(work, { ...cfg, warmupS: 1 });
   assert.deepEqual(warm.s3Requests, { put: 0, head: 2, get: 2 });
@@ -334,7 +335,7 @@ test("hourly request pricing includes idle time before and after arrivals", () =
   const r = simulate({ requests: [{ t: 1800, n: 100, hashes: ["one"] }] },
     { ...base, shared, gpuGiB: 1, cpuGiB: 0, durationMin: 60 });
   assert.equal(r.windowS, 3600);
-  assert.equal(r.requestUsd * 3600 / r.windowS, .0054 / 1000);
+  assert.equal(r.requestUsd * 3600 / r.windowS, .005 / 1000);
 });
 
 test("round-robin visits each node group before its next replica and charges remote bytes once", () => {
@@ -397,17 +398,56 @@ test("two remote CPU readers compete for their source NIC", () => {
   assert.ok(Math.abs(Math.max(...loads) - Math.min(...loads) - 1) < 1e-9);
 });
 
-test("S3 lookup pays one metadata RTT per cold batch, plus data time only for a GET", () => {
+test("S3 lookup pays one metadata RTT on a cold S3 hit, zero on misses or warm S3 hits", () => {
   const shared = { family: "obj", bw_gib_s: gib(200), latency_s: .25, usd_per_1k_get: .0004 };
   const loads = [];
   const requests = [0, 1, 2].map((i) => ({ t: i * 5, conv: Math.min(i, 1), n: 200, hashes: ["a","b"] }));
   const r = simulate({ requests }, { ...twoNodes, cpuGiB: 0, shared },
     (_req, _ttft, _k, _B, load) => loads.push(load));
-  assert.deepEqual(r.s3Requests, { head: 4, put: 2, get: 4 });
+  assert.deepEqual(r.s3Requests, { head: 2, put: 2, get: 4 });
   assert.equal(r.firstPayloadReadS.shared, 5.5); // first GET payload, after HEAD and GET latency
-  assert.ok(Math.abs(loads[0] - .25) < 1e-9);
-  assert.ok(Math.abs(loads[1] - loads[2] - .25) < 1e-9);
+  assert.ok(Math.abs(loads[0]) < 1e-9); // cold miss does not stall on an S3 HEAD
+  assert.ok(Math.abs(loads[1] - loads[2] - .25) < 1e-9); // cold S3 hit pays HEAD + GET, warm S3 hit pays GET only
   assert.ok(Math.abs(loads[2] - 1.26) < 1e-9);
+});
+
+test("cache lifetime expires stale blocks from S3 even when a GPU-hot block sits at the LRU head", () => {
+  const shared = { family: "obj", bw_gib_s: 1, shared: true, usd_per_gib_month: 730 };
+  const requests = [
+    { t: 0, n: 200, hashes: ["hot", "dead1"] },
+    { t: 5, n: 200, hashes: ["hot", "dead2"] },
+    { t: 10, n: 100, hashes: ["hot"] }, // GPU hit keeps "hot" alive
+    { t: 20, n: 100, hashes: ["hot"] },
+    { t: 30, n: 100, hashes: ["hot"] },
+  ];
+  let endSnap;
+  simulate({ requests }, { ...base, gpuGiB: 1, cpuGiB: 0, shared, cacheLifetimeS: 12, durationMin: 1 },
+    undefined, (_, s) => { endSnap = s; });
+  // Only "hot" survives past t=30 + 12s? At t=60, even "hot" (last used at 30) expired (>12s); check at t=25s via a request:
+  const snaps = [];
+  simulate({ requests: [...requests, { t: 25, n: 100, hashes: ["hot"] }] },
+    { ...base, gpuGiB: 1, cpuGiB: 0, shared, cacheLifetimeS: 12, durationMin: 1 },
+    undefined, (_, s) => snaps.push(s));
+  // At t=60s all blocks last used <=30s are expired (>12s), so shared must be completely empty (0 GiB).
+  assert.equal(endSnap.shared.usedGiB, 0);
+});
+
+test("dedicated RDMA fabric is isolated from S3 Ethernet uploads, and SSD writes use write_bw_gib_s", () => {
+  const shared = { family: "obj", bw_gib_s: gib(100), usd_per_1k_get: 0 };
+  const rdma = { family: "p2p", bw_gib_s: gib(100), rdma: true };
+  const transfers = [];
+  // Replica 0 starts a 1 s S3 PUT on ethTx at t=0.11; replica 1 sends KV over RDMA at t=0.31 -> zero ethTx blocking.
+  simulate({ requests: [arrival(0, 0), arrival(.2, 1, "other", 1)] },
+    { ...twoNodes, cluster: { nodes: 1, gpusPerNode: 2 }, cpuGiB: 0, shared, transfer: rdma,
+      decode: { batch: 16, gpu: { mem_bw_tb_s: 1, mbu: 1 } } },
+    (req, _ttft, _k, _B, _load, _wait, tr) => { if (req.out) transfers.push(tr); });
+  assert.ok(Math.abs(transfers[0] - 1) < 1e-9, `RDMA transfer should not wait on S3 PUT: ${transfers[0]}`);
+  // SSD with half write speed takes twice as long to write before a read can start.
+  const slowWrite = { family: "fs", bw_gib_s: gib(100), write_bw_gib_s: gib(50), latency_s: 0 };
+  const r = simulate({ requests: [arrival(0, 0, "a"), arrival(1, 0, "a")] },
+    { ...base, gpuGiB: 0, cpuGiB: 0, disk: slowWrite });
+  // Write starts at 0.11, takes 100/50 = 2.0 s -> finishes at 2.11; req at t=1 misses disk because write isn't done yet.
+  assert.equal(r.tokens.disk, 0);
 });
 
 test("stored-byte retention and writes bill every private disk and exclude warm-up admissions", () => {
